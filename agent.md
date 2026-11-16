@@ -1,36 +1,34 @@
 # pioneers 团队协作说明
 
-当用户把这个仓库交给你时，你负责按以下规则组建团队。使用当前平台的原生执行能力。Manus 可以在当前 Agent 任务中协调角色，并根据任务依赖和复杂度选择适合的执行方式。
+当用户把这个仓库交给你时，按以下规则组建研发团队。使用当前平台可用的原生执行能力，根据任务依赖和复杂度协调角色。涉及跨团队交接时，共享工作流、交付物路径和验收证据。
 
 ## 组建团队
 
 | 角色 ID | 职责 |
 | --- | --- |
-| `ld` | 统筹交付，明确分工、依赖和交接边界。 |
-| `pm` | 明确用户场景、首版范围和验收条件。 |
-| `ui` | 交付页面布局、交互状态和设计说明。 |
-| `backend` | 实现 API 和业务逻辑，验证接口行为。 |
-| `frontend` | 实现 Web 界面，验证核心用户流程。 |
-| `ios` | 实现 iOS 客户端，记录构建和验证结果。 |
-| `android` | 实现 Android 客户端，记录构建和验证结果。 |
-| `qa` | 对照验收条件核查代码和测试证据。 |
+| `pm` | 产品负责人，明确用户目标、首版范围和验收条件，处理需求歧义。 |
+| `ld` | 交付负责人，明确分工、依赖、共享契约和最终集成负责人。 |
+| `engineer` | 交付工程师，负责一条用户路径或明确的子任务，完成设计、实现、自测并提交证据。 |
+| `qa` | 独立验证，对照验收条件核查代码、实际行为和测试证据。 |
 
 用户只要求组建团队时，交付团队名单、角色职责和执行方式。用户同时给出项目任务时，启用完成该任务需要的角色。
 
 ## 为角色分配 Tool 和 Skill
 
-从 [capabilities.json](capabilities.json) 的 `roles` 读取每个角色的 Tool 和 Skill。同一项能力可以分配给多个角色。前端和后端共用架构设计能力，并分别使用 Web 页面检查和 API 契约检查。
+从 [capabilities.json](capabilities.json) 的 `roles` 读取角色可用的 Tool 和 Skill。同一项能力可以分配给多个角色。交付工程师按任务使用 Web、API 或客户端能力。
 
-- 开始时提供角色可用的能力名称与简介。做任务时按需读取相应的 `SKILL.md`。工作流的 `skills` 可指定需要预先读取的 Skill。
+- 工作流的 `tools` 给出任务选用的 Tool，`skills` 给出需要预先提供的 Skill。做任务时也可按需读取角色获配的 `SKILL.md`。
+- 跨端或跨模块时，用架构设计 Skill 先确定职责、接口和验证方式，再把契约交给各开发角色。实现与重构时用编程设计 Skill 划分状态和副作用，独立核对实际变更时用代码评审 Skill。
 - 有终端时，使用 [README.md](README.md) 的 `--run-tool` 命令运行角色获配的检查。保留工具返回的结果作为交接证据。平台的原生工具和访问权限仍由平台管理。
+- 连接 Git、远端仓库或浏览器 MCP 时，使用 `--mcp-config ROLE --workspace PATH` 获取该角色的配置。执行端负责启用其中的工具白名单和认证。Git 写操作分配给开发角色，远端仓库操作为只读。
 
 ## 推进任务
 
-1. 由 LD 根据用户目标选择角色，按 [workflow.schema.json](workflow.schema.json) 拆出工作计划。任务声明依赖、所需 Skill、复杂度和验收条件。优先沿用用户指定的复杂度。如果可以写文件，保存为 `workflow.json` 以便在 CLI 中检查、复用或交接。
+1. 由 LD 根据用户目标选择角色，按 [workflow.schema.json](workflow.schema.json) 拆出工作计划。轻量功能由一名工程师端到端完成。共享契约或工作环境需要拆分时，分给多个工程师，并指定最终集成负责人。每项实现任务安排下游独立 QA，在工作流中标记 `review: true`。
 2. 把复杂度交给原生执行端判断。 `low` 适合范围明确的整理类工作，`medium` 适合需要实现并验证的任务，`high` 适合跨模块、约束多或需要深入验证的任务。由平台选择实际可用的执行方式和推理强度。
 3. 先执行依赖已满足的任务。有可用的原生子任务能力时，可委派互不依赖的工作。需要串行的工作按依赖逐步推进。在同一会话里执行多个角色时，分别标明角色和产物。
 4. 交接时带上可读取的证据，例如契约文档、变更文件、提交 ID 或测试记录。在关键产物缺失时，标记下游为阻塞并说明原因。
-5. 逐项报告验收结论和对应证据。对验收失败项记录返工任务，对缺少证据的项标记为未验证。根据平台实际可见的信息报告执行方式和会话情况。
+5. QA 使用 [review.schema.json](review.schema.json) 逐项报告通过、失败或未验证，并附证据。全部通过后交付。实现问题交回工程师，需求歧义交回产品负责人，环境、依赖或证据缺失交回 LD。修复或澄清后再独立复验。
 
 ## 向用户同步进度
 
@@ -48,12 +46,13 @@
 python3 pioneers.py --create-team --workspace /path/to/project
 ```
 
-工具把团队配置写入目标 Git 项目的 `.pioneers/team.json`，并以 JSON 返回 `status`、`manifest` 和 `team.roles`。如需为本地 Codex 任务设置默认模型，创建时可追加 `--model MODEL_ID`。运行方式见 [README.md](README.md)。
+工具把团队配置写入目标 Git 项目的 `.pioneers/team.json`，并以 JSON 返回 `status`、`manifest` 和 `team.roles`。如需设置默认模型，创建时可追加 `--model MODEL_ID`。运行方式见 [README.md](README.md)。
 
 本地 CLI 也能从目标自主分工：
 
 ```bash
-python3 pioneers.py --goal "做一个能创建待办的 Web 页面" --live --model MODEL_ID --workspace /path/to/project
+python3 pioneers.py --goal "做一个能创建待办的 Web 页面" \
+  --live --runner /path/to/agent-runner --workspace /path/to/project
 ```
 
 运行工作流时，终端显示角色动态。也可以在另一个终端运行 `python3 pioneers.py --watch RUN_DIR`，其中 `RUN_DIR` 是启动时打印的 `Run output` 路径。

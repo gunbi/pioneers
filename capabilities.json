@@ -15,8 +15,16 @@
   },
   "skills": {
     "architecture-design": {
-      "description": "在变更跨模块或需要冻结接口时，定义模块边界、接口契约和交接方式。",
+      "description": "识别跨模块变更的复杂度，比较方案，并记录接口、取舍和演进条件。",
       "path": "skills/architecture-design/SKILL.md"
+    },
+    "engineering-design": {
+      "description": "在实现与重构时划分业务规则、状态、副作用和执行控制。",
+      "path": "skills/engineering-design/SKILL.md"
+    },
+    "code-review": {
+      "description": "对照实际变更、接口和测试证据审查交付，区分阻塞问题和建议。",
+      "path": "skills/code-review/SKILL.md"
     },
     "frontend-development": {
       "description": "实现页面和交互，覆盖用户路径、异常状态及浏览器验证。",
@@ -25,18 +33,93 @@
     "backend-development": {
       "description": "实现 API 和业务逻辑，验证接口契约及服务端行为。",
       "path": "skills/backend-development/SKILL.md"
+    },
+    "frontend-design": {
+      "description": "设计并实现有清晰视觉方向的前端界面。",
+      "path": "skills/frontend-design/SKILL.md"
+    },
+    "webapp-testing": {
+      "description": "用 Python Playwright 验证 Web 应用，收集截图和浏览器日志。",
+      "path": "skills/webapp-testing/SKILL.md"
+    }
+  },
+  "mcp_servers": {
+    "pioneers_git": {
+      "source": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+      "description": "查看目标 Git 仓库，或按角色权限暂存、提交与创建分支。",
+      "settings": {
+        "command": "uvx",
+        "args": ["mcp-server-git==2026.11.11", "--repository", "{workspace}"],
+        "startup_timeout_sec": 60
+      },
+      "profiles": {
+        "read": ["git_status", "git_diff_unstaged", "git_diff_staged", "git_diff", "git_log", "git_show"],
+        "write": ["git_add", "git_commit", "git_create_branch"]
+      }
+    },
+    "pioneers_github": {
+      "source": "https://github.com/github/github-mcp-server",
+      "description": "只读查看有权限的 GitHub 仓库、Issue 和 PR。",
+      "settings": {
+        "url": "https://api.githubcopilot.com/mcp/x/all/readonly",
+        "bearer_token_env_var": "GITHUB_PERSONAL_ACCESS_TOKEN"
+      },
+      "profiles": {
+        "read": ["get_file_contents", "list_issues", "issue_read", "list_pull_requests", "pull_request_read"]
+      }
+    },
+    "pioneers_playwright": {
+      "source": "https://github.com/microsoft/playwright-mcp",
+      "description": "打开 Web 页面、模拟用户操作，采集页面状态和验证证据。",
+      "settings": {
+        "command": "npx",
+        "args": ["--yes", "@playwright/mcp@0.0.85", "--isolated", "--headless"],
+        "startup_timeout_sec": 60
+      },
+      "profiles": {
+        "test": [
+          "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
+          "browser_fill_form", "browser_press_key", "browser_resize",
+          "browser_take_screenshot", "browser_console_messages", "browser_close"
+        ]
+      }
     }
   },
   "roles": {
-    "ld": {"tools": ["architecture_check"], "skills": ["architecture-design"]},
+    "ld": {
+      "tools": ["architecture_check"],
+      "skills": ["architecture-design", "code-review"],
+      "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"]}
+    },
+    "pm": {"mcp": {"pioneers_github": ["read"]}},
+    "engineer": {
+      "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing"],
+      "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
+    },
+    "ui": {"skills": ["frontend-design"], "mcp": {"pioneers_playwright": ["test"]}},
     "frontend": {
       "tools": ["architecture_check", "frontend_html_check"],
-      "skills": ["architecture-design", "frontend-development"]
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "frontend-design", "webapp-testing"],
+      "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
     "backend": {
       "tools": ["architecture_check", "backend_api_check"],
-      "skills": ["architecture-design", "backend-development"]
+      "skills": ["architecture-design", "engineering-design", "code-review", "backend-development"],
+      "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"]}
     },
-    "qa": {"tools": ["architecture_check", "frontend_html_check", "backend_api_check"], "skills": []}
+    "ios": {
+      "skills": ["engineering-design", "code-review"],
+      "mcp": {"pioneers_git": ["read", "write"]}
+    },
+    "android": {
+      "skills": ["engineering-design", "code-review"],
+      "mcp": {"pioneers_git": ["read", "write"]}
+    },
+    "qa": {
+      "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
+      "skills": ["code-review", "webapp-testing"],
+      "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
+    }
   }
 }

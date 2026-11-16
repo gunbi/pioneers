@@ -44,7 +44,7 @@ def print_board(data):
     print(f"团队状态：{STATUS_LABELS[data['state']]} · {data['updated_at']}", flush=True)
     planning = data.get("planning")
     if planning:
-        print(f"  团队负责人 / 分工规划：{STATUS_LABELS[planning['state']]} · {planning['activity']}", flush=True)
+        print(f"  {data['roles']['ld']} / 分工规划：{STATUS_LABELS[planning['state']]} · {planning['activity']}", flush=True)
     tasks = data["tasks"]
     if planning and not tasks:
         return
@@ -93,7 +93,7 @@ class Progress:
         if self.data.get("planning") != current:
             self.data["planning"] = current
             self.save()
-            print(f"[团队负责人] 分工规划 · {STATUS_LABELS[state]} · {activity}", flush=True)
+            print(f"[{self.data['roles']['ld']}] 分工规划 · {STATUS_LABELS[state]} · {activity}", flush=True)
 
     def save(self):
         self.data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -113,7 +113,7 @@ class Progress:
     def finish(self, state):
         self.data["state"] = state
         for task in self.data["tasks"].values():
-            if task["state"] == "pending" and state in ("failed", "interrupted"):
+            if task["state"] == "pending" and state in ("failed", "interrupted", "blocked"):
                 task.update(state="blocked", activity="本次运行已停止")
         self.save()
         print_board(self.data)

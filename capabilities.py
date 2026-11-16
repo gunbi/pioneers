@@ -1,6 +1,7 @@
 from collections import Counter
 from html.parser import HTMLParser
 import json
+import os
 from pathlib import Path
 import re
 from shlex import quote
@@ -12,16 +13,57 @@ REGISTRY = json.loads((ROOT / "capabilities.json").read_text(encoding="utf-8"))
 HTTP_METHODS = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
 
 
-def assigned_capabilities(role):
+def assigned_capabilities(role, selected_tools=None):
     assignment = REGISTRY["roles"].get(role, {})
-    return {
+    capabilities = {
         group: {name: REGISTRY[group][name] for name in assignment.get(group, [])}
         for group in ("tools", "skills")
     }
+    capabilities["mcp"] = {}
+    if selected_tools is not None:
+        capabilities["tools"] = {
+            name: spec for name, spec in capabilities["tools"].items() if name in selected_tools
+        }
+    for name, profiles in assignment.get("mcp", {}).items():
+        server = REGISTRY["mcp_servers"][name]
+        tools = [
+            tool for profile in profiles for tool in server["profiles"][profile]
+            if selected_tools is None or f"{name}.{tool}" in selected_tools
+        ]
+        if not tools:
+            continue
+        capabilities["mcp"][name] = {
+            "description": server["description"],
+            "source": server["source"],
+            "enabled_tools": tools,
+        }
+    return capabilities
 
 
-def capability_prompt(role, selected_skills):
+def tool_ids(role):
     assigned = assigned_capabilities(role)
+    return list(assigned["tools"]) + [
+        f"{server}.{tool}"
+        for server, spec in assigned["mcp"].items() for tool in spec["enabled_tools"]
+    ]
+
+
+def mcp_config(role, workspace, selected_tools=None):
+    servers = {}
+    for name, assignment in assigned_capabilities(role, selected_tools)["mcp"].items():
+        settings = dict(REGISTRY["mcp_servers"][name]["settings"])
+        if "command" in settings:
+            settings["args"] = [
+                str(workspace) if arg == "{workspace}" else arg for arg in settings["args"]
+            ]
+            settings["cwd"] = str(workspace)
+        settings["enabled_tools"] = assignment["enabled_tools"]
+        servers[name] = settings
+    return servers
+
+
+def capability_prompt(role, selected_skills, selected_tools=None):
+    assigned = assigned_capabilities(role, selected_tools)
     parts = []
     if assigned["tools"]:
         parts.append(
@@ -31,6 +73,10 @@ def capability_prompt(role, selected_skills):
             + f"。调用方式：{quote(sys.executable)} {quote(str(ROOT / 'pioneers.py'))} "
             f"--run-tool TOOL --role {role} --workspace . --input FILE"
         )
+    if assigned["mcp"]:
+        parts.append("角色获配的 MCP 能力（使用执行端已连接的工具）：" + "；".join(
+            f"{name}（{', '.join(spec['enabled_tools'])}）" for name, spec in assigned["mcp"].items()
+        ))
     if assigned["skills"]:
         parts.append("可按需读取的 Skill：" + "；".join(
             f"{name}（{spec['description']}，正文：{ROOT / spec['path']}）"
@@ -122,6 +168,9 @@ CHECKS = {
 
 
 def run_tool(name, role, workspace, input_path):
+    active_role = os.environ.get("PIONEERS_TASK_ROLE")
+    if active_role and (role != active_role or name not in json.loads(os.environ.get("PIONEERS_BUILTIN_TOOLS", "[]"))):
+        raise ValueError(f"{role}: tool {name!r} is outside the current task's scope")
     if name not in assigned_capabilities(role)["tools"]:
         raise ValueError(f"{role}: tool {name!r} is not assigned to this role")
     if workspace is None or not workspace.is_dir() or input_path is None:

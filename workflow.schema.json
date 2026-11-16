@@ -8,10 +8,12 @@
         "type": "object",
         "properties": {
           "id": {"type": "string"},
-          "role": {"enum": ["ld", "pm", "ui", "backend", "frontend", "ios", "android", "qa"]},
+          "role": {"enum": ["ld", "pm", "engineer", "qa"]},
           "prompt": {"type": "string"},
           "depends_on": {"type": "array", "items": {"type": "string"}},
           "skills": {"type": "array", "items": {"type": "string"}},
+          "tools": {"type": "array", "items": {"type": "string"}},
+          "review": {"type": "boolean"},
           "complexity": {
             "type": "object",
             "properties": {
@@ -23,7 +25,7 @@
           },
           "acceptance": {"type": "array", "items": {"type": "string"}}
         },
-        "required": ["id", "role", "prompt", "depends_on", "skills", "complexity", "acceptance"],
+        "required": ["id", "role", "prompt", "depends_on", "skills", "tools", "review", "complexity", "acceptance"],
         "additionalProperties": false
       }
     }

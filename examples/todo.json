@@ -1,32 +1,38 @@
 {
-  "goal": "做一个待办应用，首版用创建待办的 API 验证产品、开发和测试交接。",
+  "goal": "交付创建待办的 Web 用户路径，支持空白校验和刷新后恢复。",
   "tasks": [
     {
       "id": "requirements",
       "role": "pm",
       "depends_on": [],
       "skills": [],
-      "prompt": "定义创建待办的最小需求和 API 契约。",
-      "complexity": {"level": "low", "reason": "首版只定义单个接口，范围已明确。"},
-      "acceptance": ["给出请求、成功响应和无效标题的错误示例。"]
+      "tools": [],
+      "review": false,
+      "prompt": "定义输入标题、添加、错误提示和刷新恢复的最小用户路径。",
+      "complexity": {"level": "low", "reason": "单一页面的核心需求已明确。"},
+      "acceptance": ["给出正常添加、空标题与刷新后恢复的可复现验收步骤。"]
     },
     {
       "id": "implementation",
-      "role": "backend",
-      "skills": ["architecture-design", "backend-development"],
+      "role": "engineer",
+      "skills": ["engineering-design", "frontend-development"],
+      "tools": ["frontend_html_check", "pioneers_git.git_diff", "pioneers_playwright.browser_navigate", "pioneers_playwright.browser_fill_form", "pioneers_playwright.browser_click", "pioneers_playwright.browser_snapshot"],
+      "review": false,
       "depends_on": ["requirements"],
-      "prompt": "在目标项目中按已确认的契约实现创建待办接口和相关测试。",
-      "complexity": {"level": "medium", "reason": "需要把接口接入项目结构，并验证成功和失败两条路径。"},
-      "acceptance": ["提供改动文件和实际测试结果，并覆盖正常创建与无效标题。"]
+      "prompt": "端到端实现待办用户路径，包含表单、状态存储和自测。交付可运行版本、变更位置、验证命令和实际结果。",
+      "complexity": {"level": "medium", "reason": "需要整合用户交互、持久化和实际验证。"},
+      "acceptance": ["交付正常添加、空标题拦截和刷新恢复的自测证据。"]
     },
     {
       "id": "verification",
       "role": "qa",
-      "skills": [],
+      "skills": ["code-review"],
+      "tools": ["pioneers_git.git_diff", "pioneers_playwright.browser_navigate", "pioneers_playwright.browser_fill_form", "pioneers_playwright.browser_click", "pioneers_playwright.browser_snapshot"],
+      "review": true,
       "depends_on": ["requirements", "implementation"],
-      "prompt": "独立核对契约、代码变更和测试证据。环境允许时执行检查。",
-      "complexity": {"level": "medium", "reason": "需要比对多个交付物，并确认错误场景的行为。"},
-      "acceptance": ["逐项报告通过、失败或未验证，并给出对应证据。"]
+      "prompt": "核对变更并独立复现用户路径，记录验收证据和环境限制。",
+      "complexity": {"level": "medium", "reason": "需要验证实际页面及数据恢复。"},
+      "acceptance": ["有效标题添加后显示于列表。", "空白标题有错误提示且不会新增记录。", "刷新后已添加的记录仍可见。"]
     }
   ]
 }
