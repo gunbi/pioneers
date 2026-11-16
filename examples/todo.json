@@ -4,6 +4,8 @@
     {
       "id": "requirements",
       "role": "pm",
+      "depends_on": [],
+      "skills": [],
       "prompt": "定义创建待办的最小需求和 API 契约。",
       "complexity": {"level": "low", "reason": "首版只定义单个接口，范围已明确。"},
       "acceptance": ["给出请求、成功响应和无效标题的错误示例。"]
@@ -11,6 +13,7 @@
     {
       "id": "implementation",
       "role": "backend",
+      "skills": ["architecture-design", "backend-development"],
       "depends_on": ["requirements"],
       "prompt": "在目标项目中按已确认的契约实现创建待办接口和相关测试。",
       "complexity": {"level": "medium", "reason": "需要把接口接入项目结构，并验证成功和失败两条路径。"},
@@ -19,6 +22,7 @@
     {
       "id": "verification",
       "role": "qa",
+      "skills": [],
       "depends_on": ["requirements", "implementation"],
       "prompt": "独立核对契约、代码变更和测试证据。环境允许时执行检查。",
       "complexity": {"level": "medium", "reason": "需要比对多个交付物，并确认错误场景的行为。"},

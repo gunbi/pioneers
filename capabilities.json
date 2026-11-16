@@ -1,0 +1,42 @@
+{
+  "tools": {
+    "architecture_check": {
+      "description": "检查 JSON 架构交付物是否定义了模块职责及接口契约。",
+      "input": "架构 JSON，例如 architecture.json"
+    },
+    "frontend_html_check": {
+      "description": "检查 HTML 的标题、主内容、重复 ID 和失去目标的表单标签。",
+      "input": "HTML 文件，例如 index.html"
+    },
+    "backend_api_check": {
+      "description": "检查 OpenAPI JSON 中显式定义的接口路径和响应状态。",
+      "input": "OpenAPI JSON，例如 openapi.json"
+    }
+  },
+  "skills": {
+    "architecture-design": {
+      "description": "在变更跨模块或需要冻结接口时，定义模块边界、接口契约和交接方式。",
+      "path": "skills/architecture-design/SKILL.md"
+    },
+    "frontend-development": {
+      "description": "实现页面和交互，覆盖用户路径、异常状态及浏览器验证。",
+      "path": "skills/frontend-development/SKILL.md"
+    },
+    "backend-development": {
+      "description": "实现 API 和业务逻辑，验证接口契约及服务端行为。",
+      "path": "skills/backend-development/SKILL.md"
+    }
+  },
+  "roles": {
+    "ld": {"tools": ["architecture_check"], "skills": ["architecture-design"]},
+    "frontend": {
+      "tools": ["architecture_check", "frontend_html_check"],
+      "skills": ["architecture-design", "frontend-development"]
+    },
+    "backend": {
+      "tools": ["architecture_check", "backend_api_check"],
+      "skills": ["architecture-design", "backend-development"]
+    },
+    "qa": {"tools": ["architecture_check", "frontend_html_check", "backend_api_check"], "skills": []}
+  }
+}

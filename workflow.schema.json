@@ -1,0 +1,33 @@
+{
+  "type": "object",
+  "properties": {
+    "goal": {"type": "string"},
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "role": {"enum": ["ld", "pm", "ui", "backend", "frontend", "ios", "android", "qa"]},
+          "prompt": {"type": "string"},
+          "depends_on": {"type": "array", "items": {"type": "string"}},
+          "skills": {"type": "array", "items": {"type": "string"}},
+          "complexity": {
+            "type": "object",
+            "properties": {
+              "level": {"enum": ["low", "medium", "high"]},
+              "reason": {"type": "string"}
+            },
+            "required": ["level", "reason"],
+            "additionalProperties": false
+          },
+          "acceptance": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["id", "role", "prompt", "depends_on", "skills", "complexity", "acceptance"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["goal", "tasks"],
+  "additionalProperties": false
+}
