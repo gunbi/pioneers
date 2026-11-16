@@ -1,25 +1,28 @@
 {
-  "goal": "做一个可跨 Web 和 iOS 使用的待办应用，首版只支持创建待办。",
+  "goal": "做一个待办应用，首版用创建待办的 API 验证产品、开发和测试交接。",
   "tasks": [
     {
-      "id": "api-draft",
-      "role": "产品 Lead",
-      "route": "fast",
-      "prompt": "起草创建待办的 API 契约，给出请求、成功响应和校验错误示例。"
+      "id": "requirements",
+      "role": "pm",
+      "prompt": "定义创建待办的最小需求和 API 契约。",
+      "complexity": {"level": "low", "reason": "首版只定义单个接口，范围已明确。"},
+      "acceptance": ["给出请求、成功响应和无效标题的错误示例。"]
     },
     {
-      "id": "api-review",
-      "role": "后端评审",
-      "route": "deep",
-      "depends_on": ["api-draft"],
-      "prompt": "审查契约的边界和兼容性，给出适用于 Web 和 iOS 的最终契约及验收条件。"
+      "id": "implementation",
+      "role": "backend",
+      "depends_on": ["requirements"],
+      "prompt": "在目标项目中按已确认的契约实现创建待办接口和相关测试。",
+      "complexity": {"level": "medium", "reason": "需要把接口接入项目结构，并验证成功和失败两条路径。"},
+      "acceptance": ["提供改动文件和实际测试结果，并覆盖正常创建与无效标题。"]
     },
     {
-      "id": "api-implementation",
-      "role": "后端开发",
-      "route": "code",
-      "depends_on": ["api-review"],
-      "prompt": "在给定的练习仓库里按最终契约实现创建待办接口并跑相关测试。交回改动文件、测试命令和结果。"
+      "id": "verification",
+      "role": "qa",
+      "depends_on": ["requirements", "implementation"],
+      "prompt": "独立核对契约、代码变更和测试证据。环境允许时执行检查。",
+      "complexity": {"level": "medium", "reason": "需要比对多个交付物，并确认错误场景的行为。"},
+      "acceptance": ["逐项报告通过、失败或未验证，并给出对应证据。"]
     }
   ]
 }

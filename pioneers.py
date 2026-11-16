@@ -1,4 +1,5 @@
 import argparse
+from dataclasses import asdict, dataclass
 from graphlib import CycleError, TopologicalSorter
 import json
 import os
@@ -7,14 +8,74 @@ import re
 import subprocess
 import sys
 import tempfile
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 
-MODEL_ROUTES = {
-    "fast": ("https://api.deepseek.com/chat/completions", "DEEPSEEK"),
-    "deep": ("https://api.openai.com/v1/chat/completions", "OPENAI"),
+@dataclass(frozen=True)
+class Role:
+    name: str
+    responsibility: str
+    sandbox: str = "read-only"
+
+
+ROLES = {
+    "ld": Role("团队负责人", "明确交付目标、任务依赖和各角色的交接要求。"),
+    "pm": Role("产品经理", "定义用户场景、首版范围和可复现的验收条件。"),
+    "ui": Role("UI 设计师", "说明页面布局、交互状态和设计交付要求。"),
+    "backend": Role("后端开发", "实现接口和业务逻辑，验证接口行为。", "workspace-write"),
+    "frontend": Role("前端开发", "实现 Web 界面和交互，验证核心用户流程。", "workspace-write"),
+    "ios": Role("iOS 开发", "实现 iOS 用户流程，记录构建和设备验证结果。", "workspace-write"),
+    "android": Role("安卓开发", "实现 Android 用户流程，记录构建和设备验证结果。", "workspace-write"),
+    "qa": Role("测试", "按照验收条件检查变更，记录测试证据、失败项和未验证项。"),
 }
+
+
+def team_path(workspace):
+    if workspace is None or not (workspace / ".git").exists():
+        raise ValueError("--workspace must point to a Git repository or worktree root")
+    path = workspace / ".pioneers" / "team.json"
+    if path.parent.is_symlink() or path.is_symlink():
+        raise ValueError("The team directory and manifest must be local to the workspace")
+    return path
+
+
+def read_team(path):
+    try:
+        team = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    if (
+        not isinstance(team, dict)
+        or team.get("schema_version") != 1
+        or not isinstance(team.get("roles"), dict)
+        or "model" not in team
+        or (team["model"] is not None and not isinstance(team["model"], str))
+    ):
+        raise ValueError(f"Invalid team manifest: {path}")
+    return team
+
+
+def create_team(path, model):
+    team = {
+        "schema_version": 1,
+        "model": model,
+        "roles": {role_id: asdict(role) for role_id, role in ROLES.items()},
+    }
+    path.parent.mkdir(exist_ok=True)
+    # Publish the complete manifest atomically and preserve an existing team.
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent) as draft:
+        json.dump(team, draft, ensure_ascii=False, indent=2)
+        draft.write("\n")
+        draft.flush()
+        try:
+            os.link(draft.name, path)
+        except FileExistsError:
+            existing = read_team(path)
+            if existing is None:
+                raise RuntimeError("The team manifest disappeared during setup. Run creation again.")
+            if model is not None and existing["model"] != model:
+                raise ValueError("Team already exists with a different model; use --model when running a workflow")
+            return {"status": "existing", "manifest": str(path), "team": existing}
+    return {"status": "created", "manifest": str(path), "team": team}
 
 
 def load_workflow(path):
@@ -38,11 +99,25 @@ def load_workflow(path):
             raise ValueError(f"Invalid task id: {task_id!r}")
         if task_id in tasks:
             raise ValueError(f"Duplicate task id: {task_id}")
-        for field in ("role", "prompt"):
-            if not isinstance(task.get(field), str) or not task[field].strip():
-                raise ValueError(f"{task_id}: {field} must be a non-empty string")
-        if task.get("route") not in ("fast", "deep", "code"):
-            raise ValueError(f"{task_id}: route must be fast, deep or code")
+        role_id = task.get("role")
+        if not isinstance(role_id, str) or role_id not in ROLES:
+            raise ValueError(f"{task_id}: unknown role {role_id!r}; use --list-roles")
+        if not isinstance(task.get("prompt"), str) or not task["prompt"].strip():
+            raise ValueError(f"{task_id}: prompt must be a non-empty string")
+        if "complexity" in task:
+            complexity = task["complexity"]
+            if (
+                not isinstance(complexity, dict)
+                or complexity.get("level") not in ("low", "medium", "high")
+                or not isinstance(complexity.get("reason"), str)
+                or not complexity["reason"].strip()
+            ):
+                raise ValueError(f"{task_id}: complexity needs a low, medium or high level and a reason")
+        acceptance = task.get("acceptance", [])
+        if not isinstance(acceptance, list) or not all(
+            isinstance(item, str) and item.strip() for item in acceptance
+        ):
+            raise ValueError(f"{task_id}: acceptance must be an array of non-empty strings")
         dependencies = task.get("depends_on", [])
         if not isinstance(dependencies, list) or not all(isinstance(dep, str) for dep in dependencies):
             raise ValueError(f"{task_id}: depends_on must be an array of task ids")
@@ -65,58 +140,29 @@ def load_workflow(path):
 
 
 def task_prompt(goal, task, results):
-    parts = [f"项目目标：{goal}", f"当前任务：{task['prompt']}"]
+    role = ROLES[task["role"]]
+    parts = [
+        f"你是项目团队的{role.name}。你的职责是：{role.responsibility}",
+        f"项目目标：{goal}",
+        f"当前任务：{task['prompt']}",
+    ]
+    if "complexity" in task:
+        complexity = task["complexity"]
+        parts.append(f"任务复杂度：{complexity['level']}。依据：{complexity['reason']}")
+    if task.get("acceptance"):
+        criteria = "\n".join(f"- {item}" for item in task["acceptance"])
+        parts.append(f"验收条件：\n{criteria}")
     for dependency in task.get("depends_on", []):
         parts.append(f"前置任务 {dependency} 的产物：\n{results[dependency]}")
     return "\n\n".join(parts)
 
 
-def call_model(route, role, prompt):
-    endpoint, prefix = MODEL_ROUTES[route]
-    key = os.environ.get(f"{prefix}_API_KEY")
-    model = os.environ.get(f"{prefix}_MODEL")
-    if not key or not model:
-        raise RuntimeError(f"Set {prefix}_API_KEY and {prefix}_MODEL for the {route} route")
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": f"你是项目团队的{role}。完成当前任务并交付结果。"},
-            {"role": "user", "content": prompt},
-        ],
-    }
-    request = Request(
-        endpoint,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urlopen(request, timeout=120) as response:
-            data = json.load(response)
-    except HTTPError as error:
-        raise RuntimeError(f"{prefix} returned HTTP {error.code}") from error
-    except (URLError, TimeoutError) as error:
-        raise RuntimeError(f"{prefix} request failed: {error}") from error
-
-    try:
-        choice = data["choices"][0]
-        if choice["finish_reason"] != "stop":
-            raise RuntimeError(f"{prefix} did not finish normally: {choice['finish_reason']}")
-        return choice["message"]["content"]
-    except (KeyError, IndexError, TypeError) as error:
-        raise RuntimeError(f"{prefix} returned an unexpected response") from error
-
-
-def run_codex(workspace, role, prompt):
-    if workspace is None or not workspace.is_dir():
-        raise RuntimeError("The code route needs --workspace pointing to a Git working directory")
-
+def run_codex(workspace, model, role, prompt):
     try:
         result = subprocess.run(
-            ["codex", "exec", "--sandbox", "workspace-write", "-"],
+            ["codex", "exec", "--model", model, "--sandbox", role.sandbox, "-"],
             cwd=workspace,
-            input=f"你是项目团队的{role}。\n\n{prompt}",
+            input=prompt,
             capture_output=True,
             encoding="utf-8",
             timeout=600,
@@ -133,47 +179,68 @@ def run_codex(workspace, role, prompt):
     return result.stdout
 
 
-def run_workflow(goal, tasks, order, run_dir, live, workspace):
+def run_workflow(goal, tasks, order, run_dir, live, workspace, model):
     results = {}
     for task_id in order:
         task = tasks[task_id]
-        route = task["route"]
-        role = task["role"]
+        role = ROLES[task["role"]]
         prompt = task_prompt(goal, task, results)
-        print(f"[{route}] {task_id} ({role})", flush=True)
-        if not live:
-            result = f"离线演示，未执行任务。\n\n{prompt}"
-        elif route == "code":
-            result = run_codex(workspace, role, prompt)
-        else:
-            result = call_model(route, role, prompt)
-        if not isinstance(result, str) or not result.strip():
+        print(f"[{task['role']}] {task_id} ({role.name})", flush=True)
+        try:
+            result = run_codex(workspace, model, role, prompt) if live else f"离线演示，未执行任务。\n\n{prompt}"
+        except RuntimeError as error:
+            raise RuntimeError(f"{task_id}: {error}") from error
+        result = result.strip()
+        if not result:
             raise RuntimeError(f"{task_id} returned no text")
-        (run_dir / f"{task_id}.md").write_text(result.strip() + "\n", encoding="utf-8")
-        results[task_id] = result.strip()
+        (run_dir / f"{task_id}.md").write_text(result + "\n", encoding="utf-8")
+        results[task_id] = result
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Route a project workflow to different agent runners.")
-    parser.add_argument("workflow", type=Path)
-    parser.add_argument("--live", action="store_true", help="Call external APIs and execute Codex tasks.")
-    parser.add_argument("--workspace", type=Path, help="Git working directory for live Codex tasks.")
+    parser = argparse.ArgumentParser(description="Run a team workflow with Codex.")
+    parser.add_argument("workflow", type=Path, nargs="?", help="Workflow JSON file.")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--list-roles", action="store_true", help="List the available team roles.")
+    action.add_argument("--create-team", action="store_true", help="Initialize a team and print its JSON manifest.")
+    parser.add_argument("--live", action="store_true", help="Execute tasks with Codex CLI.")
+    parser.add_argument("--model", help="Default model for a new team, or model for a workflow run.")
+    parser.add_argument("--workspace", type=Path, help="Git working directory for team setup or live tasks.")
     parser.add_argument("--output-dir", type=Path, default=Path(".pioneers/runs"))
     args = parser.parse_args()
 
+    if args.list_roles:
+        for role_id, role in ROLES.items():
+            print(f"{role_id:<9} {role.name} ({role.sandbox})  {role.responsibility}")
+        return 0
+    if args.create_team and (args.workflow is not None or args.live):
+        parser.error("--create-team is a separate action from running a workflow")
+    if not args.create_team and args.workflow is None:
+        parser.error("provide a workflow JSON file or use --create-team or --list-roles")
+
     try:
-        goal, tasks, order = load_workflow(args.workflow)
         workspace = args.workspace.resolve() if args.workspace else None
-        if args.live and any(task["route"] == "code" for task in tasks.values()):
-            if workspace is None or not workspace.is_dir():
-                raise ValueError("Supply a Git working directory with --workspace before starting live execution")
-            if not (workspace / ".git").exists():
-                raise ValueError("--workspace must point to a Git repository or worktree root")
+        model = args.model.strip() if args.model is not None else None
+        if args.model is not None and not model:
+            raise ValueError("--model must be a non-empty model ID")
+        if args.create_team:
+            result = create_team(team_path(workspace), model)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+
+        goal, tasks, order = load_workflow(args.workflow)
+        if args.live:
+            path = team_path(workspace)
+            if model is None:
+                team = read_team(path)
+                model = team["model"] if team is not None else None
+            if not model:
+                raise ValueError("Specify --model or use a team configured with a default model")
         args.output_dir.mkdir(parents=True, exist_ok=True)
         run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=args.output_dir))
         print(f"Mode: {'live' if args.live else 'offline demo'}", flush=True)
         print(f"Run output: {run_dir.resolve()}", flush=True)
-        run_workflow(goal, tasks, order, run_dir, args.live, workspace)
+        run_workflow(goal, tasks, order, run_dir, args.live, workspace, model)
     except (OSError, ValueError, RuntimeError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
