@@ -1,0 +1,25 @@
+{
+  "goal": "做一个可跨 Web 和 iOS 使用的待办应用，首版只支持创建待办。",
+  "tasks": [
+    {
+      "id": "api-draft",
+      "role": "产品 Lead",
+      "route": "fast",
+      "prompt": "起草创建待办的 API 契约，给出请求、成功响应和校验错误示例。"
+    },
+    {
+      "id": "api-review",
+      "role": "后端评审",
+      "route": "deep",
+      "depends_on": ["api-draft"],
+      "prompt": "审查契约的边界和兼容性，给出适用于 Web 和 iOS 的最终契约及验收条件。"
+    },
+    {
+      "id": "api-implementation",
+      "role": "后端开发",
+      "route": "code",
+      "depends_on": ["api-review"],
+      "prompt": "在给定的练习仓库里按最终契约实现创建待办接口并跑相关测试。交回改动文件、测试命令和结果。"
+    }
+  ]
+}

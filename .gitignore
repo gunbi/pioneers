@@ -1,0 +1,6 @@
+.env
+.env.*
+.pioneers/
+__pycache__/
+*.py[cod]
+.DS_Store
