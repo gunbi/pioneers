@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -10,6 +11,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = [sys.executable, "-B", str(ROOT / "pioneers.py")]
+OFFLINE_ENV = {**os.environ, "PIONEERS_SKILLS_OFFLINE": "1"}
 
 
 class ApprovalTest(unittest.TestCase):
@@ -21,7 +23,7 @@ class ApprovalTest(unittest.TestCase):
         self.artifact = self.root / "artifact.txt"
 
     def cli(self, *args, code=0):
-        process = subprocess.run([*CLI, *map(str, args)], capture_output=True, text=True, timeout=10)
+        process = subprocess.run([*CLI, *map(str, args)], capture_output=True, text=True, timeout=10, env=OFFLINE_ENV)
         self.assertEqual(process.returncode, code, process.stdout + process.stderr)
         return json.loads(process.stdout) if code == 0 else process.stderr
 
@@ -59,10 +61,12 @@ class ApprovalTest(unittest.TestCase):
         self.write_workflow([self.task("plan")])
         process = subprocess.Popen([*CLI, "--host-start", str(self.workflow), "--workspace", str(self.root),
                                     "--output-dir", str(self.root), "--serve-dashboard"],
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV)
         try:
             result = json.loads(process.stdout.readline())
             self.run_dir = Path(result["run_dir"])
+            self.assertTrue((self.run_dir / "skill-sources.json").is_file())
+            self.assertGreater(sum(result["skill_sources"].values()), 0)
             url = result["dashboard_url"]
             with urlopen(url, timeout=3) as page:
                 self.assertIn("团队协作流程", page.read().decode())
@@ -183,7 +187,7 @@ class ApprovalTest(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         process = subprocess.Popen([*CLI, str(self.workflow), "--live", "--runner", str(runner),
                                     "--workspace", str(self.root), "--output-dir", str(self.root)],
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV)
         try:
             self.assertEqual(process.stdout.readline().strip(), "Mode: live")
             self.run_dir = Path(process.stdout.readline().strip().split("Run output: ")[1])

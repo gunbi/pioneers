@@ -90,8 +90,14 @@ python3 pioneers.py --mcp-config engineer --workspace /path/to/project
 
 - `frontend-design` 由交付工程师在设计 Web 界面时使用。
 - `webapp-testing` 由交付工程师和 QA 按需使用，运行 Python 测试脚本时需要 Python Playwright 及对应浏览器。
+- `ios-development` 和 `android-development` 由交付工程师或 QA 按任务加载，旧版 iOS 与 Android 兼容角色也可以加载对应能力。
+- `requirements-design` 供 PM 定义需求和验收条件，`acceptance-testing` 供 QA 独立验证。
 
 两个 Skill 来自 [上游仓库的固定版本](https://github.com/anthropics/skills/tree/1780c5e5a552fd4d1c9d6a7b0cab26b0c2bef064/skills)，在各自的目录保留了许可证、可用脚本和示例。
+
+两份 Anthropic 文件是仓库里的基础版本。其他 Skill 的参考链接在各自的 `SKILL.md`，所有可刷新的 GitHub 来源路径在 [capabilities.json](capabilities.json) 的 `sources` 字段。每次新建宿主运行或启动真实 CLI 运行时，从上游 `main` 刷新对应 Markdown 并记录在运行目录的 `skill-sources.json`。快照包含来源、抓取时间、内容哈希和更新状态，同次运行的每个任务使用同一份快照。
+
+角色加载本地 Skill 后会看到选中能力的上游摘录。本地约定、脚本和权限优先。刷新只读取 Markdown。网络受限时使用最近的缓存，首次离线继续使用本地正文。可设置 `PIONEERS_SKILLS_OFFLINE=1` 直接跳过网络刷新。离线演练不联网。
 
 ## 给目标，让 LD 自主分工
 

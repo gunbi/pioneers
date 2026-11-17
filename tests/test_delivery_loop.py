@@ -1,4 +1,5 @@
 import json
+import os
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -36,7 +37,8 @@ class DeliveryLoopTest(unittest.TestCase):
 
     def invoke(self, *args, expected=0):
         result = subprocess.run([sys.executable, "-B", "pioneers.py", *map(str, args)],
-                                cwd=ROOT, capture_output=True, text=True, timeout=10)
+                                cwd=ROOT, capture_output=True, text=True, timeout=10,
+                                env={**os.environ, "PIONEERS_SKILLS_OFFLINE": "1"})
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return result.stdout
 

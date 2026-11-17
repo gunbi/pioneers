@@ -14,6 +14,39 @@
     }
   },
   "skills": {
+    "requirements-design": {
+      "description": "定义功能范围、用户路径和可复现的验收条件。",
+      "path": "skills/requirements-design/SKILL.md",
+      "sources": [
+        ["product-on-purpose/pm-skills", "skills/deliver-prd/SKILL.md"],
+        ["yuusakuri/agent-skills", "skills/deliver-acceptance-criteria/SKILL.md"]
+      ]
+    },
+    "acceptance-testing": {
+      "description": "按风险独立复现验收条件，并交付逐项证据。",
+      "path": "skills/acceptance-testing/SKILL.md",
+      "sources": [
+        ["bmad-code-org/bmad-method-test-architecture-enterprise", "README.md"],
+        ["github/awesome-copilot", "skills/playwright-generate-test/SKILL.md"]
+      ]
+    },
+    "ios-development": {
+      "description": "沿用 iOS 项目现有技术栈，验证状态、构建和设备交互。",
+      "path": "skills/ios-development/SKILL.md",
+      "sources": [
+        ["AvdLee/SwiftUI-Agent-Skill", "skills/swiftui-expert-skill/SKILL.md"],
+        ["openai/plugins", "plugins/build-ios-apps/skills/ios-debugger-agent/SKILL.md"]
+      ]
+    },
+    "android-development": {
+      "description": "沿用 Android 项目现有技术栈，验证适配、Gradle 构建和设备交互。",
+      "path": "skills/android-development/SKILL.md",
+      "sources": [
+        ["android/skills", "jetpack-compose/adaptive/SKILL.md"],
+        ["android/skills", "testing/testing-setup/SKILL.md"],
+        ["android/skills", "devtools/android-cli/SKILL.md"]
+      ]
+    },
     "architecture-design": {
       "description": "识别跨模块变更的复杂度，比较方案，并记录接口、取舍和演进条件。",
       "path": "skills/architecture-design/SKILL.md"
@@ -36,11 +69,13 @@
     },
     "frontend-design": {
       "description": "设计并实现有清晰视觉方向的前端界面。",
-      "path": "skills/frontend-design/SKILL.md"
+      "path": "skills/frontend-design/SKILL.md",
+      "sources": [["anthropics/skills", "skills/frontend-design/SKILL.md"]]
     },
     "webapp-testing": {
       "description": "用 Python Playwright 验证 Web 应用，收集截图和浏览器日志。",
-      "path": "skills/webapp-testing/SKILL.md"
+      "path": "skills/webapp-testing/SKILL.md",
+      "sources": [["anthropics/skills", "skills/webapp-testing/SKILL.md"]]
     }
   },
   "mcp_servers": {
@@ -91,10 +126,10 @@
       "skills": ["architecture-design", "code-review"],
       "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"]}
     },
-    "pm": {"mcp": {"pioneers_github": ["read"]}},
+    "pm": {"skills": ["requirements-design"], "mcp": {"pioneers_github": ["read"]}},
     "engineer": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "ios-development", "android-development"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
     "ui": {"skills": ["frontend-design"], "mcp": {"pioneers_playwright": ["test"]}},
@@ -109,16 +144,16 @@
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"]}
     },
     "ios": {
-      "skills": ["engineering-design", "code-review"],
+      "skills": ["engineering-design", "code-review", "ios-development"],
       "mcp": {"pioneers_git": ["read", "write"]}
     },
     "android": {
-      "skills": ["engineering-design", "code-review"],
+      "skills": ["engineering-design", "code-review", "android-development"],
       "mcp": {"pioneers_git": ["read", "write"]}
     },
     "qa": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["code-review", "webapp-testing"],
+      "skills": ["code-review", "webapp-testing", "acceptance-testing", "ios-development", "android-development"],
       "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     }
   }

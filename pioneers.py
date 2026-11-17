@@ -20,6 +20,7 @@ from capabilities import REGISTRY, ROOT, assigned_capabilities, capability_promp
 from approval import EFFECTS, IMPACTS, audit, judgment, proposal, supersede
 from progress import Progress, artifact_name, codex_activity, print_board, show_progress
 from dashboard import live_dashboard, serve_dashboard
+from skill_sources import SNAPSHOT, read_json, refresh_run
 
 
 @dataclass(frozen=True)
@@ -198,7 +199,7 @@ def validate_workflow(workflow, generated=False):
     return goal, tasks, order
 
 
-def task_prompt(goal, task, results):
+def task_prompt(goal, task, results, *, sources=None):
     role = ROLES[task["role"]]
     parts = [
         f"你是项目团队的{role.name}。你的职责是：{role.responsibility}",
@@ -211,7 +212,7 @@ def task_prompt(goal, task, results):
     if task.get("acceptance"):
         criteria = "\n".join(f"- {item}" for item in task["acceptance"])
         parts.append(f"验收条件：\n{criteria}")
-    parts.extend(capability_prompt(task["role"], task.get("skills", []), task.get("tools")))
+    parts.extend(capability_prompt(task["role"], task.get("skills", []), task.get("tools"), sources=sources))
     for dependency in task.get("depends_on", []):
         parts.append(f"前置任务 {dependency} 的产物：\n{results[dependency]}")
     if task.get("review"):
@@ -450,7 +451,8 @@ def assignment_prompt(goal, tasks, task_id, progress):
     task = tasks[task_id]
     results = {dep: artifact_path(progress, dep).read_text(encoding="utf-8")
                for dep in task.get("depends_on", [])}
-    prompt = task_prompt(goal, task, results)
+    sources = read_json(progress.path.with_name(SNAPSHOT)) if task.get("skills") else None
+    prompt = task_prompt(goal, task, results, sources=sources)
     for dep in results:
         key = progress.data["tasks"][dep].get("decision")
         decision = progress.data.get("decisions", {}).get(key, {})
@@ -745,9 +747,10 @@ def start_host(workflow_path, output_dir, workspace, require_release):
     run_dir, progress = create_run(output_dir, goal, tasks, order, "host", require_release)
     (run_dir / "workflow.json").write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     progress.data["workspace"] = str(workspace)
+    progress.data["skill_sources"] = refresh_run(run_dir, ROOT, REGISTRY["skills"])
     reconcile(progress, tasks)
     progress.event("ld", None, "completed", "工作流已登记，可以领取依赖就绪的任务")
-    return {"run_dir": str(run_dir), "tasks": progress.data["tasks"]}
+    return {"run_dir": str(run_dir), "tasks": progress.data["tasks"], "skill_sources": progress.data["skill_sources"]}
 
 
 def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=None):
@@ -1308,6 +1311,9 @@ def main():
         print(f"Mode: {'live' if args.live else 'offline demo'}", flush=True)
         print(f"Run output: {run_dir.resolve()}", flush=True)
         with live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser) if args.live else nullcontext():
+            if args.live:
+                progress.data["skill_sources"] = refresh_run(run_dir, ROOT, REGISTRY["skills"])
+                progress.save()
             if args.goal is not None:
                 goal, tasks, order = plan_workflow(goal, executor, run_dir, progress)
                 if args.plan_only:
