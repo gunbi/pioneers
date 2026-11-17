@@ -16,8 +16,8 @@ MAX_SOURCE_BYTES = 128 * 1024
 PROMPT_EXCERPT = 6000
 
 
-def source_url(repo, path):
-    return f"https://github.com/{repo}/blob/main/{path}"
+def source_url(repo, path, ref="main"):
+    return f"https://github.com/{repo}/blob/{ref}/{path}"
 
 
 def read_json(path):
@@ -35,9 +35,9 @@ def write_json(path, data):
         draft.replace(path)
 
 
-def refresh_source(repo, path, cache_dir, offline):
-    url = source_url(repo, path)
-    raw_url = f"https://raw.githubusercontent.com/{repo}/main/{path}"
+def refresh_source(repo, path, cache_dir, offline, ref="main"):
+    url = source_url(repo, path, ref)
+    raw_url = f"https://raw.githubusercontent.com/{repo}/{ref}/{path}"
     cache = cache_dir / f"{sha256(url.encode()).hexdigest()}.json"
     saved = read_json(cache)
     if not isinstance(saved, dict) or saved.get("url") != url or not isinstance(saved.get("text"), str):
@@ -75,7 +75,7 @@ def refresh_run(run_dir, root, registry):
     sources = list(dict.fromkeys(tuple(source) for spec in registry.values() for source in spec.get("sources", [])))
     cache_dir = root / ".pioneers" / "skill-cache"
     offline = os.environ.get("PIONEERS_SKILLS_OFFLINE") == "1"
-    work = [(repo, path, cache_dir, offline) for repo, path in sources]
+    work = [(repo, path, cache_dir, offline, *ref) for repo, path, *ref in sources]
     with ThreadPoolExecutor(max_workers=8) as pool:
         records = list(pool.map(lambda args: refresh_source(*args), work))
     path = run_dir / SNAPSHOT
@@ -94,8 +94,8 @@ def refresh_run(run_dir, root, registry):
 
 def skill_references(spec, snapshot):
     parts = []
-    for repo, path in spec.get("sources", []):
-        url = source_url(repo, path)
+    for source in spec.get("sources", []):
+        url = source_url(*source)
         record = snapshot.get(url, {})
         content = record.get("text")
         if content:

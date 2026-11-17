@@ -7,11 +7,36 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from capabilities import capability_prompt
+from capabilities import REGISTRY, capability_prompt
 from skill_sources import SNAPSHOT, read_json, refresh_run, refresh_source, source_url
 
 
 class SkillSourcesTest(unittest.TestCase):
+    def test_ecs_skill_refreshes_master_and_loads_reference(self):
+        skill = "aliyun-ecs-container-deployment"
+        spec = REGISTRY["skills"][skill]
+        repo, path, ref = spec["sources"][0]
+        self.assertEqual(ref, "master")
+        response = io.BytesIO(b"---\nname: ecs\n---\nECS upstream reference")
+        response.headers = {}
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            run = root / "run"
+            run.mkdir()
+            with patch.dict("os.environ", {"PIONEERS_SKILLS_OFFLINE": "0"}), patch(
+                "skill_sources.urlopen", return_value=response
+            ) as download:
+                self.assertEqual(refresh_run(run, root, {skill: spec})["updated"], 1)
+            request = download.call_args.args[0]
+            self.assertEqual(request.full_url, f"https://raw.githubusercontent.com/{repo}/master/{path}")
+            snapshot = read_json(run / SNAPSHOT)
+            url = f"https://github.com/{repo}/blob/master/{path}"
+            self.assertEqual(snapshot[url]["status"], "updated")
+            for role in ("ld", "engineer", "qa"):
+                prompt = "\n".join(capability_prompt(role, [skill], [], sources=snapshot))
+                self.assertIn("本任务的 Skill " + skill, prompt)
+                self.assertIn("ECS upstream reference", prompt)
+
     def test_refresh_revalidates_then_falls_back(self):
         repo, path = "android/skills", "testing/testing-setup/SKILL.md"
         with TemporaryDirectory() as temp:

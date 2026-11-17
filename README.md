@@ -101,7 +101,7 @@ python3 pioneers.py --mcp-config engineer --workspace /path/to/project
 
 两份 Anthropic 文件是仓库里的基础版本。新增或修改开源 Skill 引用时，在本地 `SKILL.md` 注明来源，并将 GitHub 仓库和 Markdown 路径登记到 [capabilities.json](capabilities.json) 的 `skills.<id>.sources`。现有刷新逻辑会自动包含新增条目。
 
-新建宿主运行、启动真实 CLI、用 `--continue RUN_DIR` 续跑 CLI，或用 `--dashboard RUN_DIR` 重开宿主运行的看板时，都会按当前清单检查上游 `main`，把刷新结果写入运行目录的 `skill-sources.json`。新派发的任务使用此次刷新后的版本，已领取的任务继续使用派工时收到的内容。浏览器刷新页面只会更新看板状态。
+新建宿主运行、启动真实 CLI、用 `--continue RUN_DIR` 续跑 CLI，或用 `--dashboard RUN_DIR` 重开宿主运行的看板时，都会按当前清单检查上游，把刷新结果写入运行目录的 `skill-sources.json`。`sources` 条目格式为 `[仓库, Markdown 路径, 可选分支]`，默认分支为 `main`。新派发的任务使用此次刷新后的版本，已领取的任务继续使用派工时收到的内容。浏览器刷新页面只会更新看板状态。
 
 角色加载本地 Skill 后会看到选中能力的上游摘录。本地约定、脚本和权限优先。刷新只读取 Markdown。网络受限时使用最近的缓存，首次离线继续使用本地正文。可设置 `PIONEERS_SKILLS_OFFLINE=1` 直接跳过网络刷新。离线演练不联网。
 
@@ -154,7 +154,7 @@ python3 pioneers.py --intervene RUN_DIR --from architecture --reason "保留旧�
 python3 pioneers.py --resume RUN_DIR --reason "方案调整完成"
 ```
 
-修订结果保留旧产物，重新判断并重排该结果的下游。暂停后已领取的任务可以提交结果。指定 `--from` 会重排该任务及下游，完成介入后用「恢复派工」继续。省略 `--from` 时，把指令提交给 LD 重新规划。Pioneers 等进行中的任务回报后再处理请求，验证并应用新计划后自动继续派工。已开始或已获授权的任务不能通过重规划修改。原始计划保存在 `workflow.json`，更新版本保存在 `workflow.N.json`。如果 CLI 进程已经退出，提交指令后用 `--continue RUN_DIR` 继续同一次运行。
+修订结果保留旧产物，重新判断并重排该结果的下游。看板点击「暂停新任务」后，已领取的任务可以继续执行和回报。「调整任务计划」里可以交给 LD 更新计划，也可以指定从某项任务重新开始。指定任务重跑（CLI 的 `--from`）会让该任务及下游重新排队，保存后点「继续领取新任务」。交给 LD 更新计划时，Pioneers 等进行中的任务回报后处理请求，验证并应用新计划后自动继续。已开始或已获授权的任务不能通过重规划修改。原始计划保存在 `workflow.json`，更新版本保存在 `workflow.N.json`。如果 CLI 进程已经退出，提交指令后用 `--continue RUN_DIR` 继续同一次运行。
 
 宿主模式通过 `--host-ready RUN_DIR` 查看 `replan.ready`。就绪后用 `--replan RUN_DIR` 取得 LD 提示，按返回的 `revision` 用 `--replan RUN_DIR --revision N --artifact PLAN.json` 提交。已关闭的宿主会话需要重新开启协调端来处理请求。
 
@@ -204,6 +204,8 @@ python3 pioneers.py --judge RUN_DIR --decision D2 --task requirements --attempt 
 领取时会校验运行状态和任务依赖。完成时，pioneers 存档交付文件，并为下游生成含前置交付物的提示。开启独立验收的 QA 任务使用 JSON 报告作为交付物。返回 `returned` 时，继续领取返回的 `repair_task`，再领取复验任务。第二轮起，每次回报都需要传入领取时返回的 `--attempt N`。执行失败或环境阻塞时，登记原因并停止领取后续任务。宿主必须在派发后转发可见的动作和结果。
 
 ### 将发布纳入交付
+
+向阿里云 ECS 发布容器时，方案和验收任务可加载 `aliyun-ecs-container-deployment`。把实际部署安排成验收后的独立交付工程师任务，设置 `"skills": ["aliyun-ecs-container-deployment"]` 和 `"effect": "publish"`，并安排部署后的独立 QA 复验。审批通过后，由宿主提供所需工具和目标环境的授权。
 
 需发布的工作流在 `--host-start` 或 `--live` 加上 `--require-release`。Pioneers 校验实现任务均有独立 QA 覆盖，任务验收完成后进入「验收通过」，等 LD 登记发布结果。外部发布平台的调用和操作权限由宿主管理。CLI 退出后，可用 `--dashboard RUN_DIR` 持续查看发布进度。
 

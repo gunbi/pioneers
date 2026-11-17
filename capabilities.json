@@ -52,6 +52,11 @@
       "path": "skills/wechat-miniprogram-development/SKILL.md",
       "sources": [["TencentCloudBase/skills", "skills/miniprogram-development/SKILL.md"]]
     },
+    "aliyun-ecs-container-deployment": {
+      "description": "准备、执行或验收阿里云 ECS 容器部署，覆盖 Docker Compose、ACR 镜像、健康检查和回滚。",
+      "path": "skills/aliyun-ecs-container-deployment/SKILL.md",
+      "sources": [["aliyun/alibabacloud-aiops-skills", "skills/computing/computenest/alibabacloud-ecs-code-deploy/SKILL.md", "master"]]
+    },
     "architecture-design": {
       "description": "识别跨模块变更的复杂度，比较方案，并记录接口、取舍和演进条件。",
       "path": "skills/architecture-design/SKILL.md"
@@ -146,13 +151,13 @@
   "roles": {
     "ld": {
       "tools": ["architecture_check"],
-      "skills": ["architecture-design", "code-review", "change-integration"],
+      "skills": ["architecture-design", "code-review", "change-integration", "aliyun-ecs-container-deployment"],
       "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"]}
     },
     "pm": {"skills": ["requirements-design"], "mcp": {"pioneers_github": ["read"]}},
     "engineer": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "change-integration", "test-engineering"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "change-integration", "test-engineering", "aliyun-ecs-container-deployment"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
     "ui": {"skills": ["frontend-design"], "mcp": {"pioneers_playwright": ["test"]}},
@@ -176,7 +181,7 @@
     },
     "qa": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["code-review", "webapp-testing", "acceptance-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "test-engineering"],
+      "skills": ["code-review", "webapp-testing", "acceptance-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "test-engineering", "aliyun-ecs-container-deployment"],
       "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     }
   }
