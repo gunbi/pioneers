@@ -9,11 +9,28 @@ def preapproval_required(task):
     return bool(task.get("effect") or task.get("impact") == "costly_change")
 
 
+def pending_replan(data):
+    plan = data.get("replan")
+    return plan if plan and plan["state"] == "pending" else None
+
+
+def replan_ready(data):
+    return (data["state"] == "running" and pending_replan(data) is not None and not data.get("paused")
+            and not any(job["state"] == "running" for job in data["tasks"].values()))
+
+
+def workflow_path(run_dir, data):
+    revision = data.get("workflow_revision")
+    return run_dir / (f"workflow.{revision}.json" if revision else "workflow.json")
+
+
 def claim_blockers(data, workflow_tasks, task_id):
     job = data["tasks"][task_id]
     task = workflow_tasks[task_id]
     if data.get("paused"):
         return [{"code": "paused", "message": "Run is paused"}]
+    if pending_replan(data):
+        return [{"code": "replan", "message": "Waiting for LD to update the workflow"}]
     if data["state"] != "running":
         return [{"code": "run_state", "state": data["state"],
                  "message": f"Task {task_id} cannot be claimed in its current state"}]
@@ -60,5 +77,8 @@ def dispatch_summary(data, tasks):
             else:
                 ready.append({**item, "remaining_steps": remaining[key]})
     ready.sort(key=lambda item: -item["remaining_steps"])
-    return {"run_state": data["state"], "paused": data.get("paused"),
-            "ready": ready, "waiting": waiting, "active": active}
+    summary = {"run_state": data["state"], "paused": data.get("paused"),
+               "ready": ready, "waiting": waiting, "active": active}
+    if plan := pending_replan(data):
+        summary["replan"] = {**plan, "ready": replan_ready(data)}
+    return summary

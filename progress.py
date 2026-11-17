@@ -160,8 +160,8 @@ class Progress:
             if progress.data != before:
                 progress.save()
 
-    def set_tasks(self, tasks, order):
-        self.data["tasks"] = {
+    def set_tasks(self, tasks, order, *, preserve=False):
+        records = {
             task_id: {
                 "id": task_id,
                 "role": tasks[task_id]["role"],
@@ -173,6 +173,10 @@ class Progress:
             }
             for task_id in order
         }
+        if preserve:
+            self.data["tasks"].update(records)
+        else:
+            self.data["tasks"] = records
         self.save()
 
     def planning(self, state, activity):
@@ -256,7 +260,10 @@ def show_progress(run_dir, watch):
         if snapshot != previous:
             data = json.loads(snapshot)
             print_board(data)
-            if not watch or data["state"] not in ("running", "accepted", "publishing"):
+            waiting = data["state"] in ("running", "accepted", "publishing") or (
+                data["state"] == "completed" and data.get("paused")
+            )
+            if not watch or not waiting:
                 return
             print(flush=True)
             previous = snapshot

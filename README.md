@@ -154,7 +154,9 @@ python3 pioneers.py --intervene RUN_DIR --from architecture --reason "保留旧�
 python3 pioneers.py --resume RUN_DIR --reason "方案调整完成"
 ```
 
-修订结果保留旧产物，重新判断并重排该结果的下游。暂停后已领取的任务可以提交结果，宿主应等待受影响任务结束再重排。省略 `--from` 时只给未启动的后续任务补充指令。如果 CLI 进程已经正常退出，先做人工修订或重排，然后用 `--continue RUN_DIR` 重开同一运行。
+修订结果保留旧产物，重新判断并重排该结果的下游。暂停后已领取的任务可以提交结果。指定 `--from` 会重排该任务及下游，完成介入后用「恢复派工」继续。省略 `--from` 时，把指令提交给 LD 重新规划。Pioneers 等进行中的任务回报后再处理请求，验证并应用新计划后自动继续派工。已开始或已获授权的任务不能通过重规划修改。原始计划保存在 `workflow.json`，更新版本保存在 `workflow.N.json`。如果 CLI 进程已经退出，提交指令后用 `--continue RUN_DIR` 继续同一次运行。
+
+宿主模式通过 `--host-ready RUN_DIR` 查看 `replan.ready`。就绪后用 `--replan RUN_DIR` 取得 LD 提示，按返回的 `revision` 用 `--replan RUN_DIR --revision N --artifact PLAN.json` 提交。已关闭的宿主会话需要重新开启协调端来处理请求。
 
 ### 云端看板操作
 

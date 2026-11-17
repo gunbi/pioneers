@@ -39,6 +39,7 @@
 6. 目标需要发布时，启动运行时加 `--require-release`。验收通过后，由 LD 通过 `--release` 登记开始、结果和真实访问地址。只有发布成功后，看板才显示「已发布」。
 7. 在计划里标记重大架构和重要功能方案的 `impact`，先形成只读方案再交下游。高成本实施标 `costly_change`。对外发送、发布、付款、权限变更、删除等操作用独立 `effect` 任务。前置产物齐备后由人授权执行范围。
 8. 每次角色提交产物后，宿主把回报里的 `judgment` 交给只读 LLM 判断，再用 `--judge` 回写。LLM 判断和人工确认未完成时，遵循 Pioneers 的依赖阻塞。只有实际用户操作才能调用 `--approve`、`--revise`、`--pause`、`--intervene` 或 `--resume`。收到暂停信号时，停止领取新任务，并收集已开始任务的回报。
+9. 把 `--host-ready` 返回的 `replan` 当作待处理的 LD 任务。等 `replan.ready` 为真后，用 `--replan RUN_DIR` 获取用户指令、当前计划和状态，将返回的提示交给只读 LD。将 LD 返回的 JSON 用 `--replan RUN_DIR --revision N --artifact PLAN.json` 提交。随后重新查询并派发更新后的任务。只要有暂停、未处理的重规划或在途任务，继续在宿主允许的时间内轮询运行状态，阶段结束时也要重查 `--host-ready`。如果宿主会话已关闭，重新打开协调会话，从同一运行目录继续。
 
 命令示例与进度入口见 [README.md](README.md)。
 

@@ -44,7 +44,8 @@ class ApprovalTest(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV,
         )
         self.addCleanup(self.stop_host, self.host_process)
-        self.run_dir = Path(json.loads(self.host_process.stdout.readline())["run_dir"])
+        self.started = json.loads(self.host_process.stdout.readline())
+        self.run_dir = Path(self.started["run_dir"])
 
     def stop_host(self, process):
         if process.poll() is None:
@@ -296,6 +297,57 @@ class ApprovalTest(unittest.TestCase):
         self.judge(revised, required=True)
         self.cli("--approve", self.run_dir, "--decision", revised["decision"], "--reason", "接受新方案")
         self.assertIn("新方案", self.claim("build")["prompt"])
+
+    def test_dashboard_instruction_replans_after_inflight_work(self):
+        self.host([self.task("contract")])
+        self.claim("contract")
+        url = self.started["dashboard_url"]
+
+        def action(name, reason):
+            body = json.dumps({"action": name, "reason": reason}).encode()
+            with urlopen(Request(url + "human-action", data=body, headers={
+                "Origin": url.rstrip("/"), "Content-Type": "application/json",
+            }), timeout=3) as response:
+                return json.load(response)
+
+        action("pause", "调整后续范围")
+        note = "同步进行安卓和 ios 的开发"
+        result = action("intervene", note)
+        self.assertIsNone(result["paused"])
+        self.assertEqual(result["replan"]["notes"], [note])
+        self.assertFalse(self.cli("--host-ready", self.run_dir)["replan"]["ready"])
+        self.assertIn("Wait for running tasks", self.cli("--replan", self.run_dir, code=1))
+        judgment = self.submit("contract", "已定接口")
+        self.judge(judgment)
+        snapshot = self.state()
+        self.assertEqual(snapshot["state"], "running")
+        original = snapshot["tasks"]["contract"]
+        with urlopen(url + "dashboard-data.json", timeout=3) as response:
+            self.assertTrue(json.load(response)["dispatch"]["replan"]["ready"])
+        request = self.cli("--replan", self.run_dir)
+        self.assertEqual(request["role"], "ld")
+        self.assertIn(note, request["prompt"])
+        self.assertIn(original["evidence"], request["prompt"])
+        revision = request["revision"]
+
+        def submit_plan(tasks, *, version=revision, code=0):
+            self.artifact.write_text(json.dumps({"tasks": tasks}), encoding="utf-8")
+            return self.cli("--replan", self.run_dir, "--revision", version, "--artifact", self.artifact, code=code)
+
+        android = self.task("android", ["contract"], role="engineer", skills=["android-development"])
+        ios = self.task("ios", ["contract"], role="engineer", skills=["ios-development"])
+        qa = self.task("verify", ["android", "ios"], role="qa", review=True)
+        self.assertIn("started or authorized", submit_plan([self.task("contract")], code=1))
+        self.assertIn("independent QA", submit_plan([android, ios], code=1))
+        self.assertIn("stale", submit_plan([android, ios, qa], version=revision + 1, code=1))
+        self.assertEqual(submit_plan([android, ios, qa])["tasks"], ["android", "ios", "verify"])
+        self.assertEqual(self.state()["tasks"]["contract"], original)
+        with urlopen(url + "dashboard-data.json", timeout=3) as response:
+            page = json.load(response)
+        self.assertEqual({item["task"] for item in page["dispatch"]["ready"]}, {"android", "ios"})
+        self.assertEqual(page["replan"]["state"], "applied")
+        self.assertEqual(self.claim("android")["task"], "android")
+        self.assertEqual(self.claim("ios")["task"], "ios")
 
     def test_intervention_pauses_and_scopes_rerun(self):
         self.host([self.task("plan"), self.task("build", ["plan"]), self.task("other")])

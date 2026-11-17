@@ -14,7 +14,7 @@ from urllib.parse import quote
 import webbrowser
 
 from progress import artifact_name
-from dispatch import dispatch_summary
+from dispatch import dispatch_summary, workflow_path
 
 
 ARTIFACT_PATH = re.compile(r"/evidence/([a-z0-9][a-z0-9_-]*(?:\.[0-9]+)?\.(?:md|json))")
@@ -263,7 +263,7 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None):
                 snapshot["flow"] = flow_with_approvals(collaboration_flow(snapshot), snapshot.get("decisions", {}))
                 if snapshot["mode"] in ("host", "live"):
                     try:
-                        workflow = json.loads((run_dir / "workflow.json").read_bytes())
+                        workflow = json.loads(workflow_path(run_dir, snapshot).read_bytes())
                         planned = {task["id"]: task for task in workflow["tasks"]}
                     except (OSError, json.JSONDecodeError):
                         planned = {}

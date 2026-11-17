@@ -270,7 +270,7 @@
         </div>
       </div>
       <section class="intervention" id="intervention" aria-labelledby="intervention-title">
-        <div><h3 id="intervention-title">运行介入</h3><p id="pause-info"></p></div>
+        <div><h3 id="intervention-title">运行介入</h3><p id="pause-info"></p><p id="replan-info" role="status" hidden></p></div>
         <div class="actions">
           <button id="pause" class="button" type="button">暂停派工</button>
           <button id="intervene" class="button" type="button" hidden>补充指令或重跑</button>
@@ -734,7 +734,7 @@
       const count = waitingIds().length;
       jump.textContent = count ? count + " 项待确认 ↓" : "人工确认与介入 ↓";
       if (data.mode === "offline") return;
-      const snapshot = JSON.stringify([data.state, data.paused, data.decisions, data.operator_log, data.tasks, data.release]);
+      const snapshot = JSON.stringify([data.state, data.paused, data.decisions, data.operator_log, data.tasks, data.release, data.replan]);
       if (snapshot === operatorSnapshot) return;
       operatorSnapshot = snapshot;
       renderInbox();
@@ -744,6 +744,13 @@
       byId("pause-info").textContent = paused ? "已暂停新派工 · " + data.paused +
         (running ? " · " + running + " 项已领取的任务仍可执行和回报" : "") :
         "暂停后不会领取新任务，已在执行的任务仍可回报。";
+      const plan = data.replan;
+      byId("replan-info").hidden = !plan;
+      if (plan) {
+        byId("replan-info").textContent = plan.state === "applied" ? "LD 已更新计划 · " + plan.tasks.join("、") :
+          plan.error ? "LD 规划未通过 · " + plan.error :
+          paused ? "重新规划已暂停" : running ? "等待进行中的任务回报，再交给 LD" : "等待 LD 更新计划";
+      }
       const canPause = Object.keys(data.tasks).length &&
         ["running", "accepted", "completed", "publish_failed"].includes(data.state);
       byId("intervention").hidden = !paused && !canPause;
@@ -760,7 +767,7 @@
         approve:["确认决策", "确认后，满足所有依赖条件的下游任务可以继续。", "确认通过"],
         revise:["补充意见或修订", "沿用原产物时只填写意见。原决策会保留，相关任务会重新评估。", "提交修订"],
         pause:["暂停派工", "暂停新任务领取。已经开始的任务仍可执行和回报。", "确认暂停"],
-        intervene:["补充指令或重跑", "选择重跑起点会重新排队该任务和受影响的下游。", "提交指令"],
+        intervene:["补充指令或重跑", "默认等在途任务回报后交给 LD 重新规划，计划校验通过后恢复派工。也可指定重跑起点。", "提交指令"],
         resume:["恢复派工", "依赖已满足、审批已通过的任务可以继续领取。", "确认恢复"],
       }[action];
       byId("dialog-title").textContent = title || settings[0];
@@ -773,7 +780,7 @@
       byId("replacement-field").hidden = action !== "revise";
       byId("rerun-field").hidden = action !== "intervene";
       byId("approver-field").hidden = action !== "approve";
-      const options = [["", "仅补充指令，不重新排队"], ...Object.keys(operatorData.tasks).map(id => [id, id])];
+      const options = [["", "交给 LD 重新规划"], ...Object.keys(operatorData.tasks).map(id => [id, id])];
       byId("rerun-from").replaceChildren(...options.map(([value, name]) => {
         const option = element("option", name);
         option.value = value;
@@ -835,7 +842,7 @@
           approve: Array.isArray(result.approved),
           revise: Boolean(result.judgment || result.decision),
           pause: Boolean(result.paused),
-          intervene: Boolean(result.paused),
+          intervene: Boolean(result.paused || result.replan),
           resume: result.paused === null,
         }[body.action];
         if (!confirmed) {
@@ -844,6 +851,7 @@
         if (cloud) controlKey = key;
         byId("human-feedback").textContent = body.action === "approve" ? "已通过 " + result.approved.length + " 项决策。" :
           body.action === "pause" ? "已暂停新派工。已领取的任务仍可执行和回报。" :
+          body.action === "intervene" && !body.from ? "已提交给 LD，计划校验通过后继续派工。" :
           "已记录" + actionLabels[body.action] + "操作。";
         byId("action-dialog").close();
       } catch (error) {
@@ -875,6 +883,7 @@
           dependency:"等待 " + blocker.task + " · " + label,
           authorization:"执行前需人工授权",
           paused:"运行暂停",
+          replan:"等待 LD 更新计划",
           run_state:"运行状态 · " + label,
           task_state:label,
         }[blocker.code] || blocker.message;
@@ -898,7 +907,9 @@
       jump.textContent = "派工 · " + dispatch.ready.length + " 项就绪 ↓";
       const parallel = data.mode === "host";
       byId("dispatch-mode").textContent = parallel ? "宿主模式" : "本地串行";
-      byId("dispatch-note").textContent = dispatch.paused ? "运行已暂停，保留进行中的任务。" : !Object.keys(data.tasks).length ?
+      byId("dispatch-note").textContent = dispatch.paused ? "运行已暂停，保留进行中的任务。" :
+        dispatch.replan ? (dispatch.replan.ready ? "等待 LD 提交新计划。" : "在途任务回报后，由 LD 更新计划。") :
+        !Object.keys(data.tasks).length ?
         "等待工作流规划。" : parallel ? "就绪任务可按成员容量和写入范围同批派发，长依赖链优先。" :
         "按依赖就绪情况显示任务，本地执行器依次处理。";
       for (const [key, name, empty] of [["ready", "可派发", "暂无就绪任务"],

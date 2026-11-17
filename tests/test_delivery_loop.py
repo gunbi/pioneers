@@ -12,7 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from dashboard import collaboration_flow, dashboard_snapshot, flow_with_approvals
-from pioneers import create_run, load_workflow, project_workspace, run_workflow
+from pioneers import control_run, create_run, load_workflow, project_workspace, run_workflow
 
 
 class DeliveryLoopTest(unittest.TestCase):
@@ -168,6 +168,50 @@ class DeliveryLoopTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Pioneers Git repository"):
                     project_workspace(framework_worktree)
                 self.assertEqual(project_workspace(project_worktree), project_worktree)
+
+    def test_live_executor_applies_operator_replan_before_completion(self):
+        goal, tasks, _ = load_workflow(ROOT / "examples/todo.json")
+        note = "同步进行安卓和 ios 的开发"
+        planned = [
+            {**tasks["implementation"], "id": "android", "depends_on": ["requirements"]},
+            {**tasks["implementation"], "id": "ios", "depends_on": ["requirements"]},
+            {**tasks["verification"], "depends_on": ["android", "ios"]},
+        ]
+        initial = {"requirements": tasks["requirements"], **{task["id"]: task for task in planned}}
+        initial["ios"] = {**initial["ios"], "depends_on": ["android"]}
+        phases = []
+        case = self
+
+        class Runner:
+            def run(self, role, prompt, report, *, phase, **kwargs):
+                phases.append((role, phase))
+                if phase == "approval":
+                    return '{"needs_confirmation": false, "reason": "证据完整"}'
+                if phase == "plan":
+                    case.assertIn(note, prompt)
+                    return json.dumps({"goal": goal, "tasks": planned})
+                if role == "pm":
+                    control_run(run_dir, {"action": "pause", "reason": "调整任务"})
+                    control_run(run_dir, {"action": "intervene", "reason": note})
+                if phase == "review":
+                    return json.dumps({
+                        "outcome": "accepted", "summary": "双端验证",
+                        "checks": [{"criterion": item, "status": "pass", "evidence": "测试"}
+                                   for item in tasks["verification"]["acceptance"]],
+                    })
+                return "交付结果"
+
+        with TemporaryDirectory() as temp, redirect_stdout(StringIO()):
+            order = tuple(initial)
+            run_dir, progress = create_run(Path(temp), goal, initial, order, "live")
+            (run_dir / "workflow.json").write_text(json.dumps({"goal": goal, "tasks": list(initial.values())}))
+            self.assertEqual(run_workflow(goal, initial, order, Runner(), progress), 0)
+            self.assertIn(("ld", "plan"), phases)
+            self.assertEqual(phases.count(("engineer", "task")), 2)
+            snapshot = json.loads((run_dir / "status.json").read_text())
+            self.assertEqual(snapshot["state"], "completed")
+            self.assertEqual(snapshot["tasks"]["ios"]["depends_on"], ["requirements"])
+            self.assertTrue(all(task["state"] == "completed" for task in snapshot["tasks"].values()))
 
     def test_live_executor_retries_before_completion(self):
         goal, tasks, order = load_workflow(ROOT / "examples/todo.json")

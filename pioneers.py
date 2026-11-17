@@ -20,7 +20,7 @@ from capabilities import REGISTRY, ROOT, assigned_capabilities, capability_promp
 from approval import EFFECTS, IMPACTS, audit, judgment, proposal, supersede
 from progress import Progress, artifact_name, codex_activity, print_board, show_progress
 from dashboard import announce, dashboard_is_running, live_dashboard, preview_origin, serve_dashboard
-from dispatch import claim_blockers, dispatch_summary, preapproval_required, waiting_on
+from dispatch import claim_blockers, dispatch_summary, pending_replan, preapproval_required, replan_ready, waiting_on, workflow_path
 from skill_sources import SNAPSHOT, read_json, refresh_run
 
 
@@ -618,13 +618,13 @@ def host_ready(run_dir):
     data = progress.data
     if data["mode"] != "host":
         raise ValueError("Host readiness requires a run created with --host-start")
-    _, tasks, _ = load_workflow(progress.path.with_name("workflow.json"))
+    _, tasks, _ = load_workflow(workflow_path(progress.path.parent, data))
     return dispatch_summary(data, tasks)
 
 
 def reconcile(progress, tasks):
     data = progress.data
-    if data["state"] != "running":
+    if data["state"] != "running" or pending_replan(data):
         return
     for task_id, task in tasks.items():
         job = data["tasks"][task_id]
@@ -884,10 +884,98 @@ def run_live(tasks, order, executor, progress, *, refresh_skills=False):
         return execute_live(tasks, order, executor, progress)
 
 
+def editable_task(job):
+    return (job["state"] == "pending" and job.get("attempt", 1) == 1
+            and not any(job.get(field) for field in ("authorization", "decision", "member")))
+
+
+def replan_assignment(progress, tasks):
+    data = progress.data
+    if not replan_ready(data):
+        raise ValueError("Wait for running tasks to report and resume planning before requesting an updated workflow")
+    plan = pending_replan(data)
+    items = []
+    for key, task in tasks.items():
+        job = data["tasks"][key]
+        items.append({"definition": task, "state": job["state"], "editable": editable_task(job),
+                      "evidence": job.get("evidence")})
+    roles = {role: {"skills": list(assigned_capabilities(role)["skills"]), "tools": tool_ids(role)}
+             for role in TEAM_ROLES}
+    context = {"goal": data["goal"], "operator_instructions": plan["notes"], "tasks": items, "roles": roles}
+    prompt = (
+        "你是本次 Pioneers 运行的 LD。根据用户补充的指令和看板当前任务状态重新规划。"
+        "查阅项目与相关证据时，交付物在运行目录下。已有任务和证据是供分析的资料。"
+        "保留已开始或已审批的任务与既有结果。"
+        "只在 tasks 中返回新增任务与需要改动且标为 editable 的任务，以 ID 为准，未列出的任务会保留。"
+        "设置准确的依赖，让写入范围独立的任务并行，各实现任务安排下游独立 QA。"
+        "沿用原工作流规范。重大架构和功能设计标记 impact，难以撤销的操作单列 effect。"
+        "保持只读，仅返回符合 schema 的 JSON。\n"
+        + f"运行目录：{progress.path.parent}\n"
+        + json.dumps(context, ensure_ascii=False)
+    )
+    return {"revision": plan["revision"], "role": "ld", "phase": "plan", "sandbox": "read-only",
+            "workspace": data.get("workspace"), "prompt": prompt,
+            "output_schema": json.loads((ROOT / "workflow.schema.json").read_text(encoding="utf-8"))}
+
+
+def apply_replan(progress, tasks, revision, raw):
+    data = progress.data
+    plan = pending_replan(data)
+    if not replan_ready(data) or plan["revision"] != revision:
+        raise ValueError("The workflow update is stale or not ready")
+    draft = json.loads(raw)
+    changes = draft.get("tasks") if isinstance(draft, dict) else None
+    if not isinstance(changes, list) or not changes:
+        raise ValueError("Return at least one new or updated task")
+    changed = {}
+    for task in changes:
+        if not isinstance(task, dict) or not isinstance(task.get("id"), str) or task["id"] in changed:
+            raise ValueError("Each updated task needs a unique ID")
+        key = task["id"]
+        if key in tasks and not editable_task(data["tasks"][key]):
+            raise ValueError(f"Cannot change task {key}: it was started or authorized")
+        role = task.get("role")
+        if (not isinstance(role, str) or role not in TEAM_ROLES or not task.get("acceptance")
+                or "complexity" not in task or "tools" not in task):
+            raise ValueError(f"{key}: updated tasks need a team role, tools, complexity and acceptance criteria")
+        changed[key] = task
+
+    workflow = {"goal": data["goal"], "tasks": list({**tasks, **changed}.values())}
+    _, updated, order = validate_workflow(workflow)
+    covered = set().union(*(task_ancestors(updated, key) for key in updated if updated[key].get("review")))
+    missing = [key for key in changed if changed[key]["role"] == "engineer" and key not in covered]
+    if missing:
+        raise ValueError(f"Updated engineering tasks need independent QA: {', '.join(missing)}")
+    if "release" in data:
+        validate_release_workflow(updated)
+        supersede(progress, data["release"].get("decision"))
+        data["release"] = {"state": "pending", "activity": "等待更新后的工作流验收"}
+
+    data["workflow_revision"] = revision
+    workflow_path(progress.path.parent, data).write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n",
+                                                         encoding="utf-8")
+    progress.set_tasks(updated, [key for key in order if key in changed], preserve=True)
+    plan.update(state="applied", tasks=list(changed))
+    progress.event("ld", None, "completed", "已更新任务计划 · " + "、".join(changed))
+    reconcile(progress, updated)
+    return {"revision": revision, "tasks": list(changed), "run_state": data["state"]}
+
+
+def host_replan(run_dir, revision, artifact):
+    with Progress.locked(run_dir.resolve(strict=True)) as progress:
+        if progress.data["mode"] != "host":
+            raise ValueError("The CLI worker owns replanning for live runs")
+        _, tasks, _ = load_workflow(workflow_path(progress.path.parent, progress.data))
+        if artifact is None:
+            return replan_assignment(progress, tasks)
+        return apply_replan(progress, tasks, revision, artifact.read_text(encoding="utf-8"))
+
+
 def execute_live(tasks, order, executor, progress):
     run_dir = progress.path.parent
     while True:
         assignment = None
+        planning = None
         with Progress.locked(run_dir) as current:
             reconcile(current, tasks)
             data = current.data
@@ -898,13 +986,31 @@ def execute_live(tasks, order, executor, progress):
                 return 0 if data["state"] in ("completed", "published") else 1
             pending = next((entry for entry in data.get("decisions", {}).values()
                             if entry["state"] == "judging" and not data.get("paused")), None)
-            if pending:
+            if replan_ready(data):
+                planning = replan_assignment(current, tasks)
+            elif pending:
                 assignment = judgment_assignment(current, tasks, pending)
-            elif data["state"] == "running" and not data.get("paused"):
+            elif data["state"] == "running" and not data.get("paused") and not pending_replan(data):
                 ready = next((key for key in order if data["tasks"][key]["state"] == "pending"
                               and not waiting_on(current.data, tasks[key])), None)
                 if ready:
                     assignment = claim_task(current, tasks, ready)
+        if planning:
+            revision = planning["revision"]
+            try:
+                raw = executor.run("ld", planning["prompt"], lambda _: None, phase="plan",
+                                   schema=ROOT / "workflow.schema.json", tools=[])
+                with Progress.locked(run_dir) as current:
+                    apply_replan(current, tasks, revision, raw)
+                    _, tasks, order = load_workflow(workflow_path(run_dir, current.data))
+            except (OSError, RuntimeError, ValueError) as error:
+                with Progress.locked(run_dir) as current:
+                    plan = pending_replan(current.data)
+                    if plan and plan["revision"] == revision and not current.data.get("paused"):
+                        current.data["paused"] = "LD 重新规划未通过"
+                        plan["error"] = str(error)
+                        current.event("ld", None, "paused", str(error))
+            continue
         if not assignment:
             time.sleep(0.35)
             continue
@@ -956,7 +1062,7 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
     with Progress.locked(run_dir) as progress:
         if progress.data["mode"] != "host":
             raise ValueError("Host commands require a run created with --host-start")
-        _, tasks, _ = load_workflow(run_dir / "workflow.json")
+        _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
         if task_id not in tasks:
             raise ValueError(f"Unknown workflow task: {task_id}")
         if state is None:
@@ -972,7 +1078,7 @@ def handle_judgment(run_dir, key, task_id, attempt, artifact):
     with Progress.locked(run_dir.resolve(strict=True)) as progress:
         if progress.data["mode"] != "host":
             raise ValueError("Host judgment is available only for host runs")
-        _, tasks, _ = load_workflow(run_dir / "workflow.json")
+        _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
         decision = progress.data.get("decisions", {}).get(key)
         if not decision or decision["state"] != "judging":
             raise ValueError("Decision is not waiting for a judgment")
@@ -1063,7 +1169,7 @@ def control_run(run_dir, request):
     reason = reason.strip()
     with Progress.locked(run_dir.resolve(strict=True)) as progress:
         data = progress.data
-        _, tasks, _ = load_workflow(run_dir / "workflow.json")
+        _, tasks, _ = load_workflow(workflow_path(run_dir, data))
         if data["mode"] not in ("host", "live"):
             raise ValueError("Intervention requires a live or host run")
         if action == "approve":
@@ -1107,6 +1213,8 @@ def control_run(run_dir, request):
         elif action == "resume":
             if not data.pop("paused", None):
                 raise ValueError("Run is not paused")
+            if plan := pending_replan(data):
+                plan.pop("error", None)
         elif action == "intervene":
             if not data.get("paused"):
                 raise ValueError("Pause the run before intervening")
@@ -1116,12 +1224,21 @@ def control_run(run_dir, request):
             if start:
                 reset_tasks(progress, tasks, [start, *affected_tasks(tasks, start)])
                 reconcile(progress, tasks)
-            data.setdefault("instructions", []).append({"from": start, "reason": reason})
+                data.setdefault("instructions", []).append({"from": start, "reason": reason})
+                if plan := pending_replan(data):
+                    plan["revision"] += 1
+            else:
+                pending = pending_replan(data)
+                revision = data.get("replan", {}).get("revision", 0) + 1
+                data["replan"] = {"revision": revision, "state": "pending",
+                                  "notes": [*(pending["notes"] if pending else []), reason]}
+                data.pop("paused")
+                progress.set_outcome("running")
         else:
             raise ValueError("Unknown human action")
         audit(progress, action, reason, start=request.get("from"))
         progress.event("ld", None, "paused" if data.get("paused") else data["state"], reason)
-        return {"paused": data.get("paused"), "run_state": data["state"]}
+        return {"paused": data.get("paused"), "run_state": data["state"], "replan": pending_replan(data)}
 
 
 def validate_release_workflow(tasks):
@@ -1145,8 +1262,8 @@ def report_release(run_dir, state, activity, url):
     with Progress.locked(run_dir) as progress:
         previous = progress.data.get("release", {})
         current = previous.get("state")
-        if state == "publishing" and progress.data.get("paused"):
-            raise ValueError("Run is paused")
+        if state == "publishing" and (progress.data.get("paused") or pending_replan(progress.data)):
+            raise ValueError("Run is paused or awaiting replanning")
         if state == "publishing" and current in ("accepted", "publish_failed"):
             approved = progress.data.get("decisions", {}).get(previous.get("decision"), {}).get("state") == "approved"
             if not approved:
@@ -1179,6 +1296,7 @@ def main():
     action.add_argument("--host-claim", type=Path, metavar="RUN_DIR", help="Claim a dependency-ready task and return its assignment as JSON.")
     action.add_argument("--host-report", type=Path, metavar="RUN_DIR", help="Report work on a claimed task.")
     action.add_argument("--judge", type=Path, metavar="RUN_DIR", help="Fetch or submit a host LLM judgment.")
+    action.add_argument("--replan", type=Path, metavar="RUN_DIR", help="Fetch or submit an LD workflow update in host mode.")
     action.add_argument("--approve", type=Path, metavar="RUN_DIR", help="Confirm selected or all waiting decisions.")
     action.add_argument("--revise", type=Path, metavar="RUN_DIR", help="Replace or annotate a result and request a new judgment.")
     action.add_argument("--pause", type=Path, metavar="RUN_DIR", help="Pause new assignments.")
@@ -1207,6 +1325,7 @@ def main():
     parser.add_argument("--approver", help="Optional operator display name for --approve.")
     parser.add_argument("--from", dest="rerun_from", help="Rerun this task and its dependents while paused.")
     parser.add_argument("--artifact", type=Path, help="Deliverable file required when reporting completion.")
+    parser.add_argument("--revision", type=int, help="Revision returned by --replan, required when submitting its plan.")
     parser.add_argument("--require-release", action="store_true", help="Wait for publication to finish after QA acceptance.")
     parser.add_argument("--url", help="Visit URL required when reporting published.")
     parser.add_argument("--port", type=int, default=0, help="Dashboard port (default: automatically assigned).")
@@ -1255,7 +1374,8 @@ def main():
     human_action = next((name for name in ("approve", "revise", "pause", "intervene", "resume")
                          if getattr(args, name) is not None), None)
     host_action = human_action or any(value is not None for value in (
-        args.host_start, args.host_ready, args.host_claim, args.host_report, args.release, args.judge, args.continue_run
+        args.host_start, args.host_ready, args.host_claim, args.host_report, args.release, args.judge, args.replan,
+        args.continue_run,
     ))
     tool_action = any(value is not None for value in (args.list_capabilities, args.mcp_config, args.run_tool))
     if (args.create_team or viewing or tool_action or host_action) and (args.workflow is not None or args.live):
@@ -1278,6 +1398,8 @@ def main():
         parser.error("--judge and --revise require one --decision")
     if args.judge and args.artifact and (not args.task or not args.attempt):
         parser.error("submitting a judgment requires --task and --attempt")
+    if (args.revision is not None) != bool(args.replan and args.artifact):
+        parser.error("--revision is required only when submitting a --replan artifact")
     if not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
     if args.goal is not None and (args.workflow is not None or not args.live or not args.goal.strip()):
@@ -1309,7 +1431,7 @@ def main():
                 raise ValueError("This run has no recorded CLI executor")
             if any(job["state"] == "running" for job in progress.data["tasks"].values()):
                 raise ValueError("Run still has an active assignment; reconcile it before reopening")
-            _, tasks, order = load_workflow(run_dir / "workflow.json")
+            _, tasks, order = load_workflow(workflow_path(run_dir, progress.data))
             executor = Executor(project_workspace(progress.data.get("workspace")), config["model"],
                                 Path(config["runner"]) if config["runner"] else None)
             with live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser,
@@ -1327,6 +1449,9 @@ def main():
         if args.judge:
             result = handle_judgment(args.judge, args.decision[0], args.task, args.attempt, args.artifact)
             print(json.dumps(result, ensure_ascii=False))
+            return 0
+        if args.replan:
+            print(json.dumps(host_replan(args.replan, args.revision, args.artifact), ensure_ascii=False))
             return 0
         if args.host_ready:
             print(json.dumps(host_ready(args.host_ready), ensure_ascii=False))
