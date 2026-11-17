@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "needs_confirmation": {"type": "boolean"},
+    "reason": {"type": "string"},
+    "impact": {"enum": [null, "architecture", "feature_design", "costly_change"]},
+    "effect": {"enum": [null, "send", "publish", "payment", "permissions", "delete", "irreversible"]}
+  },
+  "required": ["needs_confirmation", "reason", "impact", "effect"],
+  "additionalProperties": false
+}

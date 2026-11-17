@@ -3,6 +3,7 @@
   "properties": {
     "outcome": {"enum": ["accepted", "changes_requested", "needs_clarification", "blocked"]},
     "summary": {"type": "string"},
+    "repair_task": {"type": ["string", "null"]},
     "checks": {
       "type": "array",
       "items": {
@@ -17,6 +18,6 @@
       }
     }
   },
-  "required": ["outcome", "summary", "checks"],
+  "required": ["outcome", "summary", "repair_task", "checks"],
   "additionalProperties": false
 }

@@ -1,0 +1,833 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pioneers · 运行看板</title>
+  <style>
+    :root {
+      color-scheme:light;
+      --ink:#18243b; --muted:#4e6077; --line:#d6dfe9; --accent:#174b87;
+      --surface:#f0f4f8; --board:#edf2f7; --lane-line:#d8e3ee; --navy:#182a45;
+      --handoff:#3d6086; --amber:#75450e; --return:#a0393e;
+    }
+    * { box-sizing:border-box; }
+    [hidden] { display:none !important; }
+    body { margin:0; background:var(--surface); color:var(--ink); font:1rem/1.6 Geist,"PingFang SC",system-ui,sans-serif; overflow-wrap:anywhere; }
+    main { max-width:1290px; margin:auto; padding:clamp(14px,3vw,38px); }
+    main > header { color:#fff; background:var(--navy); border:1px solid #233b5c; border-radius:1rem; padding:clamp(.95rem,2.15vw,1.6rem) clamp(1rem,2.65vw,2.1rem) .66rem; }
+    h1,h2,h3,p { margin:0; }
+    h1 { font-size:clamp(1.8rem,3.15vw,2.55rem); line-height:1.14; margin:.35rem 0 .5rem; letter-spacing:-.036em; }
+    h2 { font-size:1.3rem; margin-bottom:.85rem; }
+    h3 { font-size:1rem; margin-bottom:.3rem; }
+    .brand { color:#cad9ef; font-size:.79rem; font-weight:700; }
+    #goal { color:#e0e9f6; max-width:66ch; }
+    #goal:empty { display:none; }
+    .meta { display:flex; gap:.45rem 1rem; flex-wrap:wrap; align-items:center; margin-top:.82rem; padding-top:.64rem; border-top:1px solid #40536f; color:#d0def0; font-size:.84rem; }
+    #count { color:#fff; font-weight:650; font-variant-numeric:tabular-nums; }
+    #approval-jump { margin-inline-start:auto; color:#dceaff; }
+    #approval-jump:focus-visible { outline-color:#a9d1ff; }
+    #connection::before { content:""; display:inline-block; width:.38rem; height:.38rem; margin-inline-end:.38rem; border-radius:50%; background:#9be0bf; vertical-align:.1em; }
+    .pill { border-radius:1rem; display:inline-block; width:max-content; padding:.12rem .65rem; background:#ebefea; color:#43524a; font-size:.82rem; font-weight:650; }
+    .running,.publishing { background:#deebfe; color:var(--accent); }
+    .completed,.accepted,.published,.approved { background:#e1f2ec; color:#166052; }
+    .blocked,.failed,.interrupted,.returned,.publish_failed { background:#fdf0ef; color:var(--return); }
+    .awaiting_confirmation,.paused { background:#fff0d4; color:var(--amber); }
+    .judging { background:#ece7f5; color:#594075; }
+    .flow { margin-top:1.12rem; border:1px solid var(--line); border-radius:.9rem; overflow:hidden; background:#fff; }
+    .flow-head { display:flex; justify-content:space-between; align-items:center; gap:.4rem 1rem; flex-wrap:wrap; padding:.72rem 1rem; }
+    .flow-head h2 { margin:0; }
+    .flow-legend { display:flex; flex-wrap:wrap; gap:.25rem .72rem; color:var(--muted); font-size:.74rem; }
+    .flow-legend span { white-space:nowrap; }
+    .flow-legend span::before { content:""; display:inline-block; width:.5rem; height:.5rem; margin-inline-end:.3rem; border-radius:.13rem; background:var(--swatch); vertical-align:.06em; }
+    .legend-handoff { --swatch:var(--handoff); }
+    .legend-approval { --swatch:var(--amber); }
+    .legend-return { --swatch:var(--return); }
+    .flow li { list-style:none; }
+    .lanes { display:grid; grid-template-columns:repeat(var(--lanes,1),minmax(0,1fr)); text-align:center; }
+    .lane-heads { color:#43546c; background:#e7eef6; font-size:.77rem; font-weight:700; border-block:1px solid var(--line); }
+    .lane-heads span { padding:.43rem .35rem; }
+    .lane-heads > div { min-width:0; padding:.4rem .35rem; }
+    .lane-heads > div + div { border-inline-start:1px solid var(--lane-line); }
+    .lane-heads strong,.lane-heads small { display:block; }
+    .lane-heads small { color:var(--muted); font-weight:500; }
+    .chart { position:relative; margin:0; padding:.35rem 0; background-color:var(--board); background-image:linear-gradient(90deg,transparent calc(100% - 1px),var(--lane-line) 0); background-size:calc(100% / var(--lanes,1)) 100%; }
+    .chart > .empty { padding:.7rem 1rem; }
+    .stage { display:grid; grid-template-columns:repeat(var(--lanes,1),minmax(0,1fr)); }
+    .task { --card-line:#9aaabd; min-width:0; text-align:left; grid-column:var(--column); margin:.28rem .43rem; background:#fff; border:1px solid var(--line); border-inline-start:3px solid var(--card-line); border-radius:.48rem; padding:.48rem .64rem; }
+    .task.running-card { --card-line:#2b66ac; }
+    .gate-row { position:relative; left:var(--gate-center); display:flex; justify-content:center; flex-wrap:wrap; align-items:center; gap:.2rem .55rem; width:max-content; max-width:min(21rem,calc(var(--gate-edge) * 2)); transform:translateX(-50%); margin:.26rem 0; padding:.22rem .45rem; border-radius:.45rem; background:var(--board); }
+    .gate-row:target { outline:2px solid var(--accent); outline-offset:2px; }
+    .gate-link { display:inline-flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:.25rem .5rem; padding:.17rem .48rem; border:1px solid #d6b67b; border-radius:.4rem; color:var(--amber); background:#fff5df; font-size:.79rem; font-weight:650; text-decoration:none; text-align:center; }
+    .gate-link:hover { text-decoration:underline; text-underline-offset:.15em; }
+    .gate-link::before { content:""; width:.5rem; height:.5rem; flex:none; background:currentColor; transform:rotate(45deg); }
+    .gate-link.approved { color:#166052; background:#e1f2ec; border-color:#a9cdbf; }
+    .gate-link.judging { color:#594075; background:#ece7f5; border-color:#c6b6d7; }
+    .gate-link.superseded { color:var(--muted); background:#e9eef3; border-color:var(--line); }
+    .gate-links { width:100%; color:var(--muted); text-align:center; font-size:.72rem; }
+    .gate-links a { color:inherit; margin-inline:.22rem; }
+    .task.return-card { --card-line:#b44c51; background:#fff7f6; }
+    .task:target { outline:2px solid var(--accent); outline-offset:2px; scroll-margin:1rem; }
+    .task-header { display:flex; flex-wrap:wrap; gap:.3rem .6rem; justify-content:space-between; align-items:flex-start; }
+    .task-header h3 { margin:0; }
+    .stage-meta { color:var(--muted); font-size:.75rem; margin:.12rem 0 .3rem; font-variant-numeric:tabular-nums; }
+    .task .action { font-size:.85rem; }
+    .scope,.empty { color:var(--muted); font-size:.88rem; }
+    .scope { margin:.35rem 0; }
+    .scope summary { cursor:pointer; font-size:.78rem; }
+    .action { white-space:pre-wrap; }
+    .evidence { display:inline-block; color:var(--accent); margin-top:.25rem; font-size:.9rem; }
+    .trace { background:#fdf0ef; border-top:1px solid #f0cdcc; border-inline-start:3px solid #b44c51; color:#793639; padding:.53rem 1rem; }
+    .trace p { font-size:.9rem; }
+    .trace-path { display:flex; flex-wrap:wrap; gap:.15rem .55rem; align-items:baseline; margin:.2rem 0 .15rem; }
+    .trace-path a { color:inherit; }
+    .edge { height:1.9rem; margin:-.3rem 0; position:relative; color:var(--handoff); }
+    .edge.return-edge { color:var(--return); }
+    .edge.approval-edge { color:var(--amber); }
+    .edge.waiting-edge { color:#5c6f84; }
+    .edge i { position:absolute; display:block; pointer-events:none; }
+    .edge-from,.edge-to { border-left:1px solid currentColor; height:50%; }
+    .edge-from { left:var(--from); top:0; }
+    .edge-to { left:var(--to); bottom:0; }
+    .edge-to::after { content:""; width:.34rem; height:.34rem; border:solid currentColor; border-width:0 1px 1px 0; position:absolute; bottom:2px; left:-.17rem; transform:rotate(45deg); }
+    .edge-across { left:min(var(--from),var(--to)); width:calc(max(var(--from),var(--to)) - min(var(--from),var(--to))); top:50%; border-top:1px solid currentColor; }
+    .edge-label { position:absolute; top:50%; left:var(--mid); transform:translate(-50%,-50%); background:var(--board); padding:0 .4rem; font-size:.74rem; font-weight:650; white-space:nowrap; }
+    .edge.same-lane .edge-label { transform:translate(.2rem,-50%); }
+    .incoming { font-size:.76rem; margin-top:.35rem; color:var(--muted); }
+    .incoming a { color:inherit; }
+    .incoming.return-line { color:#913e2c; }
+    .details { border-top:1px solid var(--line); margin-top:1.25rem; }
+    .details summary { cursor:pointer; padding:.7rem 0; font-weight:650; }
+    .human { margin-top:1.5rem; }
+    .human h2 { margin:0; }
+    .section-head,.decision-head,.operator-log li { display:flex; justify-content:space-between; align-items:center; gap:.7rem; }
+    .section-head { margin-bottom:.75rem; }
+    .section-title { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }
+    .quiet-link { color:var(--accent); font-size:.84rem; text-underline-offset:.18rem; }
+    .inbox,.intervention { background:#fff; border:1px solid var(--line); border-radius:.85rem; overflow:hidden; }
+    .inbox-body { display:grid; grid-template-columns:minmax(13rem,1fr) minmax(0,2.2fr); }
+    .inbox-list { background:#f2f6fa; border-right:1px solid var(--line); min-width:0; }
+    .list-title { padding:.7rem 1rem .45rem; color:var(--muted); font-size:.79rem; font-weight:650; }
+    .decision-list { list-style:none; margin:0; padding:0 .45rem .5rem; }
+    .inbox-row { display:grid; grid-template-columns:1.1rem minmax(0,1fr); align-items:start; gap:.45rem; border-radius:.55rem; border:1px solid transparent; }
+    .inbox-row + .inbox-row { margin-top:.16rem; }
+    .inbox-row.active { background:#e2ecfa; border-color:#c7d8ee; }
+    .inbox-row input { width:1rem; height:1rem; margin:.83rem 0 0 .42rem; accent-color:var(--accent); cursor:pointer; }
+    .inbox-row .row-button { width:100%; text-align:left; border:0; background:transparent; padding:.5rem .5rem .55rem .25rem; cursor:pointer; }
+    .row-title { display:block; font-weight:650; line-height:1.45; }
+    .row-meta,.field-label,.operator-log time { color:var(--muted); font-size:.79rem; }
+    .row-meta { display:block; margin-top:.14rem; }
+    .decision-view { padding:clamp(.9rem,2vw,1.4rem); min-width:0; }
+    .decision-title { font-size:1.15rem; line-height:1.45; margin:0; }
+    .decision-body { white-space:pre-wrap; max-height:12rem; overflow:auto; margin:.65rem 0 .8rem; }
+    .field-label { font-weight:650; }
+    .reason-box { background:#f1f5fa; border-inline-start:3px solid #829ec1; padding:.6rem .75rem; border-radius:.32rem; }
+    .reason-box p { white-space:pre-wrap; }
+    .detail-block { margin-top:.65rem; }
+    .file-link,.task-link { display:inline-block; margin:.25rem .35rem 0 0; padding:.18rem .5rem; border-radius:.32rem; color:var(--accent); background:#e8f0fb; font-size:.83rem; text-underline-offset:.13rem; }
+    .task-link { background:#eaf0f5; color:#3e5773; }
+    .inbox-footer,.intervention,.dialog-actions { display:flex; justify-content:space-between; flex-wrap:wrap; align-items:center; gap:.55rem .8rem; }
+    .inbox-footer { padding:.65rem 1rem; border-top:1px solid var(--line); background:#f7f9fc; }
+    .inbox-footer p,.intervention p { font-size:.86rem; color:var(--muted); }
+    .actions { display:flex; align-items:center; gap:.45rem; flex-wrap:wrap; }
+    button,select,textarea { font:inherit; color:inherit; }
+    .button { cursor:pointer; border:1px solid #b0c1d4; padding:.38rem .7rem; border-radius:.45rem; background:#fff; font-size:.86rem; font-weight:650; }
+    .button:hover:not(:disabled) { background:#edf3fb; }
+    .button.primary { color:#fff; background:var(--accent); border-color:var(--accent); }
+    .button.primary:hover:not(:disabled) { background:#123e72; }
+    .button:disabled { cursor:default; opacity:.48; }
+    :is(a,button,input,select,textarea,summary):focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+    .intervention { margin-top:.75rem; padding:.75rem 1rem; }
+    .intervention.paused-box { background:#fffbf2; border-color:#ebd8b6; }
+    .intervention h3 { margin:0; }
+    .review-history { margin-top:.6rem; }
+    .review-history > summary .row-meta { display:inline; margin-left:.4rem; }
+    .operator-log { padding:0; margin:0 0 .75rem; list-style:none; }
+    .operator-log li { padding:.45rem 0; border-top:1px solid var(--line); font-size:.86rem; align-items:start; }
+    .operator-log time { flex:none; }
+    .archive-item { border-top:1px solid var(--line); }
+    .archive-item .decision-view { padding:.25rem 0 .75rem; }
+    .notice { color:var(--muted); font-size:.86rem; }
+    .notice:not(:empty) { margin:.55rem 0; }
+    .notice.error { color:#923c29; }
+    dialog { width:min(33rem,calc(100% - 2rem)); max-height:calc(100dvh - 2rem); padding:1.15rem; border:1px solid var(--line); border-radius:.9rem; color:var(--ink); background:white; box-shadow:0 20px 65px #16284050; }
+    dialog::backdrop { background:#15284180; }
+    dialog h2 { margin:0 0 .35rem; }
+    dialog label { display:block; margin-top:.75rem; font-size:.88rem; font-weight:650; }
+    dialog textarea,dialog select,dialog input { display:block; width:100%; padding:.45rem .55rem; border:1px solid #a4b8cf; border-radius:.4rem; background:#fff; }
+    dialog textarea { resize:vertical; min-height:4.2rem; }
+    .dialog-targets { margin:.55rem 0; padding-left:1.2rem; font-size:.85rem; }
+    .dialog-actions { justify-content:flex-end; margin-top:.85rem; }
+    .history { margin:0; padding:0; list-style:none; }
+    .history li { border-top:1px solid var(--line); padding:.8rem 0; }
+    .history small { display:block; color:var(--muted); }
+    #connection[data-error] { color:#ffd2a4; }
+    #connection[data-error]::before { background:#f3ad64; }
+    @media (max-width:820px) {
+      .lane-heads { display:none; }
+      .chart { background:var(--board); border-block-start:1px solid var(--line); padding:.32rem .5rem; }
+      .stage { display:block; }
+      .task { margin:.35rem 0; }
+      .edge { margin:-.35rem 0; --from:1.35rem !important; --to:1.35rem !important; }
+      .edge .edge-label { left:1.35rem; transform:translate(.25rem,-50%); }
+      .gate-row { left:0 !important; transform:none; max-width:100%; margin-left:.65rem; justify-content:start; }
+      .gate-links { text-align:left; }
+    }
+    @media (max-width:600px) {
+      .inbox-body { grid-template-columns:1fr; }
+      .inbox-list { border-right:0; border-bottom:1px solid var(--line); }
+      .decision-head { align-items:flex-start; }
+      .decision-head .pill { flex:none; }
+      .section-head { flex-wrap:wrap; }
+      #approval-jump { margin-inline-start:0; }
+      .inbox-footer .actions { width:100%; }
+      .inbox-footer .button { flex:1; }
+      .button { min-height:2.65rem; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="brand">Pioneers</p>
+      <h1>运行看板</h1>
+      <p id="goal"></p>
+      <div class="meta">
+        <span id="state" class="pill">载入中</span>
+        <span id="count"></span>
+        <span id="connection" role="status">正在连接</span>
+        <a id="approval-jump" class="quiet-link" href="#human-title" hidden>人工确认与介入 ↓</a>
+      </div>
+    </header>
+    <section class="flow" aria-labelledby="flow-title">
+      <div class="flow-head">
+        <h2 id="flow-title">团队协作流程</h2>
+        <div class="flow-legend">
+          <span class="legend-handoff">任务交接</span>
+          <span class="legend-approval">审批</span>
+          <span class="legend-return">返工</span>
+        </div>
+      </div>
+      <div id="return-trace" class="trace" hidden></div>
+      <div id="lane-heads" class="lanes lane-heads" aria-hidden="true"></div>
+      <ol id="stages" class="chart" aria-label="任务交接、审批和发布阶段"></ol>
+    </section>
+    <section id="human" class="human" aria-labelledby="human-title" hidden>
+      <div class="section-head">
+        <div class="section-title"><h2 id="human-title">人工确认</h2><span id="pending-count" class="pill" hidden></span></div>
+        <a class="quiet-link" href="#flow-title">返回协作流程 ↑</a>
+      </div>
+      <div class="inbox">
+        <div class="inbox-body">
+          <div class="inbox-list">
+            <p class="list-title">待处理决策</p>
+            <ul id="decisions" class="decision-list"></ul>
+          </div>
+          <div id="decision-detail" class="decision-view" aria-label="决策详情"></div>
+        </div>
+        <div id="batch" class="inbox-footer" hidden>
+          <p id="selection-count" aria-live="polite"></p>
+          <div class="actions">
+            <button id="approve-all" class="button" type="button">全部通过</button>
+            <button id="approve-selected" class="button primary" type="button">通过所选</button>
+          </div>
+        </div>
+      </div>
+      <section class="intervention" id="intervention" aria-labelledby="intervention-title">
+        <div><h3 id="intervention-title">运行介入</h3><p id="pause-info"></p></div>
+        <div class="actions">
+          <button id="pause" class="button" type="button">暂停派工</button>
+          <button id="intervene" class="button" type="button" hidden>补充指令或重跑</button>
+          <button id="resume" class="button primary" type="button" hidden>恢复派工</button>
+        </div>
+      </section>
+      <p id="human-feedback" class="notice" role="status"></p>
+      <details id="approval-history" class="details review-history" hidden>
+        <summary>审批与介入记录 <span id="history-count" class="row-meta"></span></summary>
+        <div id="decision-history"></div>
+      </details>
+    </section>
+    <dialog id="action-dialog" aria-labelledby="dialog-title">
+      <form id="action-form">
+        <h2 id="dialog-title"></h2>
+        <p id="dialog-description" class="notice"></p>
+        <ul id="dialog-targets" class="dialog-targets" hidden></ul>
+        <div id="rerun-field" hidden>
+          <label for="rerun-from">重跑起点</label>
+          <select id="rerun-from"></select>
+        </div>
+        <div id="approver-field" hidden>
+          <label for="approver-name">确认人（可选）</label>
+          <input id="approver-name" type="text" maxlength="80">
+        </div>
+        <label for="human-reason" id="reason-label">操作原因</label>
+        <textarea id="human-reason" rows="2" required></textarea>
+        <div id="replacement-field" hidden>
+          <label for="replacement">替换产物内容（可选）</label>
+          <textarea id="replacement" rows="4"></textarea>
+        </div>
+        <p id="dialog-feedback" class="notice error" role="alert"></p>
+        <div class="dialog-actions">
+          <button id="cancel-action" class="button" type="button">取消</button>
+          <button id="submit-action" class="button primary" type="submit"></button>
+        </div>
+      </form>
+    </dialog>
+    <details class="details">
+      <summary>查看角色活动明细</summary>
+      <ol id="history" class="history"></ol>
+    </details>
+  </main>
+  <script>
+    const labels = {
+      pending:"待执行", running:"进行中", completed:"已完成", failed:"失败",
+      interrupted:"已中断", blocked:"已阻塞", planned:"计划已生成", returned:"已退回",
+      accepted:"验收通过", publishing:"发布中", published:"已发布", publish_failed:"发布失败",
+      judging:"等待 LLM 判断", awaiting_confirmation:"待人工确认", paused:"已暂停",
+      approved:"已确认", superseded:"已作废"
+    };
+    const byId = id => document.getElementById(id);
+    function element(tag, value, className) {
+      const node = document.createElement(tag);
+      node.textContent = value;
+      if (className) node.className = className;
+      return node;
+    }
+    function appendActivity(node, activity, evidence) {
+      node.append(element("p", activity, "action"));
+      if (evidence) {
+        const link = element("a", evidence + " ↗", "evidence");
+        link.href = "/evidence/" + encodeURIComponent(evidence);
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.setAttribute("aria-label", "查看证据 " + evidence + "（新标签页）");
+        node.append(link);
+      }
+    }
+    const clock = at => new Date(at).toLocaleTimeString("zh-CN", {hour12:false});
+    const attemptLabel = attempt => attempt > 1 ? " · 第 " + attempt + " 轮" : "";
+    const stageLink = (stage, title) => {
+      const link = element("a", title);
+      link.href = "#stage-" + stage.key;
+      return link;
+    };
+    const isApproval = stage => stage.node_type === "approval";
+    function stageTitle(stage) {
+      if (isApproval(stage)) {
+        return {effect:"执行授权", release:"发布授权", result:"人工确认"}[stage.kind];
+      }
+      if (stage.key === "release") return "发布";
+      if (stage.role === "pm") return "需求交接";
+      if (stage.state === "returned") return stage.attempt > 1 ? "复验退回" : "初验退回";
+      if (stage.role === "qa") return stage.attempt > 1 ? "QA 复验" : "QA 验收";
+      if (stage.role === "engineer") return stage.attempt > 1 ? "工程师修复" : "实现交付";
+      return stage.task;
+    }
+    function edgeLabel(edge, source, destination) {
+      if (edge.kind === "return") return "QA 退回修复";
+      if (isApproval(source)) {
+        if (source.state !== "approved") return "等待审批";
+        return source.kind === "result" ? "审批后交接" : "授权后执行";
+      }
+      if (isApproval(destination)) return edge.kind === "waiting" ? "等待前置任务" : "提交审批";
+      if (edge.kind === "waiting") return "等待前置任务";
+      if (destination.key === "release") return "验收后发布";
+      if (destination.role === "qa" && destination.attempt > 1 && source.attempt > 1) return "修复后复验";
+      return "任务交接";
+    }
+    function note(stage, text, className) {
+      const detail = element("p", text, className);
+      const title = isApproval(stage) ? stageTitle(stage) + " " + stage.decision : stageTitle(stage) + attemptLabel(stage.attempt);
+      detail.append(stageLink(stage, title));
+      return detail;
+    }
+    function card(stage, roles, tasks, incoming, stages) {
+      const node = element("article", "", "task");
+      node.id = "stage-" + stage.key;
+      if (stage.state === "running" || stage.state === "publishing") node.classList.add("running-card");
+      if (stage.state === "returned" || incoming.some(edge => edge.kind === "return")) node.classList.add("return-card");
+      const header = element("div", "", "task-header");
+      header.append(element("h3", stageTitle(stage)), element("span", labels[stage.state], "pill " + stage.state));
+      node.append(header);
+      const meta = [stage.member?.name, roles[stage.role], stage.task,
+        stage.attempt && ("第 " + stage.attempt + " 轮"), stage.at && clock(stage.at)];
+      node.append(element("p", meta.filter(Boolean).join(" · "), "stage-meta"));
+      const scope = tasks[stage.task]?.prompt;
+      const waiting = stage.state === "pending" && tasks[stage.task]?.depends_on.filter(dep => tasks[dep].state !== "completed");
+      const activity = waiting && waiting.length ? "等待 " + waiting.join("、") : stage.activity;
+      appendActivity(node, activity, stage.evidence);
+      for (const edge of incoming) {
+        const source = stages.get(edge.from);
+        node.append(note(source, edgeLabel(edge, source, stage) + " ↳ ", "incoming" + (edge.kind === "return" ? " return-line" : "")));
+      }
+      if (scope) {
+        const detail = element("details", "", "scope");
+        detail.append(element("summary", "任务说明"), element("p", scope));
+        node.append(detail);
+      }
+      if (stage.url && /^https?:\/\//.test(stage.url)) {
+        const link = element("a", "打开已发布站点 ↗", "evidence");
+        link.href = stage.url;
+        link.target = "_blank";
+        link.rel = "noopener";
+        node.append(link);
+      }
+      return node;
+    }
+    function connector(edge, previous, stage, position, total) {
+      const row = element("div", "", "edge " + edge.kind + "-edge");
+      const source = position(previous);
+      const target = position(stage);
+      if (source === target) row.classList.add("same-lane");
+      row.style.setProperty("--from", ((source - .5) / total * 100) + "%");
+      row.style.setProperty("--to", ((target - .5) / total * 100) + "%");
+      row.style.setProperty("--mid", ((source + target - 1) / (2 * total) * 100) + "%");
+      for (const part of ["from", "across", "to"]) {
+        const line = element("i", "", "edge-" + part);
+        line.setAttribute("aria-hidden", "true");
+        row.append(line);
+      }
+      row.append(element("span", edgeLabel(edge, previous, stage), "edge-label"));
+      return row;
+    }
+    function gateRow(stage, position, total, remoteStages) {
+      const row = element("div", "", "gate-row");
+      row.id = "stage-" + stage.key;
+      const percent = (position - .5) / total * 100;
+      row.style.setProperty("--gate-center", percent + "%");
+      row.style.setProperty("--gate-edge", Math.min(percent, 100 - percent) + "%");
+      const pending = ["awaiting_confirmation", "judging"].includes(stage.state);
+      const id = stage.decision;
+      const review = element("a", stageTitle(stage) + " · " + id + " · " + labels[stage.state], "gate-link " + stage.state);
+      review.href = pending ? "#human-title" : "#archive-" + id;
+      review.onclick = () => {
+        if (pendingDecisions().some(item => item.id === id)) selectDecision(id);
+        else {
+          byId("approval-history").open = true;
+          const archive = byId("archive-" + id);
+          if (archive) archive.open = true;
+        }
+      };
+      row.append(review);
+      for (const [label, connected] of Object.entries(remoteStages)) {
+        if (!connected.length) continue;
+        const links = element("div", label, "gate-links");
+        for (const item of connected) links.append(stageLink(item, isApproval(item) ? item.decision : item.task || stageTitle(item)));
+        row.append(links);
+      }
+      return row;
+    }
+    function laneKey(stage) {
+      if (stage.member) return "member:" + stage.member.id;
+      if (stage.key !== "release" && (stage.state === "pending" || (stage.authorization && stage.state === "awaiting_confirmation"))) {
+        return "unassigned";
+      }
+      return "role:" + stage.role;
+    }
+    function renderTrace(flow, stages) {
+      const summary = byId("return-trace");
+      const returns = flow.edges.filter(edge => edge.kind === "return");
+      summary.hidden = returns.length === 0;
+      if (!returns.length) return;
+      const latest = returns[returns.length - 1];
+      const source = stages.get(latest.from);
+      const target = stages.get(latest.to);
+      const review = stages.get(source.stage) || source;
+      const repair = stages.get(target.stage) || target;
+      const recheck = flow.nodes.find(stage => stage.task === review.task && stage.attempt === review.attempt + 1);
+      const path = element("div", "", "trace-path");
+      path.append(stageLink(review, "QA 退回"), element("span", "→"), stageLink(repair, "工程师修复"));
+      if (recheck) path.append(element("span", "→"), stageLink(recheck, "QA 复验 · " + labels[recheck.state]));
+      const reason = review.activity.split(" · ").slice(1).join(" · ") || review.activity;
+      summary.replaceChildren(element("h3", "返工记录 · " + returns.length + " 次退回"), path, element("p", reason));
+    }
+    function renderFlow(data) {
+      const flow = data.flow;
+      const chart = byId("stages");
+      const headers = byId("lane-heads");
+      const stages = new Map(flow.nodes.map(stage => [stage.key, stage]));
+      const lanes = new Map();
+      for (const stage of flow.nodes) {
+        if (isApproval(stage)) continue;
+        const key = laneKey(stage);
+        if (lanes.has(key)) continue;
+        const role = data.roles[stage.role];
+        lanes.set(key, key === "unassigned" ? ["待分配"] : [stage.member?.name || role, stage.member && role]);
+      }
+      if (lanes.has("unassigned")) {
+        const label = lanes.get("unassigned");
+        lanes.delete("unassigned");
+        lanes.set("unassigned", label);
+      }
+      const order = [...lanes.keys()];
+      const lane = stage => order.indexOf(laneKey(stage)) + 1;
+      const attachedStage = node => isApproval(node) ? stages.get(node.stage) : node;
+      const position = stage => {
+        if (!isApproval(stage)) return lane(stage);
+        const owner = lane(attachedStage(stage));
+        const peers = flow.edges.filter(edge => stage.kind === "result" ? edge.from === stage.key : edge.to === stage.key);
+        const peer = peers.map(edge => lane(attachedStage(stages.get(stage.kind === "result" ? edge.to : edge.from))))
+          .find(column => column !== owner);
+        return peer ? (owner + peer) / 2 : owner;
+      };
+      chart.style.setProperty("--lanes", order.length || 1);
+      headers.style.setProperty("--lanes", order.length || 1);
+      headers.replaceChildren(...[...lanes.values()].map(([name, role]) => {
+        const header = element("div", "");
+        header.append(element("strong", name));
+        if (role) header.append(element("small", role));
+        return header;
+      }));
+      const rows = flow.nodes.map((stage, index) => {
+        const row = element("li", "");
+        const previous = flow.nodes[index - 1];
+        const incoming = flow.edges.filter(edge => edge.to === stage.key);
+        const adjacent = previous && incoming.find(edge => edge.from === previous.key);
+        if (adjacent) row.append(connector(adjacent, previous, stage, position, order.length));
+        if (isApproval(stage)) {
+          const next = flow.nodes[index + 1];
+          const outgoing = flow.edges.filter(edge => edge.from === stage.key);
+          row.append(gateRow(stage, position(stage), order.length, {
+            "来自": incoming.filter(edge => edge !== adjacent).map(edge => stages.get(edge.from)),
+            "影响": outgoing.filter(edge => edge.to !== next?.key).map(edge => stages.get(edge.to)),
+          }));
+          return row;
+        }
+        const place = element("div", "", "stage");
+        const node = card(stage, data.roles, data.tasks, incoming.filter(edge => edge !== adjacent), stages);
+        node.style.setProperty("--column", lane(stage));
+        place.append(node);
+        row.append(place);
+        return row;
+      });
+      if (!rows.length) rows.push(element("li", data.planning?.activity || "等待工作流分派", "empty"));
+      chart.replaceChildren(...rows);
+      renderTrace(flow, stages);
+    }
+    const selected = new Set();
+    const decisionLabels = {waiting:"待人工确认", judging:"等待 LLM 判断", approved:"人工已确认",
+      auto:"LLM 已放行", superseded:"已被替换"};
+    const decisionTones = {waiting:"awaiting_confirmation", judging:"judging", approved:"completed", auto:"completed"};
+    const actionLabels = {approve:"确认", revise:"修改决策", pause:"暂停", resume:"恢复", intervene:"介入"};
+    const decisionKinds = {result:"任务产物", effect:"执行授权", release:"发布授权"};
+    let operatorData, operatorSnapshot, activeId, request, submitting = false;
+
+    function decisionTitle(decision) {
+      const heading = decision.content?.match(/^#\s+([^\n]+)/);
+      return heading?.[1] || operatorData.tasks[decision.task]?.prompt || (decision.kind === "release" ? "发布" : decision.task) || decision.id;
+    }
+    const pendingDecisions = () => Object.values(operatorData.decisions || {}).filter(item => ["waiting", "judging"].includes(item.state));
+    const waitingIds = () => pendingDecisions().filter(item => item.state === "waiting").map(item => item.id);
+
+    function canRevise(item) {
+      const data = operatorData;
+      if (!["running", "accepted", "completed", "publish_failed"].includes(data.state)) return false;
+      if (!["waiting", "judging", "approved", "auto"].includes(item.state)) return false;
+      if (item.kind === "result") return true;
+      const state = item.kind === "release" ? data.release?.state : data.tasks[item.task]?.state;
+      return ["awaiting_confirmation", "pending", "accepted", "publish_failed"].includes(state);
+    }
+
+    function fileLink(name) {
+      const link = element("a", name + " ↗", "file-link");
+      link.href = "/evidence/" + encodeURIComponent(name);
+      link.target = "_blank";
+      link.rel = "noopener";
+      return link;
+    }
+
+    function detailBlock(label, children, className = "detail-block") {
+      const block = element("div", "", className);
+      block.append(element("p", label, "field-label"), ...children);
+      return block;
+    }
+
+    function decisionDetail(item, showTitle = true) {
+      const body = element("div", "");
+      const header = element("div", "", "decision-head");
+      header.append(element("h3", showTitle ? decisionTitle(item) : item.id, "decision-title"),
+        element("span", decisionLabels[item.state], "pill " + (decisionTones[item.state] || "")));
+      body.append(header, element("p", [item.id, decisionKinds[item.kind], operatorData.roles[operatorData.tasks[item.task]?.role],
+        item.attempt ? "第 " + item.attempt + " 轮" : ""].filter(Boolean).join(" · "), "stage-meta"));
+      const content = item.content?.replace(/^#\s+[^\n]+\n+/, "");
+      if (content) body.append(element("p", content, "decision-body"));
+      body.append(detailBlock("判断理由", [element("p", item.reason)], "reason-box"));
+      if (item.state === "approved" || item.previous_state === "approved") {
+        body.append(detailBlock("确认人", [element("p", item.approved_by || "本机操作者（未记录姓名）")]));
+      }
+      if (item.note) body.append(detailBlock("人工意见", [element("p", item.note)]));
+      if (item.replaces) body.append(element("p", "原决策 " + item.replaces, "scope"));
+      const files = [item.evidence, ...(item.inputs || [])].filter(Boolean);
+      if (files.length) body.append(detailBlock("相关产物", [...new Set(files)].map(fileLink)));
+      if (item.affected?.length) {
+        const tasks = item.affected.map(id => {
+          const task = operatorData.tasks[id];
+          const link = element("a", id, "task-link");
+          link.href = "#stage-" + id + "." + (task?.attempt || 1);
+          link.title = task?.prompt || id;
+          return link;
+        });
+        body.append(detailBlock("受影响的任务", tasks));
+      } else {
+        body.append(element("p", "无受影响的下游任务", "scope"));
+      }
+      if (item.state === "waiting" || canRevise(item)) {
+        const actions = element("div", "", "actions detail-block");
+        if (item.state === "waiting") {
+          const approve = element("button", "通过此项", "button primary");
+          approve.type = "button";
+          approve.onclick = () => openAction("approve", {decisions:[item.id]});
+          actions.append(approve);
+        }
+        if (canRevise(item)) {
+          const revise = element("button", "补充意见或修订", "button");
+          revise.type = "button";
+          revise.onclick = () => openAction("revise", {decision:item.id});
+          actions.append(revise);
+        }
+        body.append(actions);
+      }
+      return body;
+    }
+
+    function renderBatch(waiting) {
+      byId("batch").hidden = !waiting.length;
+      byId("selection-count").textContent = "已选 " + selected.size + " 项，共 " + waiting.length + " 项可确认";
+      byId("approve-selected").disabled = !selected.size;
+    }
+
+    function selectDecision(id) {
+      activeId = id;
+      for (const row of byId("decisions").children) {
+        const active = row.dataset.id === id;
+        row.classList.toggle("active", active);
+        row.querySelector("button").setAttribute("aria-pressed", String(active));
+      }
+      byId("decision-detail").replaceChildren(decisionDetail(operatorData.decisions[id]));
+    }
+
+    function renderInbox() {
+      const pending = pendingDecisions();
+      const waiting = waitingIds();
+      for (const key of selected) if (!waiting.includes(key)) selected.delete(key);
+      if (!pending.some(item => item.id === activeId)) activeId = pending[0]?.id;
+      const count = byId("pending-count");
+      count.hidden = !pending.length;
+      count.textContent = waiting.length ? waiting.length + " 项待确认" : pending.length + " 项等待判断";
+      count.className = "pill " + (waiting.length ? "awaiting_confirmation" : "judging");
+      const list = byId("decisions");
+      const focused = document.activeElement;
+      const focusedId = focused?.closest("#decisions > li")?.dataset.id;
+      list.replaceChildren(...pending.map(item => {
+        const row = element("li", "", "inbox-row");
+        row.dataset.id = item.id;
+        if (item.state === "waiting") {
+          const check = element("input", "");
+          check.type = "checkbox";
+          check.checked = selected.has(item.id);
+          check.setAttribute("aria-label", "选择 " + decisionTitle(item));
+          check.onchange = () => {
+            if (check.checked) selected.add(item.id);
+            else selected.delete(item.id);
+            renderBatch(waiting);
+          };
+          row.append(check);
+        } else {
+          row.append(element("span", ""));
+        }
+        const button = element("button", "", "row-button");
+        button.type = "button";
+        button.setAttribute("aria-controls", "decision-detail");
+        button.append(element("span", decisionTitle(item), "row-title"),
+          element("span", item.id + " · " + decisionLabels[item.state], "row-meta"));
+        button.onclick = () => selectDecision(item.id);
+        row.append(button);
+        return row;
+      }));
+      if (activeId) selectDecision(activeId);
+      else {
+        list.append(element("li", "暂无待处理决策", "list-title"));
+        byId("decision-detail").replaceChildren(element("h3", "当前没有待确认事项"),
+          element("p", "新的决策会显示在这里。", "notice"));
+      }
+      renderBatch(waiting);
+      const replacement = [...list.children].find(row => row.dataset.id === focusedId);
+      if (focusedId && replacement) replacement.querySelector(focused.tagName.toLowerCase())?.focus({preventScroll:true});
+    }
+
+    function renderHistory(data) {
+      const audit = (data.operator_log || []).slice().reverse();
+      const archive = Object.values(data.decisions || {}).filter(item => !["waiting", "judging"].includes(item.state)).reverse();
+      const history = byId("approval-history");
+      history.hidden = !audit.length && !archive.length;
+      byId("history-count").textContent = [audit.length && audit.length + " 条操作", archive.length && archive.length + " 项决策"].filter(Boolean).join(" · ");
+      const log = element("ul", "", "operator-log");
+      for (const event of audit) {
+        const row = element("li", "");
+        const time = element("time", clock(event.at));
+        time.dateTime = event.at;
+        row.append(element("span", [actionLabels[event.action], event.decision || event.start, event.approver, event.reason].filter(Boolean).join(" · ")), time);
+        log.append(row);
+      }
+      const opened = new Set([...byId("decision-history").children].filter(row => row.open).map(row => row.dataset.decision));
+      const archived = archive.map(item => {
+        const row = element("details", "", "archive-item");
+        row.id = "archive-" + item.id;
+        row.dataset.decision = item.id;
+        row.open = opened.has(item.id);
+        const view = element("div", "", "decision-view");
+        view.append(decisionDetail(item, false));
+        row.append(element("summary", item.id + " · " + decisionTitle(item) + " · " + decisionLabels[item.state]), view);
+        return row;
+      });
+      byId("decision-history").replaceChildren(log, ...archived);
+    }
+
+    function renderHuman(data) {
+      operatorData = data;
+      byId("human").hidden = data.mode === "offline";
+      const jump = byId("approval-jump");
+      jump.hidden = data.mode === "offline";
+      const count = waitingIds().length;
+      jump.textContent = count ? count + " 项待确认 ↓" : "人工确认与介入 ↓";
+      if (data.mode === "offline") return;
+      const snapshot = JSON.stringify([data.state, data.paused, data.decisions, data.operator_log, data.tasks, data.release]);
+      if (snapshot === operatorSnapshot) return;
+      operatorSnapshot = snapshot;
+      renderInbox();
+      const paused = Boolean(data.paused);
+      byId("intervention").classList.toggle("paused-box", paused);
+      byId("pause-info").textContent = paused ? "已暂停派工 · " + data.paused : "暂停后不会领取新任务，已在执行的任务仍可回报。";
+      const canPause = Object.keys(data.tasks).length &&
+        ["running", "accepted", "completed", "publish_failed"].includes(data.state);
+      byId("intervention").hidden = !paused && !canPause;
+      byId("pause").hidden = paused || !canPause;
+      byId("intervene").hidden = !paused;
+      byId("resume").hidden = !paused;
+      renderHistory(data);
+    }
+
+    function openAction(action, fields = {}, title) {
+      if (submitting) return;
+      request = {action, ...fields};
+      const settings = {
+        approve:["确认决策", "确认后，满足所有依赖条件的下游任务可以继续。", "确认通过"],
+        revise:["补充意见或修订", "沿用原产物时只填写意见。原决策会保留，相关任务会重新评估。", "提交修订"],
+        pause:["暂停派工", "暂停新任务领取。已经开始的任务可以继续回报。", "确认暂停"],
+        intervene:["补充指令或重跑", "选择重跑起点会重新排队该任务和受影响的下游。", "提交指令"],
+        resume:["恢复派工", "依赖已满足、审批已通过的任务可以继续领取。", "确认恢复"],
+      }[action];
+      byId("dialog-title").textContent = title || settings[0];
+      byId("dialog-description").textContent = settings[1];
+      byId("submit-action").textContent = settings[2];
+      byId("reason-label").textContent = action === "revise" ? "修改原因或补充意见" : action === "intervene" ? "补充指令" : "操作原因";
+      byId("action-form").reset();
+      byId("dialog-feedback").textContent = "";
+      byId("replacement-field").hidden = action !== "revise";
+      byId("rerun-field").hidden = action !== "intervene";
+      byId("approver-field").hidden = action !== "approve";
+      const options = [["", "仅补充指令，不重新排队"], ...Object.keys(operatorData.tasks).map(id => [id, id])];
+      byId("rerun-from").replaceChildren(...options.map(([value, name]) => {
+        const option = element("option", name);
+        option.value = value;
+        return option;
+      }));
+      const targets = fields.decisions || (fields.decision ? [fields.decision] : []);
+      const list = byId("dialog-targets");
+      list.hidden = !targets.length;
+      list.replaceChildren(...targets.map(id => element("li", id + " · " + decisionTitle(operatorData.decisions[id]))));
+      byId("action-dialog").showModal();
+      byId("human-reason").focus();
+    }
+
+    async function submitAction(event) {
+      event.preventDefault();
+      if (submitting) return;
+      const reason = byId("human-reason").value.trim();
+      const errorBox = byId("dialog-feedback");
+      if (!reason) {
+        errorBox.textContent = "请填写操作原因或补充指令。";
+        byId("human-reason").focus();
+        return;
+      }
+      const body = {...request, reason};
+      if (body.action === "approve" && byId("approver-name").value.trim()) body.approver = byId("approver-name").value.trim();
+      if (body.action === "revise") body.content = byId("replacement").value.trim() || null;
+      if (body.action === "intervene") body.from = byId("rerun-from").value || null;
+      submitting = true;
+      byId("submit-action").disabled = true;
+      byId("cancel-action").disabled = true;
+      errorBox.textContent = "";
+      try {
+        const response = await fetch("/human-action", {method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify(body)});
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || "操作未提交，请刷新后重试。");
+        byId("human-feedback").textContent = body.action === "approve" ? "已通过 " + result.approved.length + " 项决策。" :
+          "已记录" + actionLabels[body.action] + "操作。";
+        byId("action-dialog").close();
+      } catch (error) {
+        errorBox.textContent = error.message;
+      } finally {
+        submitting = false;
+        byId("submit-action").disabled = false;
+        byId("cancel-action").disabled = false;
+      }
+    }
+
+    byId("action-form").onsubmit = submitAction;
+    byId("cancel-action").onclick = () => byId("action-dialog").close();
+    byId("action-dialog").addEventListener("cancel", event => { if (submitting) event.preventDefault(); });
+    byId("approve-selected").onclick = () => openAction("approve", {decisions:[...selected]});
+    byId("approve-all").onclick = () => openAction("approve", {decisions:waitingIds()}, "确认当前全部待审批决策");
+    byId("pause").onclick = () => openAction("pause");
+    byId("resume").onclick = () => openAction("resume");
+    byId("intervene").onclick = () => openAction("intervene");
+    function render(data) {
+      const tasks = Object.values(data.tasks);
+      const completed = tasks.filter(task => task.state === "completed").length;
+      byId("goal").textContent = data.goal || "";
+      const state = byId("state");
+      const shown = data.paused ? "paused" : data.state;
+      state.textContent = labels[shown];
+      state.className = "pill " + shown;
+      byId("count").textContent = (data.mode === "offline" ? "离线演练 · " : "") +
+        completed + " / " + tasks.length + " 项任务完成";
+      renderFlow(data);
+      renderHuman(data);
+      const history = (data.events || []).slice().reverse().map(event => {
+        const row = element("li", "");
+        const time = clock(event.at);
+        row.append(element("small", time + " · " + data.roles[event.role] +
+          (event.task ? " · " + event.task + attemptLabel(event.attempt) : "") + " · " + labels[event.state]));
+        appendActivity(row, event.activity, event.evidence);
+        return row;
+      });
+      byId("history").replaceChildren(...(history.length ? history : [element("li", "等待执行端上报动作", "empty")]));
+    }
+    let previous;
+    async function refresh() {
+      const connection = byId("connection");
+      try {
+        const response = await fetch("/dashboard-data.json", {cache:"no-store"});
+        if (!response.ok) throw new Error("status unavailable");
+        const snapshot = await response.text();
+        if (snapshot !== previous) {
+          render(JSON.parse(snapshot));
+          previous = snapshot;
+        }
+        if (connection.textContent !== "实时更新") connection.textContent = "实时更新";
+        connection.removeAttribute("data-error");
+      } catch {
+        if (!connection.hasAttribute("data-error")) {
+          connection.textContent = "看板暂未连接，正在重试";
+          connection.setAttribute("data-error", "");
+        }
+      } finally {
+        setTimeout(refresh, 1000);
+      }
+    }
+    refresh();
+  </script>
+</body>
+</html>
