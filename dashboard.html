@@ -32,7 +32,7 @@
     .running,.publishing { background:#deebfe; color:var(--accent); }
     .completed,.accepted,.published,.approved { background:#e1f2ec; color:#166052; }
     .blocked,.failed,.interrupted,.returned,.publish_failed { background:#fdf0ef; color:var(--return); }
-    .awaiting_confirmation,.paused { background:#fff0d4; color:var(--amber); }
+    .awaiting_confirmation,.paused,.recovery_required { background:#fff0d4; color:var(--amber); }
     .judging { background:#ece7f5; color:#594075; }
     .flow { margin-top:1.12rem; border:1px solid var(--line); border-radius:.9rem; overflow:hidden; background:#fff; }
     .dispatch { margin-top:1.12rem; padding:.85rem 1rem; border:1px solid var(--line); border-radius:.9rem; background:#fff; }
@@ -345,6 +345,7 @@
       interrupted:"已中断", blocked:"已阻塞", planned:"计划已生成", returned:"已退回",
       accepted:"验收通过", publishing:"发布中", published:"已发布", publish_failed:"发布失败",
       judging:"等待 LLM 判断", awaiting_confirmation:"待人工确认", paused:"已暂停",
+      recovery_required:"待人工恢复",
       approved:"已确认", superseded:"已作废"
     };
     const byId = id => document.getElementById(id);
@@ -641,7 +642,7 @@
     const decisionLabels = {waiting:"待人工确认", judging:"等待 LLM 判断", approved:"人工已确认",
       auto:"LLM 已放行", superseded:"已被替换"};
     const decisionTones = {waiting:"awaiting_confirmation", judging:"judging", approved:"completed", auto:"completed"};
-    const actionLabels = {approve:"确认", revise:"修改决策", pause:"暂停", resume:"恢复", intervene:"介入"};
+    const actionLabels = {approve:"确认", revise:"修改决策", pause:"暂停", resume:"恢复", intervene:"介入", recover:"确认任务重跑"};
     const optionalActionReasons = {pause:"操作者暂停新任务", resume:"操作者允许领取新任务"};
     const decisionKinds = {result:"任务产物", effect:"执行授权", release:"发布授权"};
     let operatorData, operatorSnapshot, activeId, request, submitting = false, controlKey = "";
@@ -802,7 +803,7 @@
         const row = element("li", "");
         const time = element("time", clock(event.at));
         time.dateTime = event.at;
-        row.append(element("span", [actionLabels[event.action], event.decision || event.start, event.approver, event.reason].filter(Boolean).join(" · ")), time);
+        row.append(element("span", [actionLabels[event.action], event.decision || event.start || event.task, event.approver, event.reason].filter(Boolean).join(" · ")), time);
         log.append(row);
       }
       const opened = new Set([...byId("decision-history").children].filter(row => row.open).map(row => row.dataset.decision));
@@ -862,6 +863,7 @@
         revise:["补充意见或修订", "沿用原产物时只填写意见。原决策会保留，相关任务会重新评估。", "提交修订"],
         pause:["暂停新任务？", "未开始的任务会等待。正在做的任务会继续执行并可回报。暂停后，你可以调整任务计划，或随时继续领取新任务。", "暂停新任务"],
         intervene:["调整任务计划", "", "交给 LD 更新计划"],
+        recover:["确认重跑这项任务？", "请先确认旧执行端已停止，并核对残留修改和已经发生的外部操作。需要保留已有产物时，可从命令行提交已有证据。", "确认重跑"],
         resume:["继续领取新任务？", "满足依赖和审批条件的任务可以继续领取。", "继续领取新任务"],
       }[action];
       byId("dialog-title").textContent = title || settings[0];
@@ -954,6 +956,7 @@
           pause: Boolean(result.paused),
           intervene: Boolean(result.paused || result.replan),
           resume: result.paused === null,
+          recover: result.task === body.task && result.attempt > body.attempt,
         }[body.action];
         if (!confirmed) {
           throw new Error("看板未收到运行端的操作确认。请先检查当前状态，或在运行环境操作。");
@@ -1010,6 +1013,12 @@
             ["waiting", "judging"].includes(decision.state), decision.id));
         }
         row.append(line);
+      }
+      if (item.state === "recovery_required") {
+        const button = element("button", "检查后重跑", "secondary");
+        button.type = "button";
+        button.onclick = () => openAction("recover", {task:item.task, attempt:item.attempt}, item.task + " · 确认重跑");
+        row.append(button);
       }
       if (item.remaining_steps && item.scope) row.append(element("p", item.scope));
       return row;
@@ -1091,7 +1100,7 @@
         const snapshot = await response.text();
         if (snapshot !== previous) {
           render(JSON.parse(snapshot));
-          const anchor = ["iteration-summary", "human-title"].includes(deepLink) && byId(deepLink);
+          const anchor = ["iteration-summary", "human-title", "dispatch-title"].includes(deepLink) && byId(deepLink);
           if (anchor && !anchor.closest("[hidden]")) {
             anchor.scrollIntoView();
             deepLink = "";

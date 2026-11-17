@@ -13,6 +13,7 @@ from iterations import DELIVERED, build_summary
 
 STATUS_LABELS = {
     "running": "进行中",
+    "recovery_required": "待人工恢复",
     "completed": "已完成",
     "failed": "失败",
     "interrupted": "已中断",
@@ -216,7 +217,7 @@ class Progress:
             if job.get("member"):
                 record["member"] = job["member"]
         events.append(record)
-        events[:-100] = [event for event in events[:-100] if event.get("evidence")]
+        events[:-100] = [event for event in events[:-100] if event.get("evidence") or event["state"] in ("interrupted", "recovery_required")]
         if persist:
             self.save()
 
@@ -225,6 +226,8 @@ class Progress:
         if task["state"] == state and task["activity"] == activity and task.get("evidence") == evidence:
             return
         task.update(state=state, activity=activity)
+        if state != "running":
+            task.pop("lease_expires_at", None)
         if evidence:
             task["evidence"] = evidence
         else:

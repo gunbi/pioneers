@@ -10,6 +10,8 @@ import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from progress import Progress
+
 ROOT = Path(__file__).resolve().parents[1]
 CLI = [sys.executable, "-B", str(ROOT / "pioneers.py")]
 OFFLINE_ENV = {**os.environ, "PIONEERS_SKILLS_OFFLINE": "1"}
@@ -93,6 +95,141 @@ class ApprovalTest(unittest.TestCase):
         del snapshot[source]
         path.write_text(json.dumps(snapshot), encoding="utf-8")
         return path, source
+
+    def expire(self, key):
+        with Progress.locked(self.run_dir) as current:
+            current.data["tasks"][key]["lease_expires_at"] = time.time() - 1
+
+    def test_host_recovery_fences_old_attempt_and_keeps_worktree(self):
+        project = self.git_project()
+        self.host([
+            self.task("fix", role="engineer", write_paths=["module/a.txt"]),
+            self.task("qa", ["fix"], role="qa", review=True),
+        ], project)
+        old = self.claim("fix")
+        heartbeat = self.cli("--host-heartbeat", self.run_dir, "--task", "fix", "--attempt", 1)
+        self.assertGreater(heartbeat["lease_expires_at"], old["lease_expires_at"])
+        draft = Path(old["workspace"]) / "module/a.txt"
+        draft.write_text("old executor draft", encoding="utf-8")
+        self.expire("fix")
+        self.assertIn("expired lease", self.cli("--host-heartbeat", self.run_dir, "--task", "fix", "--attempt", 1, code=1))
+        dispatch = self.cli("--host-ready", self.run_dir, "--wait", 1)
+        self.assertEqual([(row["task"], row["attempt"]) for row in dispatch["ready"]], [("fix", 2)])
+        self.assertEqual(self.state()["tasks"]["qa"]["state"], "pending")
+        retry = self.claim("fix")
+        self.assertNotEqual(retry["workspace"], old["workspace"])
+        self.assertEqual(draft.read_text(), "old executor draft")
+        self.assertEqual((Path(retry["workspace"]) / "module/a.txt").read_text(), "original")
+        self.artifact.write_text("迟到产物", encoding="utf-8")
+        self.assertIn("active --attempt 2", self.cli("--host-report", self.run_dir, "--task", "fix", "--attempt", 1,
+                                                     "--state", "completed", "--activity", "迟到", "--artifact", self.artifact,
+                                                     code=1))
+        self.assertFalse((self.run_dir / "fix.md").exists())
+        failed = self.cli("--host-report", self.run_dir, "--task", "fix", "--attempt", 2,
+                          "--state", "lost", "--activity", "执行端进程退出")
+        self.assertEqual((failed["state"], failed["attempt"]), ("pending", 3))
+        self.claim("fix")
+        self.expire("fix")
+        board = self.cli("--host-ready", self.run_dir)
+        lost = next(row for row in board["waiting"] if row["task"] == "fix")
+        self.assertEqual(lost["state"], "recovery_required")
+        history = self.state()["tasks"]["fix"]["recoveries"]
+        self.assertEqual([item["automatic"] for item in history], [True, True, False])
+        self.assertEqual(history[0]["git"]["workspace"], old["workspace"])
+
+    def test_host_requires_review_of_shared_writes_and_external_effects(self):
+        self.host([
+            self.task("writer", role="engineer"),
+            self.task("next-writer", role="engineer"),
+            self.task("qa", ["writer", "next-writer"], role="qa", review=True),
+            self.task("send", effect="send"),
+            self.task("publish", ["send"], effect="publish"),
+        ])
+        self.claim("writer")
+        self.cli("--approve", self.run_dir, "--all", "--reason", "授权执行发送")
+        self.claim("send")
+        self.expire("writer")
+        self.expire("send")
+        self.cli("--host-ready", self.run_dir)
+        self.assertIn("shared workspace", self.claim("next-writer", code=1))
+        self.assertIn("waiting for: send", self.claim("publish", code=1))
+        self.assertEqual(self.state()["tasks"]["send"]["state"], "recovery_required")
+
+        url = self.started["dashboard_url"]
+        body = json.dumps({"action": "recover", "task": "writer", "attempt": 1, "reason": "旧进程已停止，残留已核对"}).encode()
+        request = Request(url + "human-action", data=body,
+                          headers={"Content-Type": "application/json", "Origin": url.rstrip("/")})
+        with urlopen(request, timeout=3) as response:
+            self.assertEqual(json.load(response)["attempt"], 2)
+        self.assertEqual(self.claim("writer")["attempt"], 2)
+        self.artifact.write_text("邮件已投递。凭证：外部收件记录。", encoding="utf-8")
+        recovered = self.cli("--recover", self.run_dir, "--task", "send", "--attempt", 1,
+                             "--artifact", self.artifact, "--reason", "核对外部收件记录")
+        self.judge(recovered["judgment"])
+        self.assertEqual(self.state()["tasks"]["send"]["state"], "completed")
+        self.assertEqual(self.state()["tasks"]["publish"]["state"], "awaiting_confirmation")
+        self.cli("--approve", self.run_dir, "--all", "--reason", "授权发布")
+        self.claim("publish")
+        self.expire("publish")
+        self.cli("--host-ready", self.run_dir)
+        previous = self.state()["tasks"]["publish"]["authorization"]
+        self.cli("--recover", self.run_dir, "--task", "publish", "--attempt", 1, "--reason", "已核对发布未发生")
+        status = self.state()
+        new = status["tasks"]["publish"]["authorization"]
+        self.assertNotEqual(previous, new)
+        self.assertEqual(status["decisions"][previous]["state"], "superseded")
+        self.assertEqual(status["decisions"][new]["state"], "waiting")
+        self.claim("publish", code=1)
+
+    def test_continue_recovers_lost_live_worker_and_preserves_completed_tasks(self):
+        self.write_workflow([self.task("first"), self.task("second", ["first"])])
+        project = self.git_project()
+        runner = self.root / "runner"
+        runner.write_text(
+            "#!/usr/bin/env python3\nimport json, sys, time\nfrom pathlib import Path\n"
+            "job = json.load(sys.stdin)\n"
+            "if job['phase'] == 'approval':\n"
+            "    result = json.dumps({'needs_confirmation': False, 'reason': '证据完整'})\n"
+            "elif 'first 的决策和交付' in job['prompt'].split('当前任务：', 1)[1].splitlines()[0]:\n"
+            "    Path('first-count').write_text(Path('first-count').read_text() + 'X' if Path('first-count').exists() else 'X')\n"
+            "    result = '第一个任务完成'\n"
+            "else:\n"
+            "    if not Path('worker-started').exists():\n"
+            "        Path('worker-started').touch()\n"
+            "        until = time.monotonic() + 12\n"
+            "        while not Path('stop-old-worker').exists() and time.monotonic() < until:\n"
+            "            time.sleep(0.02)\n"
+            "    result = '第二个任务完成'\n"
+            "try:\n"
+            "    print(json.dumps({'type': 'result', 'message': result}), flush=True)\n"
+            "except BrokenPipeError:\n"
+            "    pass\n", encoding="utf-8",
+        )
+        runner.chmod(0o755)
+        process = subprocess.Popen([*CLI, str(self.workflow), "--live", "--runner", str(runner),
+                                    "--workspace", str(project), "--output-dir", str(self.root), "--no-open-browser"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV)
+        self.addCleanup(self.stop_host, process)
+        self.addCleanup((project / "stop-old-worker").touch)
+        self.assertEqual(process.stdout.readline().strip(), "Mode: live")
+        self.run_dir = Path(process.stdout.readline().strip().split("Run output: ")[1])
+        started = project / "worker-started"
+        end = time.monotonic() + 8
+        while not started.exists() and time.monotonic() < end:
+            time.sleep(0.025)
+        self.assertTrue(started.exists())
+        self.assertIn("already active", self.cli("--continue", self.run_dir, "--no-open-browser", code=1))
+        process.kill()
+        process.communicate(timeout=3)
+        original = (self.run_dir / "first.md").read_bytes()
+        resumed = subprocess.run([*CLI, "--continue", str(self.run_dir), "--no-open-browser"],
+                                 capture_output=True, text=True, env=OFFLINE_ENV, timeout=10)
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertEqual(self.state()["state"], "completed")
+        self.assertEqual(self.state()["tasks"]["second"]["attempt"], 2)
+        self.assertEqual((self.run_dir / "first.md").read_bytes(), original)
+        self.assertEqual((project / "first-count").read_text(), "X")
+        self.assertTrue((self.run_dir / "second.2.md").exists())
 
     def test_project_board_keeps_iteration_history_and_routes_actions(self):
         workspace = self.root / "project"

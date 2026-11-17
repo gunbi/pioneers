@@ -17,7 +17,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from capabilities import REGISTRY, ROOT, assigned_capabilities, capability_prompt, mcp_config, run_tool, tool_ids
-from approval import EFFECTS, IMPACTS, audit, judgment, proposal, supersede
+from approval import EFFECTS, IMPACTS, audit, judgment, proposal, supersede, timestamp
 from progress import Progress, artifact_name, codex_activity, print_board, show_progress
 from dashboard import announce, dashboard_is_running, live_dashboard, preview_origin, serve_dashboard
 from dispatch import (
@@ -529,7 +529,7 @@ def plan_workflow(goal, executor, run_dir, progress):
         path = run_dir / "workflow.json"
         _, tasks, order = result
         with Progress.locked(run_dir) as current:
-            path.write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            write_json(path, workflow)
             current.set_tasks(tasks, order)
             current.planning("completed", f"分工已保存到 {path.name}")
             progress.data = current.data
@@ -649,7 +649,8 @@ def repair_plan(tasks, progress, review_id, verdict):
     if target not in candidates or progress.data["tasks"][target]["state"] != "completed":
         raise ValueError("QA must name a completed upstream engineering task in repair_task")
     affected = {key for key in tasks if target in task_ancestors(tasks, key)} | {target}
-    running = sorted(key for key in affected - {review_id} if progress.data["tasks"][key]["state"] == "running")
+    running = sorted(key for key in affected - {review_id}
+                     if progress.data["tasks"][key]["state"] in ("running", "recovery_required"))
     if running:
         raise ValueError(f"Wait for active downstream tasks before returning work: {', '.join(running)}")
     return target, affected
@@ -718,6 +719,58 @@ def affected_tasks(tasks, task_id):
     return [key for key in tasks if key != task_id and task_id in task_ancestors(tasks, key)]
 
 
+HOST_LEASE_SECONDS = 180
+MAX_AUTOMATIC_RECOVERIES = 2
+
+
+def expired_assignment(job, now):
+    expires = job.get("lease_expires_at")
+    return job["state"] == "running" and expires is not None and expires <= now
+
+
+def queue_recovery(progress, task_id, reason):
+    job = progress.data["tasks"][task_id]
+    clear_decisions(progress, job)
+    job["attempt"] = job.get("attempt", 1) + 1
+    for field in ("member", "lease_expires_at"):
+        job.pop(field, None)
+    progress.task(task_id, "pending", reason, announce=False)
+
+
+def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True):
+    job = progress.data["tasks"][task_id]
+    task = tasks[task_id]
+    attempt = job.get("attempt", 1)
+    git = job.get("git")
+    isolated = git and git["attempt"] == attempt
+    history = job.setdefault("recoveries", [])
+    within_budget = sum(entry["automatic"] for entry in history) < MAX_AUTOMATIC_RECOVERIES
+    retry = automatic and within_budget and not preapproval_required(task) and (
+        not writes_workspace(task) or isolated
+    )
+    history.append({"attempt": attempt, "at": timestamp(), "reason": reason, "git": git,
+                    "member": job.get("member"), "automatic": retry})
+    if retry:
+        progress.event(job["role"], task_id, "interrupted", reason)
+        queue_recovery(progress, task_id, "已回收失联任务，等待重新派发 · " + reason)
+    else:
+        progress.task(task_id, "recovery_required", "需要人工核对旧执行结果 · " + reason, announce=False)
+
+
+def reap_host_assignments(run_dir, data):
+    now = time.time()
+    if data["state"] != "running" or not any(expired_assignment(job, now) for job in data["tasks"].values()):
+        return data
+    with Progress.locked(run_dir) as progress:
+        if progress.data["state"] == "running":
+            _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
+            now = time.time()
+            for task_id, job in progress.data["tasks"].items():
+                if expired_assignment(job, now):
+                    record_assignment_loss(progress, tasks, task_id, "执行端心跳超时")
+        return progress.data
+
+
 def host_ready(run_dir, wait=0):
     run_dir = run_dir.resolve(strict=True)
     deadline = time.monotonic() + wait
@@ -726,12 +779,15 @@ def host_ready(run_dir, wait=0):
         data = Progress.open(run_dir).data
         if data["mode"] != "host":
             raise ValueError("Host readiness requires a run created with --host-start")
+        current = reap_host_assignments(run_dir, data)
+        recovered = current["tasks"] != data["tasks"]
+        data = current
         path = workflow_path(run_dir, data)
         if path != current_workflow:
             _, tasks, _ = load_workflow(path)
             current_workflow = path
         summary = dispatch_summary(data, tasks)
-        if not wait or dispatch_can_continue(summary):
+        if recovered or not wait or dispatch_can_continue(summary):
             return summary
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -966,8 +1022,9 @@ def task_worktree(progress, tasks, task_id):
     inputs = [record["git"]["commit"] for key, record in data["tasks"].items() if key in ancestors
               and record["state"] == "completed" and record.get("git", {}).get("commit")]
     previous = job.get("git", {})
-    if writing and job.get("feedback") and previous.get("commit"):
-        inputs.append(previous["commit"])
+    repair_input = (previous.get("commit") or previous.get("repair_input")) if writing and job.get("feedback") else None
+    if repair_input:
+        inputs.append(repair_input)
     if not writing and not inputs:
         return workspace, None
 
@@ -990,7 +1047,10 @@ def task_worktree(progress, tasks, task_id):
     for commit in dict.fromkeys(inputs):
         worktree_git(target, "merge", "--no-edit", commit)
     revision = worktree_git(target, "rev-parse", "HEAD").stdout.strip()
-    return str(target), {"attempt": attempt, "branch": branch, "base": revision, "workspace": str(target)}
+    checkout = {"attempt": attempt, "branch": branch, "base": revision, "workspace": str(target)}
+    if repair_input:
+        checkout["repair_input"] = repair_input
+    return str(target), checkout
 
 
 def reported_commit(task, checkout):
@@ -1045,42 +1105,99 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
     }
     if checkout:
         assignment["git"] = checkout
+    if progress.data["mode"] == "host":
+        expires = time.time() + HOST_LEASE_SECONDS
+        tasks[task_id]["lease_expires_at"] = expires
+        assignment.update(lease_expires_at=expires, lease_seconds=HOST_LEASE_SECONDS)
     progress.task(task_id, "running", "LD 已领取任务，等待执行端反馈", announce=False)
     return assignment
 
 
-def report_task(progress, workflow_tasks, task_id, state, activity, result, attempt):
-    tasks = progress.data["tasks"]
-    if tasks[task_id]["state"] != "running":
-        raise ValueError(f"Task {task_id} must be claimed and running before reporting")
-    current_attempt = tasks[task_id].get("attempt", 1)
+def active_assignment(job, task_id, attempt):
+    current_attempt = job.get("attempt", 1)
     if (attempt is None and current_attempt > 1) or (attempt is not None and attempt != current_attempt):
         raise ValueError(f"Report must match the active --attempt {current_attempt}")
+    if job["state"] != "running":
+        raise ValueError(f"Task {task_id} must be claimed and running before reporting")
+    if expired_assignment(job, time.time()):
+        raise ValueError(f"Task {task_id} has an expired lease; check --host-ready for recovery")
+
+
+def report_task(progress, workflow_tasks, task_id, state, activity, result, attempt):
+    tasks = progress.data["tasks"]
+    job = tasks[task_id]
+    active_assignment(job, task_id, attempt)
+    current_attempt = job.get("attempt", 1)
+    if state == "running" and progress.data["mode"] == "host":
+        job["lease_expires_at"] = time.time() + HOST_LEASE_SECONDS
+        if activity is None:
+            return {"task": task_id, "attempt": current_attempt, "lease_expires_at": job["lease_expires_at"]}
+    if state == "lost":
+        record_assignment_loss(progress, workflow_tasks, task_id, activity)
+        return {"task": task_id, "state": job["state"], "attempt": job["attempt"]}
     if state == "completed":
-        result = result.strip()
-        if not result:
-            raise ValueError("Completed tasks require a non-empty deliverable")
-        checkout = tasks[task_id].get("git")
-        if checkout and checkout["attempt"] == current_attempt and writes_workspace(workflow_tasks[task_id]):
-            checkout["commit"] = reported_commit(workflow_tasks[task_id], checkout)
-            result += f"\n\nGit 分支：{checkout['branch']}\nGit 提交：{checkout['commit']}"
-        assignment = stage_result(progress, workflow_tasks, task_id, result, activity)
-        return {"task": task_id, "state": "judging", "run_state": progress.data["state"],
-                "evidence": tasks[task_id]["evidence"], "judgment": assignment}
+        return submit_assignment(progress, workflow_tasks, task_id, activity, result)
     if state in ("failed", "blocked") and progress.data["state"] == "running":
         progress.set_outcome(state)
     progress.task(task_id, state, activity, announce=False)
     return {"task": task_id, "state": state, "run_state": progress.data["state"], "activity": activity}
 
 
-def run_live(tasks, order, executor, progress, *, refresh_skills=False):
-    with sqlite3.connect(progress.path.with_name("cli-worker.lock.db"), timeout=0) as lock:
+def submit_assignment(progress, tasks, task_id, activity, result):
+    result = result.strip()
+    if not result:
+        raise ValueError("Completed tasks require a non-empty deliverable")
+    job = progress.data["tasks"][task_id]
+    checkout = job.get("git")
+    if checkout and checkout["attempt"] == job.get("attempt", 1) and writes_workspace(tasks[task_id]):
+        checkout["commit"] = reported_commit(tasks[task_id], checkout)
+        result += f"\n\nGit 分支：{checkout['branch']}\nGit 提交：{checkout['commit']}"
+    assignment = stage_result(progress, tasks, task_id, result, activity)
+    return {"task": task_id, "state": "judging", "run_state": progress.data["state"],
+            "evidence": job["evidence"], "judgment": assignment}
+
+
+def run_live(tasks, order, executor, progress, *, reopen=False, refresh_skills=False):
+    run_dir = progress.path.parent
+    with sqlite3.connect(run_dir / "cli-worker.lock.db", timeout=0) as lock:
         try:
             lock.execute("BEGIN IMMEDIATE")
         except sqlite3.OperationalError as error:
             raise ValueError("A CLI worker is already active for this run") from error
         if refresh_skills:
             refresh_run_skills(progress)
+        if tasks is None:
+            with Progress.locked(run_dir) as current:
+                path = workflow_path(run_dir, current.data)
+                if path.is_file():
+                    _, tasks, order = load_workflow(path)
+                    if not current.data["tasks"]:
+                        current.set_outcome("running")
+                        current.set_tasks(tasks, order)
+                        current.planning("completed", "恢复已保存的工作流")
+                elif current.data.get("generate_workflow") or current.data.get("planning"):
+                    current.set_outcome("running")
+                else:
+                    raise ValueError("The run has no saved workflow to resume")
+                progress.data = current.data
+            if tasks is None:
+                _, tasks, order = plan_workflow(progress.data["goal"], executor, run_dir, progress)
+            if "release" in progress.data:
+                try:
+                    validate_release_workflow(tasks)
+                except ValueError:
+                    progress.finish("failed")
+                    raise
+            if progress.data.get("plan_only"):
+                progress.finish("planned")
+                return 0
+        if reopen:
+            with Progress.locked(run_dir) as current:
+                if current.data["state"] == "running":
+                    for task_id, job in current.data["tasks"].items():
+                        if job["state"] == "running":
+                            record_assignment_loss(current, tasks, task_id, "CLI 调度进程退出，任务结果尚未提交")
+                progress.data = current.data
         return execute_live(tasks, order, executor, progress)
 
 
@@ -1182,10 +1299,10 @@ def execute_live(tasks, order, executor, progress):
             reconcile(current, tasks)
             data = current.data
             progress.data = data
-            if (data["state"] in ("published", "blocked", "failed", "interrupted")
+            if (data["state"] in ("planned", "published", "blocked", "failed", "interrupted")
                     or (data["state"] == "completed" and not data.get("paused"))):
                 print_board(data)
-                return 0 if data["state"] in ("completed", "published") else 1
+                return 0 if data["state"] in ("planned", "completed", "published") else 1
             pending = next((entry for entry in data.get("decisions", {}).values()
                             if entry["state"] == "judging" and not data.get("paused")), None)
             if replan_ready(data):
@@ -1248,17 +1365,19 @@ def execute_live(tasks, order, executor, progress):
             with Progress.locked(run_dir) as current:
                 report_task(current, tasks, task_id, "completed", "产物已提交", result, attempt)
         except (KeyboardInterrupt, OSError, RuntimeError, ValueError) as error:
+            reason = "用户中断了执行器" if isinstance(error, KeyboardInterrupt) else str(error)
             with Progress.locked(run_dir) as current:
-                if isinstance(error, KeyboardInterrupt):
-                    current.set_outcome("interrupted")
-                    current.task(task_id, "interrupted", "运行被用户中断")
-                else:
-                    report_task(current, tasks, task_id, "failed", str(error), None, attempt)
-            raise
+                record_assignment_loss(current, tasks, task_id, reason)
+            if isinstance(error, KeyboardInterrupt):
+                raise
 
 
 def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=None, member_name=None):
     run_dir = run_dir.resolve(strict=True)
+    if state is None:
+        data = Progress.open(run_dir).data
+        if data["mode"] == "host":
+            reap_host_assignments(run_dir, data)
     # Serialize status read/modify/write across independent CLI invocations.
     with Progress.locked(run_dir) as progress:
         if progress.data["mode"] != "host":
@@ -1298,7 +1417,7 @@ def handle_judgment(run_dir, key, task_id, attempt, artifact):
 
 def reset_tasks(progress, tasks, keys):
     jobs = progress.data["tasks"]
-    active = [key for key in keys if jobs[key]["state"] == "running"]
+    active = [key for key in keys if jobs[key]["state"] in ("running", "recovery_required")]
     if active:
         raise ValueError(f"Wait for running tasks to report before changing them: {', '.join(active)}")
     release = progress.data.get("release")
@@ -1364,6 +1483,28 @@ def revise_decision(progress, tasks, key, reason, content):
     return {"judgment": assignment}
 
 
+def resolve_recovery(progress, tasks, request, reason):
+    task_id = request.get("task")
+    attempt = request.get("attempt")
+    job = progress.data["tasks"].get(task_id) if isinstance(task_id, str) else None
+    if not job or type(attempt) is not int or job.get("attempt", 1) != attempt:
+        raise ValueError("Recovery must match the current task and attempt")
+    content = request.get("content")
+    if content is not None and (not isinstance(content, str) or not content.strip()):
+        raise ValueError("Recovered deliverable must be non-empty text")
+    if progress.data["mode"] == "host" and job["state"] == "running":
+        if job.get("lease_expires_at") is None or expired_assignment(job, time.time()):
+            record_assignment_loss(progress, tasks, task_id, "人工确认旧执行端已停止", automatic=False)
+    if job["state"] != "recovery_required":
+        raise ValueError("Choose a task waiting for recovery")
+    audit(progress, "recover", reason, task=task_id, attempt=attempt, resolution="adopt" if content else "retry")
+    if content:
+        return submit_assignment(progress, tasks, task_id, "人工核对并接续已有产物", content)
+    queue_recovery(progress, task_id, "人工确认重新派发 · " + reason)
+    reconcile(progress, tasks)
+    return {"task": task_id, "state": job["state"], "attempt": job["attempt"]}
+
+
 def control_run(run_dir, request):
     action = request.get("action")
     reason = request.get("reason")
@@ -1404,6 +1545,8 @@ def control_run(run_dir, request):
             return {"approved": approved, "run_state": data["state"]}
         if data["state"] not in ("running", "completed", "accepted", "publish_failed"):
             raise ValueError(f"Cannot intervene while run is {data['state']}")
+        if action == "recover":
+            return resolve_recovery(progress, tasks, request, reason)
         if action == "revise":
             content = request.get("content")
             if content is not None and not isinstance(content, str):
@@ -1500,6 +1643,8 @@ def main():
     action.add_argument("--host-start", type=Path, metavar="WORKFLOW", help="Register a validated workflow for a native execution host.")
     action.add_argument("--host-ready", type=Path, metavar="RUN_DIR", help="List ready, active and blocked host tasks as JSON.")
     action.add_argument("--host-claim", type=Path, metavar="RUN_DIR", help="Claim a dependency-ready task and return its assignment as JSON.")
+    action.add_argument("--host-heartbeat", type=Path, metavar="RUN_DIR", help="Renew the lease of a running host assignment.")
+    action.add_argument("--recover", type=Path, metavar="RUN_DIR", help="Resolve an interrupted task after checking its previous executor.")
     action.add_argument("--host-report", type=Path, metavar="RUN_DIR", help="Report work on a claimed task.")
     action.add_argument("--judge", type=Path, metavar="RUN_DIR", help="Fetch or submit a host LLM judgment.")
     action.add_argument("--replan", type=Path, metavar="RUN_DIR", help="Fetch or submit an LD workflow update in host mode.")
@@ -1518,10 +1663,10 @@ def main():
     parser.add_argument("--runner", type=Path, help="Executable adapter for a non-Codex platform.")
     parser.add_argument("--role", choices=ROLES, help="Role invoking a built-in tool.")
     parser.add_argument("--input", type=Path, help="Input file for a built-in tool, relative to the workspace.")
-    parser.add_argument("--task", help="Task ID for --host-claim or --host-report.")
+    parser.add_argument("--task", help="Task ID for a host assignment or recovery.")
     parser.add_argument("--member", help="Stable ID of the member receiving a host assignment.")
     parser.add_argument("--member-name", help="Display name for --member when first assigning that member.")
-    parser.add_argument("--state", choices=("running", "completed", "failed", "blocked", "publishing", "published", "publish_failed"),
+    parser.add_argument("--state", choices=("running", "completed", "failed", "blocked", "lost", "publishing", "published", "publish_failed"),
                         help="New state for --host-report or --release.")
     parser.add_argument("--activity", help="Concrete current action or result for --host-report.")
     parser.add_argument("--attempt", type=int, help="Attempt returned by --host-claim, required when reporting a retry.")
@@ -1530,7 +1675,7 @@ def main():
     parser.add_argument("--reason", help="Reason or instructions for a human action.")
     parser.add_argument("--approver", help="Optional operator display name for --approve.")
     parser.add_argument("--from", dest="rerun_from", help="Rerun this task and its dependents while paused.")
-    parser.add_argument("--artifact", type=Path, help="Deliverable file required when reporting completion.")
+    parser.add_argument("--artifact", type=Path, help="Deliverable to report or adopt during recovery.")
     parser.add_argument("--revision", type=int, help="Revision returned by --replan, required when submitting its plan.")
     parser.add_argument("--wait", type=int, metavar="SECONDS", help="With --host-ready, wait for actionable work or a terminal state.")
     parser.add_argument("--require-release", action="store_true", help="Wait for publication to finish after QA acceptance.")
@@ -1583,10 +1728,10 @@ def main():
         return 0
     project_view = args.project_dashboard or args.project_history
     viewing = project_view or any(value is not None for value in (args.status, args.watch, args.dashboard))
-    human_action = next((name for name in ("approve", "revise", "pause", "intervene", "resume")
+    human_action = next((name for name in ("approve", "revise", "pause", "intervene", "resume", "recover")
                          if getattr(args, name) is not None), None)
     host_action = human_action or any(value is not None for value in (
-        args.host_start, args.host_ready, args.host_claim, args.host_report, args.release, args.judge, args.replan,
+        args.host_start, args.host_ready, args.host_claim, args.host_report, args.host_heartbeat, args.release, args.judge, args.replan,
         args.continue_run,
     ))
     tool_action = any(value is not None for value in (args.list_capabilities, args.mcp_config, args.run_tool))
@@ -1594,8 +1739,12 @@ def main():
         parser.error("team setup, status, host commands and tools are separate actions from running a workflow")
     if (args.host_claim or args.host_report) and not args.task:
         parser.error("host claim and report require --task")
-    if args.host_report and (args.state not in ("running", "completed", "failed", "blocked") or not (args.activity or "").strip()):
+    if (args.host_heartbeat or args.recover) and (not args.task or not args.attempt or args.attempt < 1):
+        parser.error("--host-heartbeat and --recover require --task and a positive --attempt")
+    if args.host_report and (args.state not in ("running", "completed", "failed", "blocked", "lost") or not (args.activity or "").strip()):
         parser.error("--host-report requires a task state and a non-empty --activity")
+    if args.host_report and args.state == "lost" and (not args.attempt or args.attempt < 1):
+        parser.error("reporting a lost assignment requires a positive --attempt")
     if args.host_report and (args.state == "completed") != (args.artifact is not None):
         parser.error("--artifact is required only when reporting completion")
     if args.require_release and not (args.host_start or (args.live and not args.plan_only)):
@@ -1662,22 +1811,20 @@ def main():
             config = progress.data.get("executor")
             if progress.data["mode"] != "live" or not config:
                 raise ValueError("This run has no recorded CLI executor")
-            if any(job["state"] == "running" for job in progress.data["tasks"].values()):
-                raise ValueError("Run still has an active assignment; reconcile it before reopening")
-            _, tasks, order = load_workflow(workflow_path(run_dir, progress.data))
             workspace = project_workspace(progress.data.get("workspace"))
             bind_project(workspace)
-            register_run(project_registry(workspace), run_dir)
+            if not progress.data.get("plan_only"):
+                register_run(project_registry(workspace), run_dir)
             executor = Executor(workspace, config["model"],
                                 Path(config["runner"]) if config["runner"] else None)
             with live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser,
                                 cloud_origin=args.dashboard_origin):
-                return run_live(tasks, order, executor, progress, refresh_skills=True)
+                return run_live(None, None, executor, progress, reopen=True, refresh_skills=True)
         if human_action:
             request = {"action": human_action, "reason": args.reason, "decisions": args.decision,
                        "decision": (args.decision or [None])[0], "all": args.all, "from": args.rerun_from,
-                       "approver": args.approver}
-            if args.revise and args.artifact:
+                       "approver": args.approver, "task": args.task, "attempt": args.attempt}
+            if (args.revise or args.recover) and args.artifact:
                 request["content"] = args.artifact.read_text(encoding="utf-8")
             result = control_run(getattr(args, human_action), request)
             print(json.dumps(result, ensure_ascii=False))
@@ -1699,10 +1846,11 @@ def main():
             else:
                 serve_run_dashboard(Path(result["run_dir"]), args, result)
             return 0
-        if args.host_claim or args.host_report:
-            state = args.state if args.host_report else None
-            result = update_host(args.host_claim or args.host_report, args.task, state,
-                                 (args.activity or "").strip()[:1000], args.artifact, args.attempt,
+        if args.host_claim or args.host_report or args.host_heartbeat:
+            state = "running" if args.host_heartbeat else args.state if args.host_report else None
+            activity = None if args.host_heartbeat else (args.activity or "").strip()[:1000]
+            result = update_host(args.host_claim or args.host_report or args.host_heartbeat, args.task, state,
+                                 activity, args.artifact, args.attempt,
                                  args.member, args.member_name)
             print(json.dumps(result, ensure_ascii=False))
             return 0
@@ -1764,6 +1912,8 @@ def main():
             progress.data["workspace"] = str(workspace)
             if executor:
                 progress.data["executor"] = {"model": executor.model, "runner": str(executor.runner) if executor.runner else None}
+                if args.goal is not None:
+                    progress.data.update(generate_workflow=True, plan_only=args.plan_only)
             progress.save()
         if args.live and not args.plan_only:
             registry = project_registry(workspace)
@@ -1771,25 +1921,14 @@ def main():
             register_run(registry, run_dir)
         if args.workflow is not None:
             workflow = {"goal": goal, "tasks": list(tasks.values())}
-            (run_dir / "workflow.json").write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            write_json(run_dir / "workflow.json", workflow)
         print(f"Mode: {'live' if args.live else 'offline demo'}", flush=True)
         print(f"Run output: {run_dir.resolve()}", flush=True)
         board = live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser,
                                cloud_origin=args.dashboard_origin) if args.live else nullcontext()
         with board:
             if args.live:
-                refresh_run_skills(progress)
-            if args.goal is not None:
-                goal, tasks, order = plan_workflow(goal, executor, run_dir, progress)
-                if args.plan_only:
-                    progress.finish("planned")
-                    return 0
-                if args.require_release:
-                    try:
-                        validate_release_workflow(tasks)
-                    except ValueError:
-                        progress.finish("failed")
-                        raise
+                return run_live(tasks if args.goal is None else None, order, executor, progress, refresh_skills=True)
             print_board(progress.data)
             return run_workflow(goal, tasks, order, executor, progress)
     except KeyboardInterrupt:

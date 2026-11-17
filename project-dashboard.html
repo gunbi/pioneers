@@ -83,6 +83,11 @@
     const tone = run.paused ? " attention" : run.has_summary ? " delivered" : "";
     links.append(element("span", run.paused ? "新任务已暂停" : labels[run.state] || run.state, "status" + tone),
       link("协作流程", runUrl(run.id)));
+    if (run.counts.recovery_required) {
+      const recovery = link(run.counts.recovery_required + " 项待恢复", runUrl(run.id) + "#dispatch-title");
+      recovery.className = "status attention";
+      links.append(recovery);
+    }
     if (run.has_summary) links.append(link("迭代摘要", runUrl(run.id) + "#iteration-summary"));
     node.append(info, links);
     return node;

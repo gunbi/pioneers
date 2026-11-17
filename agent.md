@@ -46,6 +46,8 @@
 9. 把 `--host-ready` 返回的 `replan` 当作待处理的 LD 任务。等 `replan.ready` 为真后，用 `--replan RUN_DIR` 获取用户指令、当前计划和状态，将返回的提示交给只读 LD。将 LD 返回的 JSON 用 `--replan RUN_DIR --revision N --artifact PLAN.json` 提交，随后重新查询并派发更新后的任务。
 10. 暂时无任务可执行且运行未结束时，告知用户在看板需要处理的事项，然后在同一协调会话运行 `--host-ready RUN_DIR --wait 25` 等待。收到 `timed_out` 后继续等待，阶段交付结束也先重查队列。状态就绪后直接领取任务、处理待判断的交付物、重规划，或在 `release_ready` 为真时按已审批范围开始发布。若用户手动暂停了新任务，等看板「继续领取新任务」再派发。宿主会话已关闭时，从同一运行目录重新接入。
 
+宿主领取返回的 `attempt` 用于之后的心跳、回报和重派。协调者或执行端每 60 秒用 `--host-heartbeat RUN_DIR --task TASK_ID --attempt N` 续约，前提是已观察到执行端仍活跃。实际进度回报也会续约。发现执行器异常退出时可用 `--host-report ... --state lost`；重新查询 `--host-ready` 处理回收后就绪的任务。看到「待人工恢复」时，呈现原执行端、任务版本和已有证据，由操作者核对后重跑或接续产物。需要重跑的外部操作仍按新的授权审批派发。CLI 调度进程退出后用 `--continue RUN_DIR` 接回原运行。
+
 命令示例与进度入口见 [README.md](README.md)。
 
 ## 向用户同步进度

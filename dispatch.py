@@ -19,16 +19,17 @@ def path_is_within(path, scope):
 
 def write_conflicts(data, tasks, task_id):
     task = tasks[task_id]
-    if data["mode"] != "host" or not writes_workspace(task):
+    if not writes_workspace(task):
         return []
     isolated = bool(data.get("git_base"))
     scopes = [path.casefold() for path in task.get("write_paths") or ["."]]
     blockers = []
     for key, job in data["tasks"].items():
-        holding_scope = job["state"] in ("running", "judging") or (
+        holding_scope = job["state"] in ("running", "judging", "recovery_required") or (
             job["state"] == "awaiting_confirmation" and job.get("evidence")
         )
-        if key == task_id or not holding_scope or not writes_workspace(tasks[key]):
+        if (key == task_id or not holding_scope or not writes_workspace(tasks[key])
+                or (data["mode"] != "host" and job["state"] != "recovery_required")):
             continue
         other = [path.casefold() for path in tasks[key].get("write_paths") or ["."]]
         if not isolated or any(path_is_within(a, b) or path_is_within(b, a) for a in scopes for b in other):
@@ -60,6 +61,8 @@ def workflow_path(run_dir, data):
 def claim_blockers(data, workflow_tasks, task_id):
     job = data["tasks"][task_id]
     task = workflow_tasks[task_id]
+    if job["state"] == "recovery_required":
+        return [{"code": "recovery_required", "message": job["activity"]}]
     if data.get("paused"):
         return [{"code": "paused", "message": "Run is paused"}]
     if pending_replan(data):
@@ -105,9 +108,11 @@ def dispatch_summary(data, tasks):
                 "scope": tasks[key].get("prompt", ""), "write_paths": tasks[key].get("write_paths", [])}
         if job["state"] in ("running", "judging"):
             active.append({**item, "member": job.get("member"), "decision": job.get("decision"),
-                           "branch": job.get("git", {}).get("branch")})
-        elif job["state"] in ("pending", "awaiting_confirmation", "blocked"):
+                           "branch": job.get("git", {}).get("branch"), "lease_expires_at": job.get("lease_expires_at")})
+        elif job["state"] in ("pending", "awaiting_confirmation", "blocked", "recovery_required"):
             blockers = claim_blockers(data, tasks, key)
+            if job["state"] == "recovery_required":
+                item.update(branch=job.get("git", {}).get("branch"), member=job.get("member"))
             if blockers:
                 waiting.append({**item, "blockers": blockers})
             else:

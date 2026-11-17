@@ -125,7 +125,7 @@ python3 pioneers.py examples/todo.json \
   --live --runner /path/to/agent-runner --workspace /path/to/practice-repo
 ```
 
-如果初始化时用 `--model` 配置了默认模型，CLI 会在执行时传入该模型，运行参数可以覆盖这个设置。CLI 按任务调用执行器，传入角色和工作区权限要求。任务失败时，后续任务停止，之前的 Markdown 产物可继续查阅。
+如果初始化时用 `--model` 配置了默认模型，CLI 会在执行时传入该模型，运行参数可以覆盖这个设置。CLI 按任务调用执行器，传入角色和工作区权限要求。执行器异常退出时按下文的恢复规则处理，已提交的产物可以继续查阅。
 
 ## 在不同执行端使用同一份计划
 
@@ -241,6 +241,28 @@ python3 pioneers.py --release RUN_DIR --state published --activity "部署成功
 运行器用 stdout 输出逐行 JSON。可用 `{"type":"activity","message":"正在检查项目"}` 更新看板，成功时用 `{"type":"result","message":"交付内容"}` 返回结果并退出 0。规划、独立验收和审批判断的 `message` 是符合对应 schema 的 JSON 字符串。运行器失败使用非零退出码，诊断写入 stderr。CLI 判断失败时，结果进入人工确认。
 
 本机人工入口由本机操作者使用。云端模式由私有预览控制浏览权限，看板凭证授予本次操作权限。需要按人区分审批权限时，由宿主提供个人身份认证，并隔离工作目录与外部工具权限。Pioneers 管理经登记的任务与发布状态，平台外独立发起的命令由平台的权限策略控制。
+
+## 执行器故障恢复
+
+宿主领取任务时会获得 `attempt` 和 180 秒租约。执行器仍活跃时，宿主至少每 60 秒续约一次。带 `--state running` 的进度回报也会续约。只有确认执行器或其会话仍活跃时才续约。确认执行器异常退出时，可以报告 `--state lost`。宿主查就绪队列或尝试领取时，也会回收租约超时的任务。
+
+```bash
+python3 pioneers.py --host-heartbeat RUN_DIR --task fix --attempt 1
+python3 pioneers.py --host-report RUN_DIR --task fix --attempt 1 --state lost --activity "执行端进程异常退出"
+```
+
+CLI 调度进程意外退出后，用 `--continue RUN_DIR` 重新打开同一运行。Pioneers 取得调度锁后检查未完成的分配，保留已放行的产物、待审批决策和计划。仍有活动 CLI 调度进程时，第二个进程无法接管。
+
+- 只读任务和在独立 Git worktree 中运行的普通写入任务可自动重新排队。每个任务最多自动恢复两次。每次分配使用新的 `attempt`，旧回报会被拒绝。旧工作区和旧尝试的记录保留。
+- 共用工作区的写入、发布等外部操作、高成本任务或达到自动恢复上限时，任务进入「待人工恢复」。共用工作区写入会继续阻塞同一运行中的其他写入，直至完成核对。失败发生在框架外部时，原进程或外部操作仍可能进行，由操作者核对实际状态。
+- 核对旧执行端已停止后，可以在看板「派工判断 → 等待中」使用「检查后重跑」，也可以调用命令行。需要授权的任务重跑时会生成新的授权审批。如果外部操作已经完成，可用 `--artifact` 接续已核对的产物，交给原有验收及审批流程，避免重复执行。
+- 升级前在途的宿主任务可能没有租约。确认旧执行端已停止后，用 `--recover` 核对并接续这项任务。
+
+```bash
+python3 pioneers.py --continue RUN_DIR
+python3 pioneers.py --recover RUN_DIR --task fix --attempt 1 --reason "旧进程已退出，已核对工作区"
+python3 pioneers.py --recover RUN_DIR --task send --attempt 1 --artifact evidence.md --reason "已核对外部回执"
+```
 
 ## 项目看板与迭代记录
 
