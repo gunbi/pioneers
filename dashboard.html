@@ -35,6 +35,19 @@
     .awaiting_confirmation,.paused { background:#fff0d4; color:var(--amber); }
     .judging { background:#ece7f5; color:#594075; }
     .flow { margin-top:1.12rem; border:1px solid var(--line); border-radius:.9rem; overflow:hidden; background:#fff; }
+    .dispatch { margin-top:1.12rem; padding:.85rem 1rem; border:1px solid var(--line); border-radius:.9rem; background:#fff; }
+    .dispatch h2,.dispatch h3 { margin:0; }
+    .dispatch .section-head { margin-bottom:.55rem; }
+    .dispatch-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.65rem; }
+    .dispatch-group { min-width:0; border:1px solid var(--line); border-radius:.55rem; background:#f8fafc; }
+    .dispatch-group summary { cursor:pointer; padding:.58rem .7rem; font-size:.87rem; font-weight:650; }
+    .dispatch-list { list-style:none; padding:0 .7rem; margin:0; max-height:20rem; overflow:auto; }
+    .dispatch-list li { padding:.38rem 0 .48rem; border-top:1px solid var(--line); }
+    .dispatch-list a { color:var(--accent); font-weight:650; }
+    .dispatch-list p { margin:.08rem 0; color:var(--muted); font-size:.79rem; }
+    .dispatch-list .reason { color:var(--amber); }
+    #dispatch-jump { color:#dceaff; }
+    #dispatch-jump:focus-visible { outline-color:#a9d1ff; }
     .flow-head { display:flex; justify-content:space-between; align-items:center; gap:.4rem 1rem; flex-wrap:wrap; padding:.72rem 1rem; }
     .flow-head h2 { margin:0; }
     .flow-legend { display:flex; flex-wrap:wrap; gap:.25rem .72rem; color:var(--muted); font-size:.74rem; }
@@ -164,6 +177,7 @@
     #connection[data-error] { color:#ffd2a4; }
     #connection[data-error]::before { background:#f3ad64; }
     @media (max-width:820px) {
+      .dispatch-grid { grid-template-columns:1fr; }
       .lane-heads { display:none; }
       .chart { background:var(--board); border-block-start:1px solid var(--line); padding:.32rem .5rem; }
       .stage { display:block; }
@@ -196,6 +210,7 @@
         <span id="state" class="pill">载入中</span>
         <span id="count"></span>
         <span id="connection" role="status">正在连接</span>
+        <a id="dispatch-jump" class="quiet-link" href="#dispatch-title" hidden>派工判断 ↓</a>
         <a id="approval-jump" class="quiet-link" href="#human-title" hidden>人工确认与介入 ↓</a>
       </div>
     </header>
@@ -211,6 +226,27 @@
       <div id="return-trace" class="trace" hidden></div>
       <div id="lane-heads" class="lanes lane-heads" aria-hidden="true"></div>
       <ol id="stages" class="chart" aria-label="任务交接、审批和发布阶段"></ol>
+    </section>
+    <section id="dispatch" class="dispatch" aria-labelledby="dispatch-title" hidden>
+      <div class="section-head">
+        <h2 id="dispatch-title">派工判断</h2>
+        <span id="dispatch-mode" class="pill"></span>
+      </div>
+      <p id="dispatch-note" class="notice"></p>
+      <div class="dispatch-grid">
+        <details class="dispatch-group" open>
+          <summary id="dispatch-ready-label">可派发</summary>
+          <ol id="dispatch-ready" class="dispatch-list"></ol>
+        </details>
+        <details class="dispatch-group" open>
+          <summary id="dispatch-active-label">处理中</summary>
+          <ul id="dispatch-active" class="dispatch-list"></ul>
+        </details>
+        <details class="dispatch-group" open>
+          <summary id="dispatch-waiting-label">等待中</summary>
+          <ul id="dispatch-waiting" class="dispatch-list"></ul>
+        </details>
+      </div>
     </section>
     <section id="human" class="human" aria-labelledby="human-title" hidden>
       <div class="section-head">
@@ -252,6 +288,11 @@
         <h2 id="dialog-title"></h2>
         <p id="dialog-description" class="notice"></p>
         <ul id="dialog-targets" class="dialog-targets" hidden></ul>
+        <div id="control-key-field" hidden>
+          <label for="control-key">控制凭证</label>
+          <input id="control-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="control-key-info">
+          <p id="control-key-info" class="notice">输入启动看板的终端中显示的凭证。当前标签页会记住它，刷新后需要重新输入。</p>
+        </div>
         <div id="rerun-field" hidden>
           <label for="rerun-from">重跑起点</label>
           <select id="rerun-from"></select>
@@ -390,15 +431,8 @@
       row.append(element("span", edgeLabel(edge, previous, stage), "edge-label"));
       return row;
     }
-    function gateRow(stage, position, total, remoteStages) {
-      const row = element("div", "", "gate-row");
-      row.id = "stage-" + stage.key;
-      const percent = (position - .5) / total * 100;
-      row.style.setProperty("--gate-center", percent + "%");
-      row.style.setProperty("--gate-edge", Math.min(percent, 100 - percent) + "%");
-      const pending = ["awaiting_confirmation", "judging"].includes(stage.state);
-      const id = stage.decision;
-      const review = element("a", stageTitle(stage) + " · " + id + " · " + labels[stage.state], "gate-link " + stage.state);
+    function approvalLink(id, pending, title, className) {
+      const review = element("a", title, className);
       review.href = pending ? "#human-title" : "#archive-" + id;
       review.onclick = () => {
         if (pendingDecisions().some(item => item.id === id)) selectDecision(id);
@@ -408,7 +442,16 @@
           if (archive) archive.open = true;
         }
       };
-      row.append(review);
+      return review;
+    }
+    function gateRow(stage, position, total, remoteStages) {
+      const row = element("div", "", "gate-row");
+      row.id = "stage-" + stage.key;
+      const percent = (position - .5) / total * 100;
+      row.style.setProperty("--gate-center", percent + "%");
+      row.style.setProperty("--gate-edge", Math.min(percent, 100 - percent) + "%");
+      const pending = ["awaiting_confirmation", "judging"].includes(stage.state);
+      row.append(approvalLink(stage.decision, pending, stageTitle(stage) + " · " + stage.decision + " · " + labels[stage.state], "gate-link " + stage.state));
       for (const [label, connected] of Object.entries(remoteStages)) {
         if (!connected.length) continue;
         const links = element("div", label, "gate-links");
@@ -510,7 +553,7 @@
     const decisionTones = {waiting:"awaiting_confirmation", judging:"judging", approved:"completed", auto:"completed"};
     const actionLabels = {approve:"确认", revise:"修改决策", pause:"暂停", resume:"恢复", intervene:"介入"};
     const decisionKinds = {result:"任务产物", effect:"执行授权", release:"发布授权"};
-    let operatorData, operatorSnapshot, activeId, request, submitting = false;
+    let operatorData, operatorSnapshot, activeId, request, submitting = false, controlKey = "";
 
     function decisionTitle(decision) {
       const heading = decision.content?.match(/^#\s+([^\n]+)/);
@@ -697,7 +740,10 @@
       renderInbox();
       const paused = Boolean(data.paused);
       byId("intervention").classList.toggle("paused-box", paused);
-      byId("pause-info").textContent = paused ? "已暂停派工 · " + data.paused : "暂停后不会领取新任务，已在执行的任务仍可回报。";
+      const running = Object.values(data.tasks).filter(task => task.state === "running").length;
+      byId("pause-info").textContent = paused ? "已暂停新派工 · " + data.paused +
+        (running ? " · " + running + " 项已领取的任务仍可执行和回报" : "") :
+        "暂停后不会领取新任务，已在执行的任务仍可回报。";
       const canPause = Object.keys(data.tasks).length &&
         ["running", "accepted", "completed", "publish_failed"].includes(data.state);
       byId("intervention").hidden = !paused && !canPause;
@@ -713,7 +759,7 @@
       const settings = {
         approve:["确认决策", "确认后，满足所有依赖条件的下游任务可以继续。", "确认通过"],
         revise:["补充意见或修订", "沿用原产物时只填写意见。原决策会保留，相关任务会重新评估。", "提交修订"],
-        pause:["暂停派工", "暂停新任务领取。已经开始的任务可以继续回报。", "确认暂停"],
+        pause:["暂停派工", "暂停新任务领取。已经开始的任务仍可执行和回报。", "确认暂停"],
         intervene:["补充指令或重跑", "选择重跑起点会重新排队该任务和受影响的下游。", "提交指令"],
         resume:["恢复派工", "依赖已满足、审批已通过的任务可以继续领取。", "确认恢复"],
       }[action];
@@ -723,6 +769,7 @@
       byId("reason-label").textContent = action === "revise" ? "修改原因或补充意见" : action === "intervene" ? "补充指令" : "操作原因";
       byId("action-form").reset();
       byId("dialog-feedback").textContent = "";
+      byId("control-key-field").hidden = !operatorData.cloud_control || Boolean(controlKey);
       byId("replacement-field").hidden = action !== "revise";
       byId("rerun-field").hidden = action !== "intervene";
       byId("approver-field").hidden = action !== "approve";
@@ -737,17 +784,25 @@
       list.hidden = !targets.length;
       list.replaceChildren(...targets.map(id => element("li", id + " · " + decisionTitle(operatorData.decisions[id]))));
       byId("action-dialog").showModal();
-      byId("human-reason").focus();
+      byId(byId("control-key-field").hidden ? "human-reason" : "control-key").focus();
     }
 
     async function submitAction(event) {
       event.preventDefault();
       if (submitting) return;
+      const cloud = Boolean(operatorData.cloud_control);
       const reason = byId("human-reason").value.trim();
       const errorBox = byId("dialog-feedback");
       if (!reason) {
         errorBox.textContent = "请填写操作原因或补充指令。";
         byId("human-reason").focus();
+        return;
+      }
+      const keyInput = byId("control-key");
+      const key = cloud ? controlKey || keyInput.value.trim() : "";
+      if (cloud && !key) {
+        errorBox.textContent = "请输入控制凭证。";
+        keyInput.focus();
         return;
       }
       const body = {...request, reason};
@@ -759,11 +814,36 @@
       byId("cancel-action").disabled = true;
       errorBox.textContent = "";
       try {
-        const response = await fetch("/human-action", {method:"POST", headers:{"Content-Type":"application/json"},
-          body:JSON.stringify(body)});
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.error || "操作未提交，请刷新后重试。");
+        const headers = {"Content-Type":"application/json"};
+        if (cloud) headers["X-Pioneers-Control"] = key;
+        const response = await fetch("/human-action", {method:"POST", headers, mode:"same-origin",
+          redirect:"error", body:JSON.stringify(body)});
+        const result = await response.json().catch(() => null);
+        if (!response.ok) {
+          if (result?.code === "control_key" || result?.code === "control_expired") {
+            controlKey = "";
+            byId("control-key-field").hidden = false;
+            keyInput.value = "";
+            keyInput.focus();
+          }
+          const guidance = [403, 404, 405].includes(response.status) ?
+            cloud ? "。请检查私有预览是否转发人工操作接口。" : "。请用本机或 SSH 转发后的看板地址，也可以在运行环境操作。" :
+            "。请先检查看板中的当前状态。";
+          throw new Error(result?.error || "看板未能提交操作（HTTP " + response.status + "）" + guidance);
+        }
+        const confirmed = result && {
+          approve: Array.isArray(result.approved),
+          revise: Boolean(result.judgment || result.decision),
+          pause: Boolean(result.paused),
+          intervene: Boolean(result.paused),
+          resume: result.paused === null,
+        }[body.action];
+        if (!confirmed) {
+          throw new Error("看板未收到运行端的操作确认。请先检查当前状态，或在运行环境操作。");
+        }
+        if (cloud) controlKey = key;
         byId("human-feedback").textContent = body.action === "approve" ? "已通过 " + result.approved.length + " 项决策。" :
+          body.action === "pause" ? "已暂停新派工。已领取的任务仍可执行和回报。" :
           "已记录" + actionLabels[body.action] + "操作。";
         byId("action-dialog").close();
       } catch (error) {
@@ -778,11 +858,57 @@
     byId("action-form").onsubmit = submitAction;
     byId("cancel-action").onclick = () => byId("action-dialog").close();
     byId("action-dialog").addEventListener("cancel", event => { if (submitting) event.preventDefault(); });
+    byId("action-dialog").addEventListener("close", () => { byId("control-key").value = ""; });
     byId("approve-selected").onclick = () => openAction("approve", {decisions:[...selected]});
     byId("approve-all").onclick = () => openAction("approve", {decisions:waitingIds()}, "确认当前全部待审批决策");
     byId("pause").onclick = () => openAction("pause");
     byId("resume").onclick = () => openAction("resume");
     byId("intervene").onclick = () => openAction("intervene");
+    function dispatchItem(item, data) {
+      const row = element("li", "");
+      row.append(stageLink({key:item.task + "." + item.attempt}, item.task + attemptLabel(item.attempt)));
+      row.append(element("p", [data.roles[item.role], item.member?.name,
+        item.remaining_steps ? "最长剩余依赖链 " + item.remaining_steps + " 步" : labels[item.state]].filter(Boolean).join(" · ")));
+      for (const blocker of item.blockers || []) {
+        const label = labels[blocker.state] || blocker.state;
+        const reason = {
+          dependency:"等待 " + blocker.task + " · " + label,
+          authorization:"执行前需人工授权",
+          paused:"运行暂停",
+          run_state:"运行状态 · " + label,
+          task_state:label,
+        }[blocker.code] || blocker.message;
+        const line = element("p", reason, "reason");
+        const decision = data.decisions?.[blocker.decision];
+        if (decision) {
+          line.append(element("span", " · "), approvalLink(decision.id,
+            ["waiting", "judging"].includes(decision.state), decision.id));
+        }
+        row.append(line);
+      }
+      if (item.remaining_steps && item.scope) row.append(element("p", item.scope));
+      return row;
+    }
+    function renderDispatch(data) {
+      const dispatch = data.dispatch;
+      byId("dispatch").hidden = !dispatch;
+      const jump = byId("dispatch-jump");
+      jump.hidden = !dispatch;
+      if (!dispatch) return;
+      jump.textContent = "派工 · " + dispatch.ready.length + " 项就绪 ↓";
+      const parallel = data.mode === "host";
+      byId("dispatch-mode").textContent = parallel ? "宿主模式" : "本地串行";
+      byId("dispatch-note").textContent = dispatch.paused ? "运行已暂停，保留进行中的任务。" : !Object.keys(data.tasks).length ?
+        "等待工作流规划。" : parallel ? "就绪任务可按成员容量和写入范围同批派发，长依赖链优先。" :
+        "按依赖就绪情况显示任务，本地执行器依次处理。";
+      for (const [key, name, empty] of [["ready", "可派发", "暂无就绪任务"],
+        ["active", "处理中", "暂无处理中任务"], ["waiting", "等待中", "暂无受阻任务"]]) {
+        const rows = dispatch[key];
+        byId("dispatch-" + key + "-label").textContent = name + " · " + rows.length;
+        byId("dispatch-" + key).replaceChildren(...(rows.length ? rows.map(item => dispatchItem(item, data)) :
+          [element("li", empty, "notice")]));
+      }
+    }
     function render(data) {
       const tasks = Object.values(data.tasks);
       const completed = tasks.filter(task => task.state === "completed").length;
@@ -795,6 +921,7 @@
         completed + " / " + tasks.length + " 项任务完成";
       renderFlow(data);
       renderHuman(data);
+      renderDispatch(data);
       const history = (data.events || []).slice().reverse().map(event => {
         const row = element("li", "");
         const time = clock(event.at);

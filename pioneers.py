@@ -19,7 +19,8 @@ from urllib.parse import urlsplit
 from capabilities import REGISTRY, ROOT, assigned_capabilities, capability_prompt, mcp_config, run_tool, tool_ids
 from approval import EFFECTS, IMPACTS, audit, judgment, proposal, supersede
 from progress import Progress, artifact_name, codex_activity, print_board, show_progress
-from dashboard import live_dashboard, serve_dashboard
+from dashboard import announce, dashboard_is_running, live_dashboard, preview_origin, serve_dashboard
+from dispatch import claim_blockers, dispatch_summary, preapproval_required, waiting_on
 from skill_sources import SNAPSHOT, read_json, refresh_run
 
 
@@ -44,6 +45,44 @@ LEGACY_ROLES = {
     "android": Role("安卓开发", "实现 Android 用户流程，记录构建和设备验证结果。", "workspace-write"),
 }
 ROLES = {**TEAM_ROLES, **LEGACY_ROLES}
+
+
+def project_environment():
+    env = os.environ.copy()
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"):
+        env.pop(name, None)
+    return env
+
+
+def git_root(path):
+    return next((directory for directory in (path, *path.parents) if (directory / ".git").exists()), None)
+
+
+def git_common_directory(root):
+    result = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+                            env=project_environment(), capture_output=True, text=True)
+    if result.returncode:
+        raise ValueError(f"Cannot verify Git repository or worktree: {root}")
+    return (root / result.stdout.rstrip("\r\n")).resolve()
+
+
+def project_workspace(path):
+    if path is None:
+        raise ValueError("Specify a separate delivery project with --workspace PROJECT")
+    workspace = Path(path).resolve()
+    if not workspace.is_dir():
+        raise ValueError("--workspace must point to an existing project directory")
+    if workspace.is_relative_to(ROOT) or ROOT.is_relative_to(workspace):
+        raise ValueError("Choose a project directory separate from the Pioneers framework checkout")
+    project_root = git_root(workspace)
+    framework_root = git_root(ROOT)
+    if project_root and project_root != workspace:
+        raise ValueError("--workspace must point to the project Git root or a dedicated project worktree")
+    if project_root:
+        metadata = git_common_directory(project_root)
+        if metadata.is_relative_to(ROOT) or (framework_root and metadata == git_common_directory(framework_root)):
+            raise ValueError("Choose a project repository separate from the Pioneers Git repository and its worktrees")
+    return workspace
 
 
 def team_path(workspace):
@@ -243,7 +282,8 @@ class Executor:
         sandbox = sandbox or role.sandbox
         servers = mcp_config(role_id, self.workspace, tools)
         builtin_tools = list(assigned_capabilities(role_id, tools)["tools"])
-        env = dict(os.environ, PIONEERS_TASK_ROLE=role_id, PIONEERS_BUILTIN_TOOLS=json.dumps(builtin_tools))
+        env = project_environment()
+        env.update(PIONEERS_TASK_ROLE=role_id, PIONEERS_BUILTIN_TOOLS=json.dumps(builtin_tools))
         if self.runner is not None:
             request = {
                 "phase": phase,
@@ -355,8 +395,12 @@ def plan_workflow(goal, executor, run_dir, progress):
     prompt = (
         "你是 pioneers 的 LD。根据目标自主选择角色、拆分任务和设置依赖。"
         "可以查阅当前项目，规划阶段仅做只读分析。"
-        "小功能优先由一名 engineer 负责从实现到自测。多个 engineer 有共享契约时，明确谁负责最终集成。"
-        "用 depends_on 约定交接。实现任务要有下游独立 qa 验收任务，只有这种 qa 任务填写 review=true。"
+        "在满足验收标准、控制返工和合并冲突的前提下，尽量缩短从开工到独立验收通过的时间。"
+        "先理出关键路径，优先安排会阻塞多个后续任务的决定、共享契约或环境准备。"
+        "depends_on 只列开工前确实需要的产物。多个独立任务需要同一产物时分别依赖它，完全独立的任务可立即启动。"
+        "能独立修改、测试并交接的工作尽早并行。共享契约确定后，前端可用 Mock 开发，后端可实现接口，QA 可准备验收。"
+        "交接或合并成本高的小功能优先交给一名 engineer。多个工程师写同一项目时，明确各自修改范围、隔离方式和集成负责人。"
+        "任务提示写清真正等待的产物和可独立交付的边界。实现任务要有下游独立 qa 验收任务，只有实际验收填写 review=true。"
         "把实际执行的对外发送、发布、付款、权限变更、删除及其他难以撤销操作拆成独立任务，"
         "分别填写 effect 为 send、publish、payment、permissions、delete 或 irreversible；常规任务填 null。"
         "重大架构方案标 architecture，重要功能设计标 feature_design，先出方案再安排下游实现。"
@@ -374,7 +418,12 @@ def plan_workflow(goal, executor, run_dir, progress):
             workflow["goal"] = goal
         result = validate_workflow(workflow, generated=True)
         path = run_dir / "workflow.json"
-        path.write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _, tasks, order = result
+        with Progress.locked(run_dir) as current:
+            path.write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            current.set_tasks(tasks, order)
+            current.planning("completed", f"分工已保存到 {path.name}")
+            progress.data = current.data
     except KeyboardInterrupt:
         progress.planning("interrupted", "规划被用户中断")
         progress.finish("interrupted")
@@ -384,9 +433,6 @@ def plan_workflow(goal, executor, run_dir, progress):
         progress.finish("failed")
         raise RuntimeError(f"Planning failed: {error}") from error
 
-    _, tasks, order = result
-    progress.set_tasks(tasks, order)
-    progress.planning("completed", f"分工已保存到 {path.name}")
     return result
 
 
@@ -453,6 +499,8 @@ def assignment_prompt(goal, tasks, task_id, progress):
                for dep in task.get("depends_on", [])}
     sources = read_json(progress.path.with_name(SNAPSHOT)) if task.get("skills") else None
     prompt = task_prompt(goal, task, results, sources=sources)
+    if workspace := progress.data.get("workspace"):
+        prompt = f"项目工作区：{workspace}\n只在该目录内开发和验证。\n\n{prompt}"
     for dep in results:
         key = progress.data["tasks"][dep].get("decision")
         decision = progress.data.get("decisions", {}).get(key, {})
@@ -555,22 +603,23 @@ def assign_member(progress, job, member_id, member_name):
     job["member"] = member
 
 
-def waiting_on(progress, task):
-    return [dep for dep in task.get("depends_on", []) if progress.data["tasks"][dep]["state"] != "completed"]
-
-
 def affected_tasks(tasks, task_id):
     if task_id is None:
         return []
     return [key for key in tasks if key != task_id and task_id in task_ancestors(tasks, key)]
 
 
-def preapproval_required(task):
-    return bool(task.get("effect") or task.get("impact") == "costly_change")
-
-
 def design_only(task):
     return not task.get("effect") and task.get("impact") in ("architecture", "feature_design")
+
+
+def host_ready(run_dir):
+    progress = Progress.open(run_dir.resolve(strict=True))
+    data = progress.data
+    if data["mode"] != "host":
+        raise ValueError("Host readiness requires a run created with --host-start")
+    _, tasks, _ = load_workflow(progress.path.with_name("workflow.json"))
+    return dispatch_summary(data, tasks)
 
 
 def reconcile(progress, tasks):
@@ -580,7 +629,7 @@ def reconcile(progress, tasks):
     for task_id, task in tasks.items():
         job = data["tasks"][task_id]
         if (preapproval_required(task) and job["state"] == "pending" and not job.get("authorization")
-                and not waiting_on(progress, task)):
+                and not waiting_on(progress.data, task)):
             upstream = [data["tasks"][key].get("evidence") for key in task.get("depends_on", [])]
             content = task["prompt"]
             if any(upstream):
@@ -637,7 +686,7 @@ def judgment_assignment(progress, tasks, decision):
         + json.dumps(context, ensure_ascii=False)
     )
     return {"task": task_id, "attempt": decision["attempt"], "decision": decision["id"], "phase": "approval",
-            "role": "ld", "sandbox": "read-only", "prompt": prompt,
+            "role": "ld", "workspace": progress.data.get("workspace"), "sandbox": "read-only", "prompt": prompt,
             "output_schema": json.loads((ROOT / "approval.schema.json").read_text(encoding="utf-8"))}
 
 
@@ -737,37 +786,54 @@ def create_run(output_dir, goal, tasks, order, mode, require_release=False):
     return run_dir, Progress(run_dir, tasks, order, roles, mode, goal, require_release)
 
 
+def refresh_run_skills(progress):
+    run_dir = progress.path.parent
+    sources = refresh_run(run_dir, ROOT, REGISTRY["skills"])
+    with Progress.locked(run_dir) as current:
+        current.data["skill_sources"] = sources
+        progress.data = current.data
+
+
 def start_host(workflow_path, output_dir, workspace, require_release):
+    workspace = project_workspace(workspace)
     workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
     goal, tasks, order = validate_workflow(workflow, generated=True)
     if require_release:
         validate_release_workflow(tasks)
-    if not workspace.is_dir():
-        raise ValueError("--workspace must point to a directory")
     run_dir, progress = create_run(output_dir, goal, tasks, order, "host", require_release)
     (run_dir / "workflow.json").write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     progress.data["workspace"] = str(workspace)
-    progress.data["skill_sources"] = refresh_run(run_dir, ROOT, REGISTRY["skills"])
     reconcile(progress, tasks)
-    progress.event("ld", None, "completed", "工作流已登记，可以领取依赖就绪的任务")
-    return {"run_dir": str(run_dir), "tasks": progress.data["tasks"], "skill_sources": progress.data["skill_sources"]}
+    progress.event("ld", None, "completed", "工作流已登记，启动看板后可领取依赖就绪的任务")
+    refresh_run_skills(progress)
+    return {"run_dir": str(run_dir), "workspace": str(workspace), "tasks": progress.data["tasks"],
+            "skill_sources": progress.data["skill_sources"]}
+
+
+def serve_run_dashboard(run_dir, args, result=None):
+    def on_ready(url):
+        if Progress.open(run_dir).data["mode"] == "host":
+            with Progress.locked(run_dir) as progress:
+                progress.data["dashboard_port"] = urlsplit(url).port
+        if result is None:
+            announce(url)
+        else:
+            print(json.dumps({**result, "dashboard_url": url}, ensure_ascii=False), flush=True)
+
+    serve_dashboard(run_dir, args.port, control=control_run, on_ready=on_ready,
+                    open_browser=args.open_browser, cloud_origin=args.dashboard_origin)
 
 
 def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=None):
     run_dir = progress.path.parent
     tasks = progress.data["tasks"]
     task = workflow_tasks[task_id]
-    if progress.data.get("paused"):
-        raise ValueError("Run is paused")
-    if progress.data["state"] != "running" or tasks[task_id]["state"] != "pending":
-        raise ValueError(f"Task {task_id} cannot be claimed in its current state")
-    waiting = waiting_on(progress, task)
-    if waiting:
-        raise ValueError(f"Task {task_id} is waiting for: {', '.join(waiting)}")
-    if preapproval_required(task):
-        authorization = progress.data.get("decisions", {}).get(tasks[task_id].get("authorization"), {})
-        if authorization.get("state") != "approved":
-            raise ValueError(f"Task {task_id} requires human authorization before execution")
+    blockers = claim_blockers(progress.data, workflow_tasks, task_id)
+    if blockers:
+        waiting = [item["task"] for item in blockers if item["code"] == "dependency"]
+        if waiting:
+            raise ValueError(f"Task {task_id} is waiting for: {', '.join(waiting)}")
+        raise ValueError(blockers[0]["message"])
     assign_member(progress, tasks[task_id], member_id, member_name)
     review = task.get("review", False)
     assignment = {
@@ -807,12 +873,14 @@ def report_task(progress, workflow_tasks, task_id, state, activity, result, atte
     return {"task": task_id, "state": state, "run_state": progress.data["state"], "activity": activity}
 
 
-def run_live(tasks, order, executor, progress):
+def run_live(tasks, order, executor, progress, *, refresh_skills=False):
     with sqlite3.connect(progress.path.with_name("cli-worker.lock.db"), timeout=0) as lock:
         try:
             lock.execute("BEGIN IMMEDIATE")
         except sqlite3.OperationalError as error:
             raise ValueError("A CLI worker is already active for this run") from error
+        if refresh_skills:
+            refresh_run_skills(progress)
         return execute_live(tasks, order, executor, progress)
 
 
@@ -834,7 +902,7 @@ def execute_live(tasks, order, executor, progress):
                 assignment = judgment_assignment(current, tasks, pending)
             elif data["state"] == "running" and not data.get("paused"):
                 ready = next((key for key in order if data["tasks"][key]["state"] == "pending"
-                              and not waiting_on(current, tasks[key])), None)
+                              and not waiting_on(current.data, tasks[key])), None)
                 if ready:
                     assignment = claim_task(current, tasks, ready)
         if not assignment:
@@ -892,6 +960,9 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
         if task_id not in tasks:
             raise ValueError(f"Unknown workflow task: {task_id}")
         if state is None:
+            progress.data["workspace"] = str(project_workspace(progress.data.get("workspace")))
+            if not dashboard_is_running(run_dir, progress.data.get("dashboard_port")):
+                raise ValueError("Start the run dashboard with --dashboard RUN_DIR before claiming tasks")
             return claim_task(progress, tasks, task_id, member_id, member_name)
         result = artifact.read_text(encoding="utf-8") if artifact else None
         return report_task(progress, tasks, task_id, state, activity, result, attempt)
@@ -908,6 +979,7 @@ def handle_judgment(run_dir, key, task_id, attempt, artifact):
         if artifact is None:
             if progress.data.get("paused"):
                 raise ValueError("Run is paused")
+            progress.data["workspace"] = str(project_workspace(progress.data.get("workspace")))
             return judgment_assignment(progress, tasks, decision)
         result = record_judgment(progress, tasks, key, artifact.read_text(encoding="utf-8"),
                                  task_id=task_id, attempt=attempt)
@@ -1103,6 +1175,7 @@ def main():
     action.add_argument("--watch", type=Path, metavar="RUN_DIR", help="Follow team status until the run stops.")
     action.add_argument("--dashboard", type=Path, metavar="RUN_DIR", help="Serve a live browser dashboard on localhost.")
     action.add_argument("--host-start", type=Path, metavar="WORKFLOW", help="Register a validated workflow for a native execution host.")
+    action.add_argument("--host-ready", type=Path, metavar="RUN_DIR", help="List ready, active and blocked host tasks as JSON.")
     action.add_argument("--host-claim", type=Path, metavar="RUN_DIR", help="Claim a dependency-ready task and return its assignment as JSON.")
     action.add_argument("--host-report", type=Path, metavar="RUN_DIR", help="Report work on a claimed task.")
     action.add_argument("--judge", type=Path, metavar="RUN_DIR", help="Fetch or submit a host LLM judgment.")
@@ -1137,17 +1210,34 @@ def main():
     parser.add_argument("--require-release", action="store_true", help="Wait for publication to finish after QA acceptance.")
     parser.add_argument("--url", help="Visit URL required when reporting published.")
     parser.add_argument("--port", type=int, default=0, help="Dashboard port (default: automatically assigned).")
-    parser.add_argument("--serve-dashboard", action="store_true", help="With --host-start, start the dashboard in the same foreground process.")
-    parser.add_argument("--open-browser", action="store_true", help="Try to open the dashboard in this machine's default browser.")
+    host_start_mode = parser.add_mutually_exclusive_group()
+    host_start_mode.add_argument("--serve-dashboard", action="store_true",
+                                 help="With --host-start, serve the dashboard in the foreground (default).")
+    host_start_mode.add_argument("--register-only", action="store_true",
+                                 help="With --host-start, register the run and exit. Start --dashboard before claiming.")
+    parser.add_argument("--open-browser", action=argparse.BooleanOptionalAction,
+                        help="Open the dashboard in the local browser (default on desktop environments).")
+    parser.add_argument("--dashboard-origin", metavar="HTTPS_ORIGIN", help="Enable credential-protected controls on this private HTTPS preview origin.")
     parser.add_argument("--live", action="store_true", help="Use the configured agent executor.")
     parser.add_argument("--model", help="Default model for a new team, or model for a workflow run.")
-    parser.add_argument("--workspace", type=Path, help="Git working directory for team setup or live tasks.")
+    parser.add_argument("--workspace", type=Path, help="Separate project directory for team setup or task execution.")
     parser.add_argument("--output-dir", type=Path, default=Path(".pioneers/runs"))
     args = parser.parse_args()
-    if args.serve_dashboard and not args.host_start:
-        parser.error("--serve-dashboard requires --host-start")
-    if args.open_browser and not (args.serve_dashboard or args.dashboard or args.continue_run or args.live):
-        parser.error("--open-browser requires a dashboard-serving action")
+    if (args.serve_dashboard or args.register_only) and not args.host_start:
+        parser.error("--serve-dashboard and --register-only require --host-start")
+    serves_dashboard = (args.host_start and not args.register_only) or args.dashboard or args.continue_run or args.live
+    if args.open_browser is not None and not serves_dashboard:
+        parser.error("--open-browser and --no-open-browser require a dashboard-serving action")
+    if args.dashboard_origin is not None:
+        if not serves_dashboard:
+            parser.error("--dashboard-origin requires a dashboard-serving action")
+        try:
+            args.dashboard_origin = preview_origin(args.dashboard_origin)
+        except ValueError as error:
+            parser.error(str(error))
+    if args.open_browser is None:
+        desktop = sys.platform in ("darwin", "win32") or os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        args.open_browser = bool(serves_dashboard and desktop and not args.dashboard_origin)
     if args.approver is not None and not args.approve:
         parser.error("--approver is only used with --approve")
     if args.member is not None and (not args.host_claim or not args.member):
@@ -1165,7 +1255,7 @@ def main():
     human_action = next((name for name in ("approve", "revise", "pause", "intervene", "resume")
                          if getattr(args, name) is not None), None)
     host_action = human_action or any(value is not None for value in (
-        args.host_start, args.host_claim, args.host_report, args.release, args.judge, args.continue_run
+        args.host_start, args.host_ready, args.host_claim, args.host_report, args.release, args.judge, args.continue_run
     ))
     tool_action = any(value is not None for value in (args.list_capabilities, args.mcp_config, args.run_tool))
     if (args.create_team or viewing or tool_action or host_action) and (args.workflow is not None or args.live):
@@ -1201,7 +1291,11 @@ def main():
 
     try:
         if args.dashboard is not None:
-            serve_dashboard(args.dashboard, args.port, control=control_run, open_browser=args.open_browser)
+            run_dir = args.dashboard.resolve()
+            progress = Progress.open(run_dir)
+            if progress.data["mode"] == "host":
+                refresh_run_skills(progress)
+            serve_run_dashboard(run_dir, args)
             return 0
         if viewing:
             show_progress(args.status if args.watch is None else args.watch, watch=args.watch is not None)
@@ -1216,10 +1310,11 @@ def main():
             if any(job["state"] == "running" for job in progress.data["tasks"].values()):
                 raise ValueError("Run still has an active assignment; reconcile it before reopening")
             _, tasks, order = load_workflow(run_dir / "workflow.json")
-            executor = Executor(Path(progress.data["workspace"]), config["model"],
+            executor = Executor(project_workspace(progress.data.get("workspace")), config["model"],
                                 Path(config["runner"]) if config["runner"] else None)
-            with live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser):
-                return run_live(tasks, order, executor, progress)
+            with live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser,
+                                cloud_origin=args.dashboard_origin):
+                return run_live(tasks, order, executor, progress, refresh_skills=True)
         if human_action:
             request = {"action": human_action, "reason": args.reason, "decisions": args.decision,
                        "decision": (args.decision or [None])[0], "all": args.all, "from": args.rerun_from,
@@ -1233,16 +1328,15 @@ def main():
             result = handle_judgment(args.judge, args.decision[0], args.task, args.attempt, args.artifact)
             print(json.dumps(result, ensure_ascii=False))
             return 0
+        if args.host_ready:
+            print(json.dumps(host_ready(args.host_ready), ensure_ascii=False))
+            return 0
         if args.host_start is not None:
-            result = start_host(args.host_start, args.output_dir, workspace or Path.cwd(), args.require_release)
-            if args.serve_dashboard:
-                def report_dashboard(url):
-                    print(json.dumps({**result, "dashboard_url": url}, ensure_ascii=False), flush=True)
-
-                serve_dashboard(Path(result["run_dir"]), args.port, control=control_run,
-                                on_ready=report_dashboard, open_browser=args.open_browser)
-            else:
+            result = start_host(args.host_start, args.output_dir, workspace, args.require_release)
+            if args.register_only:
                 print(json.dumps(result, ensure_ascii=False))
+            else:
+                serve_run_dashboard(Path(result["run_dir"]), args, result)
             return 0
         if args.host_claim or args.host_report:
             state = args.state if args.host_report else None
@@ -1277,7 +1371,7 @@ def main():
         if args.model is not None and not model:
             raise ValueError("--model must be a non-empty model ID")
         if args.create_team:
-            result = create_team(team_path(workspace), model)
+            result = create_team(team_path(project_workspace(workspace)), model)
             print(json.dumps(result, ensure_ascii=False))
             return 0
 
@@ -1287,6 +1381,7 @@ def main():
             goal, tasks, order = args.goal.strip(), {}, ()
         executor = None
         if args.live:
+            workspace = project_workspace(workspace)
             path = team_path(workspace)
             runner = args.runner.resolve() if args.runner is not None else None
             if runner is not None and (not runner.is_file() or not os.access(runner, os.X_OK)):
@@ -1310,10 +1405,11 @@ def main():
             (run_dir / "workflow.json").write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(f"Mode: {'live' if args.live else 'offline demo'}", flush=True)
         print(f"Run output: {run_dir.resolve()}", flush=True)
-        with live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser) if args.live else nullcontext():
+        board = live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser,
+                               cloud_origin=args.dashboard_origin) if args.live else nullcontext()
+        with board:
             if args.live:
-                progress.data["skill_sources"] = refresh_run(run_dir, ROOT, REGISTRY["skills"])
-                progress.save()
+                refresh_run_skills(progress)
             if args.goal is not None:
                 goal, tasks, order = plan_workflow(goal, executor, run_dir, progress)
                 if args.plan_only:

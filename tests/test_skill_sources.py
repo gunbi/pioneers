@@ -51,3 +51,18 @@ class SkillSourcesTest(unittest.TestCase):
             self.assertIn("本任务的 Skill android-development", prompt)
             self.assertIn("Upstream example", prompt)
             self.assertNotIn("Upstream example", "\n".join(capability_prompt("engineer", [], [], sources=snapshot)))
+
+            added = ["obra/superpowers", "skills/test-driven-development/SKILL.md"]
+            added_url = source_url(*added)
+            skills["test-engineering"] = {"sources": [added]}
+            responses = {
+                url: {"url": url, "status": "unavailable"},
+                added_url: {"url": added_url, "status": "updated", "text": "New upstream example"},
+            }
+            with patch("skill_sources.refresh_source",
+                       side_effect=lambda repo, path, *_: responses[source_url(repo, path)]):
+                summary = refresh_run(run, root, skills)
+            snapshot = read_json(run / SNAPSHOT)
+            self.assertEqual(summary["cached"], 1)
+            self.assertEqual(snapshot[url]["text"], "Upstream example")
+            self.assertEqual(snapshot[added_url]["text"], "New upstream example")

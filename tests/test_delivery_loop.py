@@ -7,11 +7,12 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from dashboard import collaboration_flow, dashboard_snapshot, flow_with_approvals
-from pioneers import create_run, load_workflow, run_workflow
+from pioneers import create_run, load_workflow, project_workspace, run_workflow
 
 
 class DeliveryLoopTest(unittest.TestCase):
@@ -46,8 +47,13 @@ class DeliveryLoopTest(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             workflow = ROOT / "examples/todo.json"
-            run = Path(json.loads(self.invoke("--host-start", workflow, "--output-dir", root,
-                                              "--require-release"))["run_dir"])
+            process = subprocess.Popen([sys.executable, "-B", "pioneers.py", "--host-start", str(workflow),
+                                        "--output-dir", temp, "--workspace", temp, "--require-release",
+                                        "--no-open-browser"], cwd=ROOT, stdout=subprocess.PIPE, text=True,
+                                       env={**os.environ, "PIONEERS_SKILLS_OFFLINE": "1"})
+            self.addCleanup(process.communicate, timeout=3)
+            self.addCleanup(process.terminate)
+            run = Path(json.loads(process.stdout.readline())["run_dir"])
             artifact = root / "result"
 
             def claim(task):
@@ -73,7 +79,9 @@ class DeliveryLoopTest(unittest.TestCase):
                                               for criterion in criteria]})
 
             self.invoke("--release", run, "--state", "publishing", "--activity", "过早发布", expected=1)
-            claim("requirements")
+            assignment = claim("requirements")
+            self.assertEqual(assignment["workspace"], str(root.resolve()))
+            self.assertIn(str(root.resolve()), assignment["prompt"])
             complete("requirements", "需求")
             claim("implementation")
             complete("implementation", "第一轮实现")
@@ -118,6 +126,48 @@ class DeliveryLoopTest(unittest.TestCase):
                              ["requirements.1", "implementation.1", "verification.1",
                               "implementation.2", "verification.2", "release"])
             self.assertIn({"from": "verification.2", "to": "release", "kind": "handoff"}, flow["edges"])
+
+    def test_host_rejects_framework_paths_and_legacy_framework_run(self):
+        workflow = ROOT / "examples/todo.json"
+        with TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            output = root / "runs"
+            alias = root / "alias"
+            alias.symlink_to(ROOT, target_is_directory=True)
+            for workspace in ([], [ROOT], [ROOT / "examples"], [ROOT.parent], [alias]):
+                self.invoke("--host-start", workflow, "--output-dir", output,
+                            *(["--workspace", workspace[0]] if workspace else []), expected=1)
+            self.assertFalse(output.exists())
+            run = json.loads(self.invoke("--host-start", workflow, "--output-dir", output, "--workspace", root,
+                                         "--register-only"))
+            self.assertEqual(run["workspace"], str(root))
+            status = Path(run["run_dir"]) / "status.json"
+            self.invoke("--host-claim", run["run_dir"], "--task", "requirements", expected=1)
+            data = json.loads(status.read_text())
+            data["workspace"] = str(ROOT)
+            status.write_text(json.dumps(data), encoding="utf-8")
+            self.invoke("--host-claim", run["run_dir"], "--task", "requirements", expected=1)
+            self.assertEqual(json.loads(status.read_text())["tasks"]["requirements"]["state"], "pending")
+
+    def test_workspace_accepts_project_worktree_and_rejects_framework_worktree(self):
+        def worktree(repo, destination):
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                            "commit", "-q", "--allow-empty", "-m", "initial"], check=True)
+            subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(destination)], check=True)
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            framework = root / "framework"
+            framework_worktree = root / "framework-worktree"
+            project_worktree = root / "project-worktree"
+            worktree(framework, framework_worktree)
+            worktree(root / "project", project_worktree)
+            with patch("pioneers.ROOT", framework):
+                with self.assertRaisesRegex(ValueError, "Pioneers Git repository"):
+                    project_workspace(framework_worktree)
+                self.assertEqual(project_workspace(project_worktree), project_worktree)
 
     def test_live_executor_retries_before_completion(self):
         goal, tasks, order = load_workflow(ROOT / "examples/todo.json")

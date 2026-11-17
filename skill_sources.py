@@ -78,8 +78,17 @@ def refresh_run(run_dir, root, registry):
     work = [(repo, path, cache_dir, offline) for repo, path in sources]
     with ThreadPoolExecutor(max_workers=8) as pool:
         records = list(pool.map(lambda args: refresh_source(*args), work))
-    write_json(run_dir / SNAPSHOT, {record["url"]: record for record in records})
-    return {state: sum(record["status"] == state for record in records)
+    path = run_dir / SNAPSHOT
+    previous = read_json(path)
+    snapshot = {}
+    for record in records:
+        url = record["url"]
+        saved = previous.get(url, {})
+        if record["status"] == "unavailable" and isinstance(saved, dict) and saved.get("text"):
+            record = {**saved, "url": url, "status": "cached"}
+        snapshot[url] = record
+    write_json(path, snapshot)
+    return {state: sum(record["status"] == state for record in snapshot.values())
             for state in ("updated", "current", "cached", "unavailable")}
 
 

@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -37,8 +38,18 @@ class ApprovalTest(unittest.TestCase):
 
     def host(self, tasks):
         self.write_workflow(tasks)
-        self.run_dir = Path(self.cli("--host-start", self.workflow, "--workspace", self.root,
-                                     "--output-dir", self.root)["run_dir"])
+        self.host_process = subprocess.Popen(
+            [*CLI, "--host-start", str(self.workflow), "--workspace", str(self.root),
+             "--output-dir", str(self.root), "--no-open-browser"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV,
+        )
+        self.addCleanup(self.stop_host, self.host_process)
+        self.run_dir = Path(json.loads(self.host_process.stdout.readline())["run_dir"])
+
+    def stop_host(self, process):
+        if process.poll() is None:
+            process.terminate()
+        process.communicate(timeout=3)
 
     def claim(self, key, *, code=0):
         return self.cli("--host-claim", self.run_dir, "--task", key, code=code)
@@ -57,10 +68,18 @@ class ApprovalTest(unittest.TestCase):
     def state(self):
         return json.loads((self.run_dir / "status.json").read_text(encoding="utf-8"))
 
-    def test_host_start_can_serve_dashboard_before_first_claim(self):
-        self.write_workflow([self.task("plan")])
+    def remove_source_from_snapshot(self):
+        path = self.run_dir / "skill-sources.json"
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        source = next(iter(snapshot))
+        del snapshot[source]
+        path.write_text(json.dumps(snapshot), encoding="utf-8")
+        return path, source
+
+    def test_host_start_serves_dashboard_before_first_claim_by_default(self):
+        self.write_workflow([self.task("next", ["plan"]), self.task("plan", impact="architecture"), self.task("side")])
         process = subprocess.Popen([*CLI, "--host-start", str(self.workflow), "--workspace", str(self.root),
-                                    "--output-dir", str(self.root), "--serve-dashboard"],
+                                    "--output-dir", str(self.root), "--no-open-browser"],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV)
         try:
             result = json.loads(process.stdout.readline())
@@ -71,10 +90,126 @@ class ApprovalTest(unittest.TestCase):
             with urlopen(url, timeout=3) as page:
                 self.assertIn("团队协作流程", page.read().decode())
             with urlopen(url + "dashboard-data.json", timeout=3) as response:
-                self.assertEqual(json.load(response)["tasks"]["plan"]["state"], "pending")
+                page = json.load(response)
+                self.assertEqual(page["tasks"]["plan"]["state"], "pending")
+                self.assertEqual(page["dispatch"], self.cli("--host-ready", self.run_dir))
             self.claim("plan")
             with urlopen(url + "dashboard-data.json", timeout=3) as response:
-                self.assertEqual(json.load(response)["tasks"]["plan"]["state"], "running")
+                page = json.load(response)
+                self.assertEqual(page["tasks"]["plan"]["state"], "running")
+                self.assertEqual(page["dispatch"], self.cli("--host-ready", self.run_dir))
+            result = self.submit("plan", "架构交接")
+            self.judge(result)
+            with urlopen(url + "dashboard-data.json", timeout=3) as response:
+                page = json.load(response)
+                self.assertEqual(page["dispatch"], self.cli("--host-ready", self.run_dir))
+                downstream = next(item for item in page["dispatch"]["waiting"] if item["task"] == "next")
+                self.assertEqual(downstream["blockers"][0]["decision"], result["decision"])
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.communicate(timeout=3)
+
+    def test_dashboard_pause_through_forwarded_loopback_port_stops_new_claims(self):
+        self.host([self.task("running"), self.task("remaining")])
+        self.claim("running")
+        self.stop_host(self.host_process)
+        self.assertIn("Start the run dashboard", self.claim("remaining", code=1))
+        reported = self.cli("--host-report", self.run_dir, "--task", "running", "--state", "running",
+                            "--activity", "看板关闭期间仍可回报")
+        self.assertEqual(reported["state"], "running")
+        snapshot, source = self.remove_source_from_snapshot()
+        process = subprocess.Popen([*CLI, "--dashboard", str(self.run_dir), "--port", "0", "--no-open-browser"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV)
+        try:
+            url = process.stdout.readline().strip().split("Dashboard: ")[1]
+            self.assertIn(source, json.loads(snapshot.read_text(encoding="utf-8")))
+            other_port = 18080 if not url.endswith(":18080/") else 18081
+            local_host = f"127.0.0.1:{other_port}"
+            body = json.dumps({"action": "pause", "reason": "暂停以检查依赖"}).encode()
+            headers = {"Content-Type": "application/json", "Host": local_host}
+            for host, origin in [(local_host, "http://localhost:18082"),
+                                 ("preview.example", "https://preview.example")]:
+                with self.assertRaises(HTTPError) as rejected:
+                    urlopen(Request(url + "human-action", data=body,
+                                    headers={**headers, "Host": host, "Origin": origin}), timeout=3)
+                with rejected.exception as response:
+                    self.assertEqual(response.code, 403)
+                    self.assertIn("SSH", json.load(response)["error"])
+                self.assertFalse(self.state().get("paused"))
+
+            with urlopen(Request(url + "human-action", data=body,
+                                headers={**headers, "Origin": f"http://{local_host}"}), timeout=3) as response:
+                self.assertEqual(json.load(response)["paused"], "暂停以检查依赖")
+            with urlopen(url + "dashboard-data.json", timeout=3) as response:
+                page = json.load(response)
+            self.assertEqual(page["paused"], "暂停以检查依赖")
+            self.assertEqual(page["dispatch"]["ready"], [])
+            self.assertIn("paused", self.claim("remaining", code=1))
+            self.assertEqual(self.submit("running", "已启动任务的产物")["task"], "running")
+            self.cli("--resume", self.run_dir, "--reason", "继续派工")
+            self.assertEqual(self.claim("remaining")["task"], "remaining")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.communicate(timeout=3)
+
+    def test_cloud_controls_share_host_state_and_require_run_credential(self):
+        self.write_workflow([self.task("plan", impact="architecture"), self.task("build", ["plan"]),
+                             self.task("independent")])
+        origin = "https://preview.example"
+        process = subprocess.Popen([*CLI, "--host-start", str(self.workflow), "--serve-dashboard",
+                                    "--workspace", str(self.root), "--output-dir", str(self.root),
+                                    "--dashboard-origin", origin + "/"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV)
+        try:
+            started = json.loads(process.stdout.readline())
+            self.run_dir = Path(started["run_dir"])
+            url = started["dashboard_url"]
+            key = process.stderr.readline().strip().split(": ", 1)[1]
+            self.assertGreaterEqual(len(key), 40)
+
+            def action(name, *, request_origin=origin, credential=key, **fields):
+                body = json.dumps({"action": name, "reason": name, **fields}).encode()
+                headers = {"Origin": request_origin, "Content-Type": "application/json"}
+                if credential is not None:
+                    headers["X-Pioneers-Control"] = credential
+                return urlopen(Request(url + "human-action", data=body, headers=headers), timeout=3)
+
+            with urlopen(url + "dashboard-data.json", timeout=3) as response:
+                public_data = response.read()
+                self.assertTrue(json.loads(public_data)["cloud_control"])
+                self.assertTrue(key.encode() not in public_data)
+            for request_origin, credential, status in [
+                (url.rstrip("/"), None, 403),
+                ("https://other.example", key, 403),
+                (origin, None, 401),
+                (origin, "wrong-key", 401),
+            ]:
+                with self.assertRaises(HTTPError) as rejected:
+                    action("pause", request_origin=request_origin, credential=credential)
+                with rejected.exception as response:
+                    self.assertEqual(response.code, status)
+                    self.assertIn("error", json.load(response))
+                self.assertFalse(self.state().get("paused"))
+
+            self.claim("plan")
+            judgment = self.submit("plan", "架构方案")
+            self.judge(judgment)
+            with action("pause") as response:
+                self.assertEqual(json.load(response)["paused"], "pause")
+            self.assertIn("paused", self.claim("independent", code=1))
+            with action("intervene", **{"from": "build"}) as response:
+                self.assertEqual(json.load(response)["paused"], "pause")
+            with action("approve", decisions=[judgment["decision"]]) as response:
+                self.assertEqual(json.load(response)["approved"], [judgment["decision"]])
+            self.assertIn("paused", self.claim("build", code=1))
+            with action("resume") as response:
+                self.assertIsNone(json.load(response)["paused"])
+            self.assertEqual(self.claim("build")["task"], "build")
+            state = self.state()
+            self.assertEqual([item["action"] for item in state["operator_log"]], ["pause", "intervene", "approve", "resume"])
+            self.assertTrue(key not in (self.run_dir / "status.json").read_text())
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -96,6 +231,48 @@ class ApprovalTest(unittest.TestCase):
         self.assertEqual(self.state()["decisions"][feature["decision"]]["state"], "waiting")
         self.cli("--approve", self.run_dir, "--all", "--reason", "确认剩余功能方案")
         self.claim("build-b")
+
+    def test_host_ready_exposes_parallel_work_and_approval_blockers(self):
+        self.host([
+            self.task("independent"),
+            self.task("contract", impact="architecture"),
+            self.task("backend", ["contract"], role="engineer"),
+            self.task("frontend", ["contract"], role="engineer"),
+            self.task("integration", ["backend", "frontend"], role="engineer"),
+            self.task("verification", ["integration"], role="qa", review=True),
+        ])
+
+        def queue():
+            return self.cli("--host-ready", self.run_dir)
+
+        def ready(result):
+            return [item["task"] for item in result["ready"]]
+
+        self.assertEqual(ready(queue()), ["contract", "independent"])
+        self.claim("contract")
+        approval = self.submit("contract", "共享接口已定义")
+        self.judge(approval)
+        result = queue()
+        self.assertEqual(ready(result), ["independent"])
+        waiting = {item["task"]: item["blockers"] for item in result["waiting"]}
+        self.assertEqual(waiting["backend"][0]["state"], "awaiting_confirmation")
+        self.assertEqual(waiting["frontend"][0]["decision"], approval["decision"])
+        self.cli("--approve", self.run_dir, "--decision", approval["decision"], "--reason", "确认契约")
+        self.assertEqual(ready(queue()), ["backend", "frontend", "independent"])
+        state_before = self.state()
+        queue()
+        self.assertEqual(self.state(), state_before)
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            assignments = list(workers.map(self.claim, ["backend", "frontend"]))
+        self.assertEqual({item["task"] for item in assignments}, {"backend", "frontend"})
+        result = queue()
+        self.assertEqual({item["task"] for item in result["active"]}, {"backend", "frontend"})
+        waiting = {item["task"]: item["blockers"] for item in result["waiting"]}
+        self.assertEqual({item["task"] for item in waiting["integration"]}, {"backend", "frontend"})
+        self.cli("--pause", self.run_dir, "--reason", "暂停派工")
+        result = queue()
+        self.assertEqual(ready(result), [])
+        self.assertTrue(all(item["blockers"][0]["code"] == "paused" for item in result["waiting"]))
 
     def test_revision_invalidates_downstream_and_preserves_inputs(self):
         self.host([self.task("plan"), self.task("build", ["plan"]), self.task("verify", ["build"]), self.task("unrelated")])
@@ -173,25 +350,33 @@ class ApprovalTest(unittest.TestCase):
         self.assertIn("只发内部接收人", self.claim("send")["prompt"])
         self.claim("payment", code=1)
 
-    def test_live_cli_uses_dashboard_approval_and_blocks_dependency(self):
-        self.write_workflow([self.task("plan", impact="feature_design"), self.task("next", ["plan"])])
+    def test_live_cli_uses_cloud_dashboard_approval_and_blocks_dependency(self):
+        self.write_workflow([self.task("plan", impact="feature_design"), self.task("next", ["plan"], role="engineer")])
         runner = self.root / "runner"
         runner.write_text(
-            "#!/usr/bin/env python3\nimport json, sys\n"
+            "#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\n"
             "job = json.load(sys.stdin)\n"
+            "assert Path.cwd() == Path(job['workspace'])\n"
+            "assert 'GIT_DIR' not in os.environ\n"
+            "if job['phase'] == 'task' and job['role'] == 'engineer':\n"
+            "    Path('delivery.txt').write_text('implementation')\n"
             "result = json.dumps({'needs_confirmation': False, 'reason': '完整'})"
             " if job['phase'] == 'approval' else '方案或实现'\n"
             "print(json.dumps({'type': 'result', 'message': result}))\n", encoding="utf-8",
         )
         runner.chmod(0o755)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        origin = "https://preview.example"
         process = subprocess.Popen([*CLI, str(self.workflow), "--live", "--runner", str(runner),
+                                    "--dashboard-origin", origin,
                                     "--workspace", str(self.root), "--output-dir", str(self.root)],
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV)
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                   env={**OFFLINE_ENV, "GIT_DIR": str(ROOT / ".git")})
         try:
             self.assertEqual(process.stdout.readline().strip(), "Mode: live")
             self.run_dir = Path(process.stdout.readline().strip().split("Run output: ")[1])
             url = process.stdout.readline().strip().split("Dashboard: ")[1]
+            key_header = process.stderr.readline().strip().split(": ", 1)[1]
             for _ in range(100):
                 snapshot = self.state()
                 if snapshot["tasks"]["plan"]["state"] == "awaiting_confirmation":
@@ -210,12 +395,22 @@ class ApprovalTest(unittest.TestCase):
                 self.assertEqual(visible["decisions"][key]["affected"], ["next"])
             with urlopen(url + "evidence/plan.md", timeout=3) as response:
                 self.assertEqual(response.status, 200)
-            headers["Origin"] = url.rstrip("/")
+            headers.update({"Origin": origin, "X-Pioneers-Control": key_header})
             with urlopen(Request(url + "human-action", data=body, headers=headers), timeout=3) as response:
                 self.assertEqual(json.load(response)["approved"], [key])
             stdout, stderr = process.communicate(timeout=10)
             self.assertEqual(process.returncode, 0, stdout + stderr)
             self.assertEqual(self.state()["tasks"]["next"]["state"], "completed")
+            self.assertEqual((self.root / "delivery.txt").read_text(), "implementation")
+            snapshot, source = self.remove_source_from_snapshot()
+            resumed = subprocess.run([*CLI, "--continue", str(self.run_dir), "--no-open-browser"], env=OFFLINE_ENV,
+                                     capture_output=True, text=True, timeout=10)
+            self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+            self.assertIn(source, json.loads(snapshot.read_text(encoding="utf-8")))
+            status = self.state()
+            status["workspace"] = str(ROOT)
+            (self.run_dir / "status.json").write_text(json.dumps(status), encoding="utf-8")
+            self.assertIn("separate from the Pioneers framework", self.cli("--continue", self.run_dir, code=1))
         finally:
             if process.poll() is None:
                 process.kill()

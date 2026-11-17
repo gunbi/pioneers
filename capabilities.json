@@ -47,6 +47,11 @@
         ["android/skills", "devtools/android-cli/SKILL.md"]
       ]
     },
+    "wechat-miniprogram-development": {
+      "description": "在微信小程序实现、联调或验收时使用，覆盖页面路由、接口接入、开发者工具预览和真机验证。",
+      "path": "skills/wechat-miniprogram-development/SKILL.md",
+      "sources": [["TencentCloudBase/skills", "skills/miniprogram-development/SKILL.md"]]
+    },
     "architecture-design": {
       "description": "识别跨模块变更的复杂度，比较方案，并记录接口、取舍和演进条件。",
       "path": "skills/architecture-design/SKILL.md"
@@ -54,6 +59,24 @@
     "engineering-design": {
       "description": "在实现与重构时划分业务规则、状态、副作用和执行控制。",
       "path": "skills/engineering-design/SKILL.md"
+    },
+    "systematic-debugging": {
+      "description": "在构建失败、行为异常或 QA 退回时复现问题，验证根因，并证明修复有效。",
+      "path": "skills/systematic-debugging/SKILL.md",
+      "sources": [["obra/superpowers", "skills/systematic-debugging/SKILL.md"]]
+    },
+    "change-integration": {
+      "description": "在并行改动汇合或跨模块联调时确认目标与集成顺序，并验证集成后的版本。",
+      "path": "skills/change-integration/SKILL.md",
+      "sources": [["obra/superpowers", "skills/finishing-a-development-branch/SKILL.md"]]
+    },
+    "test-engineering": {
+      "description": "为新行为、缺陷或高风险变更选择测试层级，编写或评审可重复执行的回归测试。",
+      "path": "skills/test-engineering/SKILL.md",
+      "sources": [
+        ["obra/superpowers", "skills/test-driven-development/SKILL.md"],
+        ["bmad-code-org/bmad-method-test-architecture-enterprise", "README.md"]
+      ]
     },
     "code-review": {
       "description": "对照实际变更、接口和测试证据审查交付，区分阻塞问题和建议。",
@@ -123,37 +146,37 @@
   "roles": {
     "ld": {
       "tools": ["architecture_check"],
-      "skills": ["architecture-design", "code-review"],
+      "skills": ["architecture-design", "code-review", "change-integration"],
       "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"]}
     },
     "pm": {"skills": ["requirements-design"], "mcp": {"pioneers_github": ["read"]}},
     "engineer": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "ios-development", "android-development"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "change-integration", "test-engineering"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
     "ui": {"skills": ["frontend-design"], "mcp": {"pioneers_playwright": ["test"]}},
     "frontend": {
       "tools": ["architecture_check", "frontend_html_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "frontend-design", "webapp-testing"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "frontend-design", "webapp-testing", "systematic-debugging", "change-integration", "test-engineering"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
     "backend": {
       "tools": ["architecture_check", "backend_api_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "backend-development"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "backend-development", "systematic-debugging", "change-integration", "test-engineering"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"]}
     },
     "ios": {
-      "skills": ["engineering-design", "code-review", "ios-development"],
+      "skills": ["engineering-design", "code-review", "ios-development", "systematic-debugging", "change-integration", "test-engineering"],
       "mcp": {"pioneers_git": ["read", "write"]}
     },
     "android": {
-      "skills": ["engineering-design", "code-review", "android-development"],
+      "skills": ["engineering-design", "code-review", "android-development", "systematic-debugging", "change-integration", "test-engineering"],
       "mcp": {"pioneers_git": ["read", "write"]}
     },
     "qa": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["code-review", "webapp-testing", "acceptance-testing", "ios-development", "android-development"],
+      "skills": ["code-review", "webapp-testing", "acceptance-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "test-engineering"],
       "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     }
   }

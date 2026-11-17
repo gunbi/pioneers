@@ -63,6 +63,9 @@ python3 pioneers.py --run-tool backend_api_check --role engineer --workspace /pa
 | [架构设计](skills/architecture-design/SKILL.md) | LD、交付工程师 | 识别复杂度，记录方案取舍、模块边界和共享契约。 |
 | [编程设计](skills/engineering-design/SKILL.md) | 交付工程师 | 划分业务规则、状态、副作用和调度，按契约实现与测试。 |
 | [代码评审](skills/code-review/SKILL.md) | LD、QA、交付工程师 | 核查实际变更、接口兼容和验收证据，区分阻塞问题和建议。 |
+| [系统化调试](skills/systematic-debugging/SKILL.md) | 交付工程师、QA | 复现问题、验证根因并复验修复结果。 |
+| [变更集成](skills/change-integration/SKILL.md) | LD、交付工程师 | 组织并行变更合入，在实际集成版本上构建和验证。 |
+| [测试工程](skills/test-engineering/SKILL.md) | 交付工程师、QA | 按风险选择测试层级，把关键行为和缺陷复现变成可重复运行的测试。 |
 
 [创建待办](examples/todo.json) 演示单一工程师端到端交付。[多设备同步](examples/todo-sync.json) 演示共享契约、细分工程师任务、集成和独立验收。可用下面的命令检查角色和 Skill 的交接：
 
@@ -91,17 +94,22 @@ python3 pioneers.py --mcp-config engineer --workspace /path/to/project
 - `frontend-design` 由交付工程师在设计 Web 界面时使用。
 - `webapp-testing` 由交付工程师和 QA 按需使用，运行 Python 测试脚本时需要 Python Playwright 及对应浏览器。
 - `ios-development` 和 `android-development` 由交付工程师或 QA 按任务加载，旧版 iOS 与 Android 兼容角色也可以加载对应能力。
+- `wechat-miniprogram-development` 由交付工程师或 QA 按任务加载，覆盖小程序实现、接口联调和独立验证。微信开发者工具和真机由宿主提供。
 - `requirements-design` 供 PM 定义需求和验收条件，`acceptance-testing` 供 QA 独立验证。
 
 两个 Skill 来自 [上游仓库的固定版本](https://github.com/anthropics/skills/tree/1780c5e5a552fd4d1c9d6a7b0cab26b0c2bef064/skills)，在各自的目录保留了许可证、可用脚本和示例。
 
-两份 Anthropic 文件是仓库里的基础版本。其他 Skill 的参考链接在各自的 `SKILL.md`，所有可刷新的 GitHub 来源路径在 [capabilities.json](capabilities.json) 的 `sources` 字段。每次新建宿主运行或启动真实 CLI 运行时，从上游 `main` 刷新对应 Markdown 并记录在运行目录的 `skill-sources.json`。快照包含来源、抓取时间、内容哈希和更新状态，同次运行的每个任务使用同一份快照。
+两份 Anthropic 文件是仓库里的基础版本。新增或修改开源 Skill 引用时，在本地 `SKILL.md` 注明来源，并将 GitHub 仓库和 Markdown 路径登记到 [capabilities.json](capabilities.json) 的 `skills.<id>.sources`。现有刷新逻辑会自动包含新增条目。
+
+新建宿主运行、启动真实 CLI、用 `--continue RUN_DIR` 续跑 CLI，或用 `--dashboard RUN_DIR` 重开宿主运行的看板时，都会按当前清单检查上游 `main`，把刷新结果写入运行目录的 `skill-sources.json`。新派发的任务使用此次刷新后的版本，已领取的任务继续使用派工时收到的内容。浏览器刷新页面只会更新看板状态。
 
 角色加载本地 Skill 后会看到选中能力的上游摘录。本地约定、脚本和权限优先。刷新只读取 Markdown。网络受限时使用最近的缓存，首次离线继续使用本地正文。可设置 `PIONEERS_SKILLS_OFFLINE=1` 直接跳过网络刷新。离线演练不联网。
 
 ## 给目标，让 LD 自主分工
 
-选择一个已配置的执行器，并指定一个可供修改的 Git 仓库或 worktree。使用自定义执行器时，通过 `--runner` 传入适配器的路径。适配器自行选择模型时，可省略 `--model`。
+CLI 真实运行和宿主模式都要求显式传入项目的 `--workspace`。已有项目可以使用项目目录或其专用 Git worktree。新项目可以从 pioneers 检出目录执行 `git init ../todo-app`，然后传入 `--workspace ../todo-app`。启动时会检查项目目录与框架仓库是否分离。CLI 在目标目录启动任务。宿主须使用领取结果的 `workspace` 作为工作目录，并按 `sandbox` 落实访问权限。运行记录由 `--output-dir` 单独管理。
+
+真实 CLI 运行需要 Git 项目根目录或 worktree。通过 `--runner` 配置自定义执行器。适配器自行选择模型时，可省略 `--model`。
 
 ```bash
 python3 pioneers.py --goal "做一个能创建待办的 Web 页面" \
@@ -134,7 +142,7 @@ python3 pioneers.py examples/todo.json \
 
 LLM 在常规任务结果里识别到上述重大设计或高成本改动时，也会将结果送人工确认。宿主应在真正执行外部操作前按 `effect` 登记，且执行端按领取返回的权限与范围运行。
 
-在本机看板的「人工确认与介入」填写理由并勾选决策，也可以直接用 CLI。每条确认、重审、暂停和恢复都会记录时间和原因。
+在看板的「人工确认与介入」填写理由并勾选决策，也可以直接用 CLI。每条确认、重审、暂停和恢复都会记录时间和原因。云工作区可使用下文的私有 HTTPS 预览，或通过 SSH 转发打开本机地址。
 
 ```bash
 python3 pioneers.py --approve RUN_DIR --decision D1 --decision D3 --reason "同意这两项方案"
@@ -148,13 +156,28 @@ python3 pioneers.py --resume RUN_DIR --reason "方案调整完成"
 
 修订结果保留旧产物，重新判断并重排该结果的下游。暂停后已领取的任务可以提交结果，宿主应等待受影响任务结束再重排。省略 `--from` 时只给未启动的后续任务补充指令。如果 CLI 进程已经正常退出，先做人工修订或重排，然后用 `--continue RUN_DIR` 重开同一运行。
 
+### 云端看板操作
+
+在云工作区使用宿主的私有 HTTPS 端口预览，将域名根路径映射到看板端口。预览需转发 GET、`POST /human-action`、浏览器的 `Origin` 和 `X-Pioneers-Control` 请求头。用实际预览域名替换下面的示例：
+
+```bash
+python3 pioneers.py --dashboard RUN_DIR --port 8789 --dashboard-origin https://preview.example.com
+```
+
+新运行也可以在 `--host-start`、`--live` 或 `--continue RUN_DIR` 命令后加相同的参数。在新标签页打开配置的 HTTPS 地址，首次提交人工操作时输入启动终端里的 `Dashboard control key`。凭证在当前标签页内存中保留，刷新后需要重新输入。凭证在启动后一小时失效，重启同一运行的看板可获得新凭证。在已有的真实运行中，只需重启独立运行的看板服务即可更新凭证。
+
+看板内容的浏览权限由私有预览入口控制。控制凭证用于当前看板的操作权限，所有持同一凭证的人拥有相同权限。凭证只显示在启动终端的 stderr，请用用户可访问的私有终端接收。未启用 `--dashboard-origin` 的预览仍可查看，人工操作通过本机入口、SSH 转发或 CLI 提交。
+
 ### 平台原生执行
 
 适用于有终端和 Python、可直接分派原生 Agent 的宿主。协调者先生成工作流，在一个可保持运行的终端启动看板。首行 JSON 返回 `run_dir` 和 `dashboard_url`。确认页面和 `/dashboard-data.json` 正常响应后，在用户可见的浏览器打开入口。云工作区使用私有端口预览或 SSH 转发，再将实际入口提供给用户。后续派工命令在另一个终端运行，把 `RUN_DIR` 替换为返回的目录。
 
 ```bash
 # 登记工作流并保持看板服务运行。
-python3 pioneers.py --host-start examples/todo.json --workspace /path/to/project --serve-dashboard
+python3 pioneers.py --host-start examples/todo.json --workspace /path/to/project
+
+# 从另一终端查询就绪任务和阻塞原因。
+python3 pioneers.py --host-ready RUN_DIR
 
 # 领取成功后，把返回的 JSON 作为派工上下文。
 python3 pioneers.py --host-claim RUN_DIR --task requirements
@@ -167,6 +190,8 @@ python3 pioneers.py --host-report RUN_DIR --task requirements --state completed 
 ```
 
 完成回报返回 `judgment`，包含 `decision`、`task`、`attempt`、给判断 LLM 的提示和输出结构。宿主将它交给只读判断会话，再提交 JSON。浏览器重审后，宿主也可主动查询待判断项，使用 `--judge RUN_DIR --decision D2` 取得同一请求。
+
+`--host-ready` 是只读查询。`ready` 按最长未完成依赖链的步数降序排列，`active` 包括执行中和待判断的任务，`waiting` 列出缺少的产物、对应状态或审批。看板「派工判断」显示同一结果，直接链接到任务和阻塞它的审批。宿主在可用容量和任务写入范围允许时同批派发就绪任务，某个产物放行后即可重查并启动其下游。同一角色的不同成员可同时领取独立任务。单机 `--live` 仍按依赖串行执行。
 
 ```bash
 python3 pioneers.py --judge RUN_DIR --decision D2 --task requirements --attempt 1 --artifact judgment.json
@@ -203,11 +228,13 @@ python3 pioneers.py --release RUN_DIR --state published --activity "部署成功
 
 运行器用 stdout 输出逐行 JSON。可用 `{"type":"activity","message":"正在检查项目"}` 更新看板，成功时用 `{"type":"result","message":"交付内容"}` 返回结果并退出 0。规划、独立验收和审批判断的 `message` 是符合对应 schema 的 JSON 字符串。运行器失败使用非零退出码，诊断写入 stderr。CLI 判断失败时，结果进入人工确认。
 
-人工入口的信任边界是本机操作者。部署到多用户环境时，由宿主负责身份认证，并隔离人工审批权限、工作目录和外部工具权限。Pioneers 管理经登记的任务与发布状态，平台外独立发起的命令由平台的权限策略控制。
+本机人工入口由本机操作者使用。云端模式由私有预览控制浏览权限，看板凭证授予本次操作权限。需要按人区分审批权限时，由宿主提供个人身份认证，并隔离工作目录与外部工具权限。Pioneers 管理经登记的任务与发布状态，平台外独立发起的命令由平台的权限策略控制。
 
 ## 查看执行进度
 
-CLI 真实运行会在派工前启动看板并打印地址。宿主模式加 `--serve-dashboard` 可同时登记和启动，否则 `--host-start` 只登记运行。启动看板的命令可加 `--open-browser`，让运行命令的机器尝试打开默认浏览器。看板每秒更新，展示各角色的当前动作、等待的依赖和最近记录的活动。地址绑定执行环境的本机，查看时需访问同一环境或使用宿主提供的端口预览。运行结束后可以重新启动看板查看记录。离线模式显示的是交接预览进度。
+CLI 真实运行和宿主模式默认启动看板并打印地址。宿主模式在前台保持看板运行，从另一终端领取任务。`--register-only` 可先登记并退出，之后用 `--dashboard RUN_DIR` 启动看板再领取。宿主领取时会检查对应看板能否响应。服务停止后，已领取任务仍可回报。
+
+本地桌面默认尝试打开浏览器，可用 `--no-open-browser` 关闭自动开页。云端通过宿主提供私有预览地址。看板每秒更新，展示各角色的当前动作、可并行任务、等待的依赖和审批。运行结束后可以重新启动看板查看记录。离线模式显示交接预览进度。
 
 将启动时打印的 `Run output` 路径替换到下面的命令里：
 

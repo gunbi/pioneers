@@ -1,19 +1,35 @@
 from contextlib import contextmanager
 from html import escape
+from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import re
+import secrets
 import sqlite3
 import sys
 from threading import Thread
+from time import monotonic
+from urllib.parse import quote
 import webbrowser
 
 from progress import artifact_name
+from dispatch import dispatch_summary
 
 
 ARTIFACT_PATH = re.compile(r"/evidence/([a-z0-9][a-z0-9_-]*(?:\.[0-9]+)?\.(?:md|json))")
 RETURN_ACTIVITY = re.compile(r"退回 ([a-z0-9][a-z0-9_-]*) · ")
+LOOPBACK_HOST = re.compile(r"(?:127\.0\.0\.1|localhost)(?::([0-9]{1,5}))?")
+CLOUD_CONTROL_SECONDS = 3600
+
+
+def preview_origin(value):
+    label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    match = re.fullmatch(rf"https://({label}(?:\.{label})*)(?::([0-9]{{1,5}}))?/?", value.lower())
+    if not match or (match[2] and not 1 <= int(match[2]) <= 65535):
+        raise ValueError("Use an HTTPS preview origin without a path, query or fragment")
+    port = int(match[2]) if match[2] else 443
+    return f"https://{match[1]}" + (f":{port}" if port != 443 else "")
 
 
 def collaboration_flow(data):
@@ -172,23 +188,24 @@ pre {{ white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 1rem;
 """.encode("utf-8")
 
 
-def dashboard_server(run_dir, port, control=None):
+def dashboard_server(run_dir, port, control=None, *, cloud_origin=None):
     run_dir = run_dir.resolve()
     status = run_dir / "status.json"
     if not status.is_file():
         raise ValueError(f"Run status does not exist: {status}")
     page = Path(__file__).with_name("dashboard.html").read_bytes()
+    control_key = secrets.token_urlsafe(32) if cloud_origin else None
+    key_deadline = monotonic() + CLOUD_CONTROL_SECONDS
 
     class DashboardHandler(BaseHTTPRequestHandler):
         def do_POST(self):
-            if self.path != "/human-action" or control is None:
+            if self.path != "/human-action":
                 self.send_error(404)
                 return
-            # Local operator UI only. Reject browser requests from other origins.
-            hosts = (f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}")
-            host = self.headers.get("Host")
-            if host not in hosts or self.headers.get("Origin") != f"http://{host}":
-                self.send_error(403)
+            if control is None:
+                self.respond_json({"error": "这个看板没有启用人工操作。请使用运行环境的命令行。"}, 404)
+                return
+            if not self.authorize_action():
                 return
             code = 200
             try:
@@ -202,16 +219,57 @@ def dashboard_server(run_dir, port, control=None):
             except (ValueError, OSError, sqlite3.Error) as error:
                 code = 400
                 result = {"error": str(error)}
-            self.respond(json.dumps(result, ensure_ascii=False).encode("utf-8"), "application/json", code)
+            self.respond_json(result, code)
+
+        def authorize_action(self):
+            origin = self.headers.get("Origin")
+            if cloud_origin:
+                if origin != cloud_origin:
+                    self.respond_json({"error": "请在新标签打开启动时配置的 HTTPS 预览地址，再提交操作。"}, 403)
+                    return False
+                key = self.headers.get("X-Pioneers-Control", "")
+                if monotonic() >= key_deadline:
+                    self.respond_json({"code": "control_expired",
+                                       "error": "控制凭证已过期。请重启这个运行的看板以获取新凭证。"}, 401)
+                    return False
+                if not secrets.compare_digest(key.encode(), control_key.encode()):
+                    self.respond_json({"code": "control_key",
+                                       "error": "控制凭证缺失或无效。请使用当前看板启动终端中的凭证。"}, 401)
+                    return False
+                return True
+            # SSH can forward the dashboard to a different browser-side loopback port.
+            host = self.headers.get("Host")
+            local = LOOPBACK_HOST.fullmatch(host or "")
+            if local and (not local[1] or 1 <= int(local[1]) <= 65535) and origin == f"http://{host}":
+                return True
+            self.respond_json({"error": "当前入口无法提交人工操作（HTTP 403）。"
+                                         "请直接打开本机看板或 SSH 转发后的本机地址，也可以在运行环境操作。"}, 403)
+            return False
+
+        def respond_json(self, payload, code):
+            self.respond(json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json", code)
 
         def do_GET(self):
             if self.path == "/":
                 content, kind = page, "text/html"
+            elif self.path == f"/health/{quote(run_dir.name, safe='')}":
+                content, kind = run_dir.name.encode("utf-8"), "text/plain"
             elif self.path == "/status.json":
                 content, kind = status.read_bytes(), "application/json"
             elif self.path == "/dashboard-data.json":
                 snapshot, _ = dashboard_snapshot(status)
+                if cloud_origin:
+                    snapshot["cloud_control"] = True
                 snapshot["flow"] = flow_with_approvals(collaboration_flow(snapshot), snapshot.get("decisions", {}))
+                if snapshot["mode"] in ("host", "live"):
+                    try:
+                        workflow = json.loads((run_dir / "workflow.json").read_bytes())
+                        planned = {task["id"]: task for task in workflow["tasks"]}
+                    except (OSError, json.JSONDecodeError):
+                        planned = {}
+                    tasks = {key: task for key, task in planned.items() if key in snapshot["tasks"]}
+                    tasks.update({key: job for key, job in snapshot["tasks"].items() if key not in tasks})
+                    snapshot["dispatch"] = dispatch_summary(snapshot, tasks)
                 content, kind = json.dumps(snapshot, ensure_ascii=False).encode("utf-8"), "application/json"
             else:
                 match = ARTIFACT_PATH.fullmatch(self.path)
@@ -243,7 +301,11 @@ def dashboard_server(run_dir, port, control=None):
         def log_message(self, format, *args):
             pass
 
-    return ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
+    if cloud_origin:
+        print(f"Dashboard control key (valid for {CLOUD_CONTROL_SECONDS // 60} min): {control_key}",
+              file=sys.stderr, flush=True)
+    return server
 
 
 def dashboard_url(server):
@@ -252,6 +314,21 @@ def dashboard_url(server):
 
 def announce(url):
     print(f"Dashboard: {url}", flush=True)
+
+
+def dashboard_is_running(run_dir, port):
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        return False
+    connection = HTTPConnection("127.0.0.1", port, timeout=1)
+    try:
+        connection.request("GET", f"/health/{quote(run_dir.name, safe='')}")
+        response = connection.getresponse()
+        expected = run_dir.name.encode("utf-8")
+        return response.status == 200 and response.read(len(expected) + 1) == expected
+    except (OSError, HTTPException):
+        return False
+    finally:
+        connection.close()
 
 
 def request_browser_open(url):
@@ -266,8 +343,8 @@ def request_browser_open(url):
     Thread(target=launch, daemon=True).start()
 
 
-def serve_dashboard(run_dir, port, control=None, *, on_ready=announce, open_browser=False):
-    with dashboard_server(run_dir, port, control) as server:
+def serve_dashboard(run_dir, port, control=None, *, on_ready=announce, open_browser=False, cloud_origin=None):
+    with dashboard_server(run_dir, port, control, cloud_origin=cloud_origin) as server:
         url = dashboard_url(server)
         on_ready(url)
         if open_browser:
@@ -276,8 +353,8 @@ def serve_dashboard(run_dir, port, control=None, *, on_ready=announce, open_brow
 
 
 @contextmanager
-def live_dashboard(run_dir, port, control=None, *, open_browser=False):
-    with dashboard_server(run_dir, port, control) as server:
+def live_dashboard(run_dir, port, control=None, *, open_browser=False, cloud_origin=None):
+    with dashboard_server(run_dir, port, control, cloud_origin=cloud_origin) as server:
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
