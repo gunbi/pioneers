@@ -55,6 +55,27 @@ class ApprovalTest(unittest.TestCase):
     def state(self):
         return json.loads((self.run_dir / "status.json").read_text(encoding="utf-8"))
 
+    def test_host_start_can_serve_dashboard_before_first_claim(self):
+        self.write_workflow([self.task("plan")])
+        process = subprocess.Popen([*CLI, "--host-start", str(self.workflow), "--workspace", str(self.root),
+                                    "--output-dir", str(self.root), "--serve-dashboard"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            result = json.loads(process.stdout.readline())
+            self.run_dir = Path(result["run_dir"])
+            url = result["dashboard_url"]
+            with urlopen(url, timeout=3) as page:
+                self.assertIn("团队协作流程", page.read().decode())
+            with urlopen(url + "dashboard-data.json", timeout=3) as response:
+                self.assertEqual(json.load(response)["tasks"]["plan"]["state"], "pending")
+            self.claim("plan")
+            with urlopen(url + "dashboard-data.json", timeout=3) as response:
+                self.assertEqual(json.load(response)["tasks"]["plan"]["state"], "running")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.communicate(timeout=3)
+
     def test_selective_approval_and_forced_design_impact(self):
         self.host([self.task("architecture", impact="architecture"), self.task("feature"),
                    self.task("build-a", ["architecture"]), self.task("build-b", ["feature"])])

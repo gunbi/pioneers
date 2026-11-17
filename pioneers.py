@@ -1134,11 +1134,17 @@ def main():
     parser.add_argument("--require-release", action="store_true", help="Wait for publication to finish after QA acceptance.")
     parser.add_argument("--url", help="Visit URL required when reporting published.")
     parser.add_argument("--port", type=int, default=0, help="Dashboard port (default: automatically assigned).")
+    parser.add_argument("--serve-dashboard", action="store_true", help="With --host-start, start the dashboard in the same foreground process.")
+    parser.add_argument("--open-browser", action="store_true", help="Try to open the dashboard in this machine's default browser.")
     parser.add_argument("--live", action="store_true", help="Use the configured agent executor.")
     parser.add_argument("--model", help="Default model for a new team, or model for a workflow run.")
     parser.add_argument("--workspace", type=Path, help="Git working directory for team setup or live tasks.")
     parser.add_argument("--output-dir", type=Path, default=Path(".pioneers/runs"))
     args = parser.parse_args()
+    if args.serve_dashboard and not args.host_start:
+        parser.error("--serve-dashboard requires --host-start")
+    if args.open_browser and not (args.serve_dashboard or args.dashboard or args.continue_run or args.live):
+        parser.error("--open-browser requires a dashboard-serving action")
     if args.approver is not None and not args.approve:
         parser.error("--approver is only used with --approve")
     if args.member is not None and (not args.host_claim or not args.member):
@@ -1192,7 +1198,7 @@ def main():
 
     try:
         if args.dashboard is not None:
-            serve_dashboard(args.dashboard, args.port, control=control_run)
+            serve_dashboard(args.dashboard, args.port, control=control_run, open_browser=args.open_browser)
             return 0
         if viewing:
             show_progress(args.status if args.watch is None else args.watch, watch=args.watch is not None)
@@ -1209,7 +1215,7 @@ def main():
             _, tasks, order = load_workflow(run_dir / "workflow.json")
             executor = Executor(Path(progress.data["workspace"]), config["model"],
                                 Path(config["runner"]) if config["runner"] else None)
-            with live_dashboard(run_dir, args.port, control=control_run):
+            with live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser):
                 return run_live(tasks, order, executor, progress)
         if human_action:
             request = {"action": human_action, "reason": args.reason, "decisions": args.decision,
@@ -1226,7 +1232,14 @@ def main():
             return 0
         if args.host_start is not None:
             result = start_host(args.host_start, args.output_dir, workspace or Path.cwd(), args.require_release)
-            print(json.dumps(result, ensure_ascii=False))
+            if args.serve_dashboard:
+                def report_dashboard(url):
+                    print(json.dumps({**result, "dashboard_url": url}, ensure_ascii=False), flush=True)
+
+                serve_dashboard(Path(result["run_dir"]), args.port, control=control_run,
+                                on_ready=report_dashboard, open_browser=args.open_browser)
+            else:
+                print(json.dumps(result, ensure_ascii=False))
             return 0
         if args.host_claim or args.host_report:
             state = args.state if args.host_report else None
@@ -1294,7 +1307,7 @@ def main():
             (run_dir / "workflow.json").write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(f"Mode: {'live' if args.live else 'offline demo'}", flush=True)
         print(f"Run output: {run_dir.resolve()}", flush=True)
-        with live_dashboard(run_dir, args.port, control=control_run) if args.live else nullcontext():
+        with live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser) if args.live else nullcontext():
             if args.goal is not None:
                 goal, tasks, order = plan_workflow(goal, executor, run_dir, progress)
                 if args.plan_only:

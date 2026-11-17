@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+import sys
 from threading import Thread
+import webbrowser
 
 from progress import artifact_name
 
@@ -244,23 +246,45 @@ def dashboard_server(run_dir, port, control=None):
     return ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
 
 
-def announce(server):
-    print(f"Dashboard: http://127.0.0.1:{server.server_port}/", flush=True)
+def dashboard_url(server):
+    return f"http://127.0.0.1:{server.server_port}/"
 
 
-def serve_dashboard(run_dir, port, control=None):
+def announce(url):
+    print(f"Dashboard: {url}", flush=True)
+
+
+def request_browser_open(url):
+    def launch():
+        try:
+            if webbrowser.open(url):
+                return
+        except (OSError, webbrowser.Error):
+            pass
+        print(f"Browser launch unavailable. Open the dashboard manually: {url}", file=sys.stderr, flush=True)
+
+    Thread(target=launch, daemon=True).start()
+
+
+def serve_dashboard(run_dir, port, control=None, *, on_ready=announce, open_browser=False):
     with dashboard_server(run_dir, port, control) as server:
-        announce(server)
+        url = dashboard_url(server)
+        on_ready(url)
+        if open_browser:
+            request_browser_open(url)
         server.serve_forever()
 
 
 @contextmanager
-def live_dashboard(run_dir, port, control=None):
+def live_dashboard(run_dir, port, control=None, *, open_browser=False):
     with dashboard_server(run_dir, port, control) as server:
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            announce(server)
+            url = dashboard_url(server)
+            announce(url)
+            if open_browser:
+                request_browser_open(url)
             yield
         finally:
             server.shutdown()

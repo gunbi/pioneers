@@ -144,12 +144,11 @@ python3 pioneers.py --resume RUN_DIR --reason "方案调整完成"
 
 ### 平台原生执行
 
-适用于有终端和 Python、可直接分派原生 Agent 的宿主。协调者先生成工作流，然后按以下顺序执行。把 `RUN_DIR` 替换为第一条命令返回的绝对路径。
+适用于有终端和 Python、可直接分派原生 Agent 的宿主。协调者先生成工作流，在一个可保持运行的终端启动看板。首行 JSON 返回 `run_dir` 和 `dashboard_url`。确认页面和 `/dashboard-data.json` 正常响应后，在用户可见的浏览器打开入口。云工作区使用私有端口预览或 SSH 转发，再将实际入口提供给用户。后续派工命令在另一个终端运行，把 `RUN_DIR` 替换为返回的目录。
 
 ```bash
-# 登记后，在单独的终端启动看板，向用户提供地址。
-python3 pioneers.py --host-start examples/todo.json --workspace /path/to/project
-python3 pioneers.py --dashboard RUN_DIR
+# 登记工作流并保持看板服务运行。
+python3 pioneers.py --host-start examples/todo.json --workspace /path/to/project --serve-dashboard
 
 # 领取成功后，把返回的 JSON 作为派工上下文。
 python3 pioneers.py --host-claim RUN_DIR --task requirements
@@ -202,7 +201,7 @@ python3 pioneers.py --release RUN_DIR --state published --activity "部署成功
 
 ## 查看执行进度
 
-CLI 真实运行会在派工前打印浏览器看板地址。看板每秒更新，展示各角色的当前动作、等待的依赖和最近记录的活动。地址绑定执行环境的本机，查看时需访问同一环境或使用宿主提供的端口预览。运行结束后可以重新启动看板查看记录。离线模式显示的是交接预览进度。
+CLI 真实运行会在派工前启动看板并打印地址。宿主模式加 `--serve-dashboard` 可同时登记和启动，否则 `--host-start` 只登记运行。启动看板的命令可加 `--open-browser`，让运行命令的机器尝试打开默认浏览器。看板每秒更新，展示各角色的当前动作、等待的依赖和最近记录的活动。地址绑定执行环境的本机，查看时需访问同一环境或使用宿主提供的端口预览。运行结束后可以重新启动看板查看记录。离线模式显示的是交接预览进度。
 
 将启动时打印的 `Run output` 路径替换到下面的命令里：
 
