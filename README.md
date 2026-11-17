@@ -10,6 +10,8 @@
 
 [agent.md](agent.md) 定义了角色、能力分配、交接和进度汇报规则。pioneers 负责登记、调度和验收，平台提供实际执行能力。无法启动 pioneers 时，报告阻塞并暂停派工。[examples/todo.json](examples/todo.json) 展示了产品负责人、交付工程师和独立验证如何交接。
 
+首次真实运行会在目标项目的 `AGENTS.md` 登记持续使用 Pioneers 的规则，保留项目原有说明。已完成的项目可以用 `python3 pioneers.py --bind-project --workspace PROJECT` 补登记。后续从项目根目录开始会话，能读取项目规则的 Agent 会沿用 Pioneers。将这段说明随项目版本保留，可让其他检出目录也获得同样的规则。
+
 ## 本地 CLI 快速开始
 
 需要 Python 3.9 或更高版本，无需安装 Python 依赖。
@@ -195,6 +197,12 @@ python3 pioneers.py --host-report RUN_DIR --task requirements --state completed 
 
 `--host-ready` 是只读查询。`ready` 按最长未完成依赖链的步数降序排列，`active` 包括执行中和待判断的任务，`waiting` 列出缺少的产物、对应状态或审批。看板「派工判断」显示同一结果，直接链接到任务和阻塞它的审批。宿主在可用容量和任务写入范围允许时同批派发就绪任务，某个产物放行后即可重查并启动其下游。同一角色的不同成员可同时领取独立任务。单机 `--live` 仍按依赖串行执行。
 
+新建宿主运行时，如果目标 Git 工作区干净且已有提交，工程师每次领取会自动获得自己的 worktree 和分支。工作流的 `write_paths` 填项目相对文件或目录，例如 `["checkout/pricing.py"]`。范围重叠的写入任务等待交接，空数组或旧工作流缺少此字段时按整个项目处理。项目目录未提交、已有本地改动或没有 Git 时，写入任务在共用工作区顺序执行。
+
+工程师从领取结果的 `workspace` 和 `git.branch` 工作，提交本地改动后再回报。回报时会检查未提交改动及交付版本的越界文件。需要接续上一项修复时，用 `depends_on` 表达依赖。下游实现、集成和 QA 的工作区会合入依赖任务的已放行提交。合入冲突时，领取失败并保留发生冲突的 worktree，解决并提交后可重试。最终合并到目标分支由交付流程安排，Pioneers 保留各任务分支和工作区供核查。
+
+等待看板确认或暂时无任务可领取时，宿主协调者保持会话运行，并使用 `--host-ready RUN_DIR --wait 25` 等待就绪。审批使下游可领取、最终发布获授权（`release_ready` 为真），或运行结束时，命令立即返回。命令也会返回其他可处理的工作，例如 LD 重规划和待判断的产物。等待到期会返回 `timed_out: true`，协调者可以在同一会话继续等待。宿主结束会话后，可用同一个运行目录重新接入。
+
 ```bash
 python3 pioneers.py --judge RUN_DIR --decision D2 --task requirements --attempt 1 --artifact judgment.json
 ```
@@ -234,9 +242,25 @@ python3 pioneers.py --release RUN_DIR --state published --activity "部署成功
 
 本机人工入口由本机操作者使用。云端模式由私有预览控制浏览权限，看板凭证授予本次操作权限。需要按人区分审批权限时，由宿主提供个人身份认证，并隔离工作目录与外部工具权限。Pioneers 管理经登记的任务与发布状态，平台外独立发起的命令由平台的权限策略控制。
 
+## 项目看板与迭代记录
+
+同一交付项目复用一个入口。先在可持续运行的终端启动项目看板，后续迭代沿用同一个项目目录。默认本地地址为 [http://127.0.0.1:8790/](http://127.0.0.1:8790/)。同时运行多个项目时，为每个项目固定一个 `--port`。云端按上面的私有预览方式映射此端口，需要在看板上审批时同时配置 `--dashboard-origin`。
+
+```bash
+python3 pioneers.py --project-dashboard --workspace /path/to/project
+python3 pioneers.py --project-history --workspace /path/to/project
+python3 pioneers.py --host-start WORKFLOW.json --workspace /path/to/project --register-only
+```
+
+宿主用 `--register-only` 开新一轮时，返回的 `project_run_url` 指向同一项目看板里的当轮详情。保持项目看板运行即可领取任务。CLI 的真实交付也会自动登记。首页集中展示当前迭代、历史迭代和跨迭代待确认事项。点待确认事项可以进入对应审批，点协作流程可以查看任务交接、返工和进度。
+
+每轮完成后，Pioneers 将结项摘要写入其 `status.json`。摘要包括目标、各角色交付、验收证据、审批理由、已登记的 Git 版本及发布结果。看板提供执行计划和产物链接，并支持下载 Markdown。重新打开迭代返工时会先移除结项摘要，重新完成后更新。单独查看上一轮的摘要时，可从 `--project-history` 读取 `latest_delivery`。
+
+Git 项目在共享 Git 元数据中保存索引，专用 worktree 可共用。非 Git 项目把索引保存在项目下的 `.pioneers/iterations/`。索引引用原运行目录，需保留这些目录及其产物。启动时还会按项目匹配并补登默认输出目录内的旧运行。旧运行用了自定义输出目录时，启动项目看板或查询历史时传入 `--output-dir`。
+
 ## 查看执行进度
 
-CLI 真实运行和宿主模式默认启动看板并打印地址。宿主模式在前台保持看板运行，从另一终端领取任务。`--register-only` 可先登记并退出，之后用 `--dashboard RUN_DIR` 启动看板再领取。宿主领取时会检查对应看板能否响应。服务停止后，已领取任务仍可回报。
+CLI 真实运行和宿主模式默认启动看板并打印地址。宿主模式在前台保持看板运行，从另一终端领取任务。`--register-only` 可先登记并退出，之后可使用已经运行的项目看板，或用 `--dashboard RUN_DIR` 启动单轮看板再领取。宿主领取时会检查对应看板能否响应。服务停止后，已领取任务仍可回报。
 
 本地桌面默认尝试打开浏览器，可用 `--no-open-browser` 关闭自动开页。云端通过宿主提供私有预览地址。看板每秒更新，展示各角色的当前动作、可并行任务、等待的依赖和审批。运行结束后可以重新启动看板查看记录。离线模式显示交接预览进度。
 

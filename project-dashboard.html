@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>项目看板 · Pioneers</title>
+<style>
+  :root { color-scheme: light; font: 16px/1.55 system-ui, sans-serif; color: #202d3d; background: #edf2f6; }
+  body { margin: 0; }
+  main { width: min(100% - 2rem, 66rem); margin: 0 auto; padding: clamp(1.5rem, 5vw, 4rem) 0; }
+  header { padding-bottom: 1.5rem; border-bottom: 1px solid #ccd8e4; }
+  h1 { margin: .25rem 0; font-size: clamp(1.8rem, 5vw, 3rem); overflow-wrap: anywhere; }
+  h2 { margin: 0 0 .75rem; font-size: 1.2rem; }
+  h3 { overflow-wrap: anywhere; margin: 0; font-size: 1rem; }
+  section { margin-top: 2rem; }
+  p { margin: .3rem 0 0; }
+  .brand { color: #285d8d; font-weight: 750; letter-spacing: .03em; }
+  .muted { color: #4d6074; font-size: .9rem; }
+  .list { padding: 0; margin: 0; list-style: none; display: grid; gap: .55rem; }
+  .item { border: 1px solid #ccd8e4; border-radius: .7rem; background: #fff; padding: .8rem 1rem;
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .65rem 1rem; }
+  .item.waiting { border-inline-start: .25rem solid #ad711a; }
+  .info { flex: 1 1 20rem; min-width: 0; overflow-wrap: anywhere; }
+  .links { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; }
+  a { color: #154f85; font-weight: 650; text-underline-offset: .15em; }
+  .status { background: #e2eaf3; padding: .12rem .55rem; border-radius: 1rem; white-space: nowrap; }
+  .status.delivered { color: #226050; background: #dcefe9; }
+  .status.attention { color: #71440a; background: #f9ecd0; }
+  [data-error] { color: #8a341d; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="brand">Pioneers · 项目看板</p>
+    <h1 id="project">项目迭代</h1>
+    <p class="muted" id="connection" role="status">正在连接</p>
+  </header>
+  <section aria-labelledby="pending-title">
+    <h2 id="pending-title">待人工确认</h2>
+    <ul class="list" id="pending"></ul>
+  </section>
+  <section aria-labelledby="current-title">
+    <h2 id="current-title">当前迭代</h2>
+    <ul class="list" id="current"></ul>
+  </section>
+  <section aria-labelledby="history-title">
+    <h2 id="history-title">历史迭代</h2>
+    <ul class="list" id="history"></ul>
+  </section>
+</main>
+<script>
+  const labels = {running:"进行中", completed:"已完成", failed:"失败", interrupted:"已中断",
+    blocked:"已阻塞", planned:"已生成计划", accepted:"验收通过", publishing:"发布中",
+    published:"已发布", publish_failed:"发布失败"};
+  const byId = id => document.getElementById(id);
+  function element(tag, value, className) {
+    const node = document.createElement(tag);
+    if (value) node.textContent = value;
+    if (className) node.className = className;
+    return node;
+  }
+  function link(label, href) {
+    const node = element("a", label);
+    node.href = href;
+    return node;
+  }
+  function runUrl(id) {
+    return "runs/" + encodeURIComponent(id) + "/";
+  }
+  function localTime(raw) {
+    if (!raw) return "";
+    const date = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2}) (\d\d:\d\d:\d\d) UTC$/, "$1T$2Z"));
+    return Number.isNaN(date.getTime()) ? raw : date.toLocaleString("zh-CN", {hour12:false});
+  }
+  function renderRun(run) {
+    const node = element("li", "", "item");
+    const info = element("div", "", "info");
+    const count = Object.values(run.counts).reduce((sum, value) => sum + value, 0);
+    const detail = [(run.counts.completed || 0) + " / " + count + " 项任务完成", localTime(run.updated_at)];
+    info.append(element("h3", run.goal), element("p", detail.filter(Boolean).join(" · "), "muted"));
+    const links = element("div", "", "links");
+    const tone = run.paused ? " attention" : run.has_summary ? " delivered" : "";
+    links.append(element("span", run.paused ? "新任务已暂停" : labels[run.state] || run.state, "status" + tone),
+      link("协作流程", runUrl(run.id)));
+    if (run.has_summary) links.append(link("迭代摘要", runUrl(run.id) + "#iteration-summary"));
+    node.append(info, links);
+    return node;
+  }
+  function renderPending(item) {
+    const node = element("li", "", "item waiting");
+    const info = element("div", "", "info");
+    info.append(element("h3", item.goal), element("p", [item.task || "发布", item.id, item.reason].join(" · "), "muted"));
+    node.append(info, link("查看并处理", runUrl(item.run) + "?decision=" + encodeURIComponent(item.id) + "#human-title"));
+    return node;
+  }
+  function renderList(id, records, render, empty) {
+    const list = byId(id);
+    if (list.contains(document.activeElement) && document.activeElement.tagName === "A") {
+      const currentHref = document.activeElement.getAttribute("href");
+      list.replaceChildren(...records.map(render));
+      Array.from(list.querySelectorAll("a")).find(item => item.getAttribute("href") === currentHref)?.focus();
+    } else {
+      list.replaceChildren(...records.map(render));
+    }
+    if (!records.length) list.append(element("li", empty, "muted"));
+  }
+  let previous;
+  async function refresh() {
+    const connection = byId("connection");
+    try {
+      const response = await fetch("project-data.json", {cache:"no-store"});
+      if (!response.ok) throw new Error("Project data unavailable");
+      const snapshot = await response.text();
+      if (snapshot !== previous) {
+        const data = JSON.parse(snapshot);
+        byId("project").textContent = data.project;
+        renderList("pending", data.pending, renderPending, "暂无待人工确认事项");
+        renderList("current", data.runs.filter(run => run.active), renderRun, "暂无进行中的迭代");
+        renderList("history", data.runs.filter(run => !run.active), renderRun, "暂无历史迭代");
+        previous = snapshot;
+      }
+      if (connection.textContent !== "实时更新") connection.textContent = "实时更新";
+      connection.removeAttribute("data-error");
+    } catch {
+      connection.textContent = "暂未连接，正在重试";
+      connection.setAttribute("data-error", "");
+    } finally {
+      setTimeout(refresh, 2000);
+    }
+  }
+  refresh();
+</script>
+</body>
+</html>

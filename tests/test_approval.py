@@ -36,10 +36,27 @@ class ApprovalTest(unittest.TestCase):
                 "complexity": {"level": "medium", "reason": "涉及协作"}, "depends_on": list(deps),
                 "tools": [], "skills": [], "acceptance": ["记录且验证"], **fields}
 
-    def host(self, tasks):
+    def git(self, workspace, *args):
+        return subprocess.run(["git", "-C", str(workspace), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+    def git_project(self):
+        path = self.root / "project"
+        path.mkdir()
+        self.git(path, "init", "-q")
+        self.git(path, "config", "user.name", "Pioneers Test")
+        self.git(path, "config", "user.email", "test@example.com")
+        self.git(path, "config", "core.hooksPath", str(self.root / "test-hooks"))
+        (path / "module").mkdir()
+        for file in ("module/a.txt", "module/b.txt", "outside.txt"):
+            (path / file).write_text("original", encoding="utf-8")
+        self.git(path, "add", ".")
+        self.git(path, "commit", "-qm", "baseline")
+        return path
+
+    def host(self, tasks, workspace=None):
         self.write_workflow(tasks)
         self.host_process = subprocess.Popen(
-            [*CLI, "--host-start", str(self.workflow), "--workspace", str(self.root),
+            [*CLI, "--host-start", str(self.workflow), "--workspace", str(workspace or self.root),
              "--output-dir", str(self.root), "--no-open-browser"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV,
         )
@@ -76,6 +93,102 @@ class ApprovalTest(unittest.TestCase):
         del snapshot[source]
         path.write_text(json.dumps(snapshot), encoding="utf-8")
         return path, source
+
+    def test_project_board_keeps_iteration_history_and_routes_actions(self):
+        workspace = self.root / "project"
+        workspace.mkdir()
+        output = self.root / "iterations"
+        command = [*CLI, "--project-dashboard", "--workspace", str(workspace), "--no-open-browser"]
+
+        def start_board(port):
+            process = subprocess.Popen([*command, "--port", str(port), "--output-dir", str(output)],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV)
+            self.addCleanup(self.stop_host, process)
+            return process, process.stdout.readline().strip().removeprefix("Dashboard: ")
+
+        def get(path):
+            with urlopen(url + path, timeout=3) as response:
+                return json.load(response)
+
+        def next_iteration(*tasks):
+            self.write_workflow(tasks)
+            result = self.cli("--host-start", self.workflow, "--workspace", workspace,
+                              "--output-dir", output, "--register-only")
+            self.assertEqual(result["project_dashboard_url"], url)
+            self.run_dir = Path(result["run_dir"])
+            self.assertEqual(result["project_run_url"], url + f"runs/{self.run_dir.name}/")
+            return self.run_dir
+
+        board, url = start_board(0)
+        self.assertEqual(get("project-data.json")["runs"], [])
+        first = next_iteration(self.task("requirements"))
+        self.claim("requirements")
+        self.judge(self.submit("requirements", "已明确离线保存规则"))
+        second = next_iteration(self.task("design", impact="architecture"),
+                                self.task("implementation", ["design"], role="engineer"),
+                                self.task("qa", ["implementation"], role="qa", review=True))
+        self.claim("design")
+        decision = self.submit("design", "# 选定存储方案")
+        self.judge(decision)
+        self.assertEqual(self.state()["tasks"]["implementation"]["state"], "pending")
+        first_prefix = f"runs/{first.name}/"
+        second_prefix = f"runs/{second.name}/"
+        state = get("project-data.json")
+        self.assertEqual([run["id"] for run in state["runs"]], [second.name, first.name])
+        self.assertEqual([(item["run"], item["id"]) for item in state["pending"]], [(second.name, decision["decision"])])
+        with urlopen(url + second_prefix + "?decision=" + decision["decision"], timeout=3) as response:
+            self.assertIn('fetch("human-action"'.encode(), response.read())
+        with urlopen(url + first_prefix + "summary.md", timeout=3) as response:
+            self.assertIn("[查看产物](evidence/requirements.md)", response.read().decode())
+        with urlopen(url + first_prefix + "evidence/requirements.md", timeout=3) as response:
+            self.assertIn("已明确离线保存规则", response.read().decode())
+        self.assertEqual(get(first_prefix + "workflow.json")["tasks"][0]["id"], "requirements")
+        self.assertEqual(get(first_prefix + "dashboard-data.json")["summary"]["results"][0]["result"], "已明确离线保存规则")
+        with self.assertRaises(HTTPError) as missing:
+            get("runs/run-unknown/dashboard-data.json")
+        self.assertEqual(missing.exception.code, 404)
+        with self.assertRaises(HTTPError) as unfinished:
+            get(second_prefix + "summary.md")
+        self.assertEqual(unfinished.exception.code, 404)
+
+        body = json.dumps({"action": "approve", "all": True, "reason": "设计已确认"}).encode()
+        request = Request(url + second_prefix + "human-action", data=body,
+                          headers={"Content-Type": "application/json", "Origin": url.rstrip("/")})
+        with urlopen(request, timeout=3) as response:
+            self.assertEqual(json.load(response)["approved"], [decision["decision"]])
+        self.assertEqual(get("project-data.json")["pending"], [])
+        self.assertEqual(self.claim("implementation")["task"], "implementation")
+        self.assertEqual(get(first_prefix + "status.json")["state"], "completed")
+
+        other = self.root / "other"
+        other.mkdir()
+        result = self.cli("--host-start", self.workflow, "--workspace", other,
+                          "--output-dir", output, "--register-only")
+        with self.assertRaises(HTTPError) as isolated:
+            get("runs/" + Path(result["run_dir"]).name + "/status.json")
+        self.assertEqual(isolated.exception.code, 404)
+        history = self.cli("--project-history", "--workspace", workspace, "--output-dir", output)
+        self.assertEqual(history["latest_delivery"]["run"], first.name)
+        self.assertEqual(len(history["runs"]), 2)
+
+        port = url.split(":")[-1].strip("/")
+        self.stop_host(board)
+        _, restarted_url = start_board(port)
+        self.assertEqual(restarted_url, url)
+        self.assertEqual(len(get("project-data.json")["runs"]), 2)
+        self.judge(self.submit("implementation", "已实现存储与读取"))
+        self.claim("qa")
+        verdict = {"outcome": "accepted", "summary": "已验证离线保存", "repair_task": None,
+                   "checks": [{"criterion": "记录且验证", "status": "pass", "evidence": "离线用例通过"}]}
+        self.judge(self.submit("qa", json.dumps(verdict)))
+        summary = get(second_prefix + "dashboard-data.json")["summary"]
+        self.assertEqual(summary["results"][-1]["evidence"], "qa.json")
+        self.assertEqual(summary["approvals"][0]["operator_reason"], "设计已确认")
+        self.cli("--pause", self.run_dir, "--reason", "准备重新验证")
+        self.cli("--intervene", self.run_dir, "--from", "implementation", "--reason", "补充测试")
+        with self.assertRaises(HTTPError) as reopened:
+            get(second_prefix + "summary.md")
+        self.assertEqual(reopened.exception.code, 404)
 
     def test_host_start_serves_dashboard_before_first_claim_by_default(self):
         self.write_workflow([self.task("next", ["plan"]), self.task("plan", impact="architecture"), self.task("side")])
@@ -216,6 +329,33 @@ class ApprovalTest(unittest.TestCase):
                 process.terminate()
             process.communicate(timeout=3)
 
+    def test_dashboard_approval_wakes_waiting_host_coordinator(self):
+        self.host([self.task("requirements", impact="feature_design"), self.task("next", ["requirements"])])
+        self.claim("requirements")
+        judgment = self.submit("requirements", "确认功能范围")
+        self.judge(judgment)
+        waiting = self.cli("--host-ready", self.run_dir, "--wait", "1")
+        self.assertTrue(waiting["timed_out"])
+        self.assertEqual(waiting["ready"], [])
+
+        waiter = subprocess.Popen([*CLI, "--host-ready", str(self.run_dir), "--wait", "8"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=OFFLINE_ENV)
+        self.addCleanup(self.stop_host, waiter)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            waiter.communicate(timeout=0.35)
+        url = self.started["dashboard_url"]
+        decision = judgment["decision"]
+        body = json.dumps({"action": "approve", "decisions": [decision], "reason": "通过"}).encode()
+        with urlopen(Request(url + "human-action", data=body,
+                             headers={"Origin": url.rstrip("/"), "Content-Type": "application/json"}), timeout=3) as response:
+            self.assertEqual(json.load(response)["approved"], [decision])
+        stdout, stderr = waiter.communicate(timeout=3)
+        self.assertEqual(waiter.returncode, 0, stderr)
+        result = json.loads(stdout)
+        self.assertNotIn("timed_out", result)
+        self.assertEqual([item["task"] for item in result["ready"]], ["next"])
+        self.assertEqual(self.claim("next")["task"], "next")
+
     def test_selective_approval_and_forced_design_impact(self):
         self.host([self.task("architecture", impact="architecture"), self.task("feature"),
                    self.task("build-a", ["architecture"]), self.task("build-b", ["feature"])])
@@ -237,11 +377,11 @@ class ApprovalTest(unittest.TestCase):
         self.host([
             self.task("independent"),
             self.task("contract", impact="architecture"),
-            self.task("backend", ["contract"], role="engineer"),
-            self.task("frontend", ["contract"], role="engineer"),
+            self.task("backend", ["contract"], role="engineer", write_paths=["backend"]),
+            self.task("frontend", ["contract"], role="engineer", write_paths=["frontend"]),
             self.task("integration", ["backend", "frontend"], role="engineer"),
             self.task("verification", ["integration"], role="qa", review=True),
-        ])
+        ], self.git_project())
 
         def queue():
             return self.cli("--host-ready", self.run_dir)
@@ -299,7 +439,7 @@ class ApprovalTest(unittest.TestCase):
         self.assertIn("新方案", self.claim("build")["prompt"])
 
     def test_dashboard_instruction_replans_after_inflight_work(self):
-        self.host([self.task("contract")])
+        self.host([self.task("contract")], self.git_project())
         self.claim("contract")
         url = self.started["dashboard_url"]
 
@@ -334,8 +474,8 @@ class ApprovalTest(unittest.TestCase):
             self.artifact.write_text(json.dumps({"tasks": tasks}), encoding="utf-8")
             return self.cli("--replan", self.run_dir, "--revision", version, "--artifact", self.artifact, code=code)
 
-        android = self.task("android", ["contract"], role="engineer", skills=["android-development"])
-        ios = self.task("ios", ["contract"], role="engineer", skills=["ios-development"])
+        android = self.task("android", ["contract"], role="engineer", skills=["android-development"], write_paths=["android"])
+        ios = self.task("ios", ["contract"], role="engineer", skills=["ios-development"], write_paths=["ios"])
         qa = self.task("verify", ["android", "ios"], role="qa", review=True)
         self.assertIn("started or authorized", submit_plan([self.task("contract")], code=1))
         self.assertIn("independent QA", submit_plan([android, ios], code=1))
@@ -348,6 +488,105 @@ class ApprovalTest(unittest.TestCase):
         self.assertEqual(page["replan"]["state"], "applied")
         self.assertEqual(self.claim("android")["task"], "android")
         self.assertEqual(self.claim("ios")["task"], "ios")
+
+    def test_host_isolates_fixes_blocks_overlaps_and_passes_commits_to_qa(self):
+        project = self.git_project()
+        self.host([
+            self.task("fix-a", role="engineer", write_paths=["module/a.txt"]),
+            self.task("fix-b", role="engineer", write_paths=["module/b.txt"]),
+            self.task("overlap", role="engineer", write_paths=["module"]),
+            self.task("verify", ["fix-a", "fix-b", "overlap"], role="qa", review=True),
+        ], project)
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            a, b = workers.map(self.claim, ["fix-a", "fix-b"])
+        first, second = Path(a["workspace"]), Path(b["workspace"])
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(a["git"]["branch"], b["git"]["branch"])
+        self.assertIn(str(first), a["prompt"])
+        self.assertIn("overlapping write paths", self.claim("overlap", code=1))
+        board = self.cli("--host-ready", self.run_dir)
+        overlap = next(item for item in board["waiting"] if item["task"] == "overlap")
+        self.assertEqual({item["task"] for item in overlap["blockers"]}, {"fix-a", "fix-b"})
+
+        def report_a_error():
+            self.artifact.write_text("修复证据", encoding="utf-8")
+            return self.cli("--host-report", self.run_dir, "--task", "fix-a", "--state", "completed",
+                            "--activity", "提交产物", "--artifact", self.artifact, code=1)
+
+        (first / "module/a.txt").write_text("fixed a")
+        self.assertIn("Commit the task changes", report_a_error())
+        (first / "outside.txt").write_text("outside the scope")
+        self.git(first, "add", ".")
+        self.git(first, "commit", "-qm", "fix A and stray change")
+        self.assertIn("outside the assigned write paths: outside.txt", report_a_error())
+        (first / "outside.txt").write_text("original")
+        self.git(first, "add", "outside.txt")
+        self.git(first, "commit", "-qm", "restore outside path")
+        self.assertEqual((second / "module/a.txt").read_text(), "original")
+        judgment_a = self.submit("fix-a", "A 已修复")
+        self.judge(judgment_a, required=True)
+
+        (second / "module/b.txt").write_text("fixed b")
+        self.git(second, "add", "module/b.txt")
+        self.git(second, "commit", "-qm", "fix B")
+        self.judge(self.submit("fix-b", "B 已修复"))
+        self.assertIn("overlapping write paths", self.claim("overlap", code=1))
+        self.cli("--approve", self.run_dir, "--decision", judgment_a["decision"], "--reason", "确认修复")
+        self.claim("overlap")
+        self.judge(self.submit("overlap", "同模块复查，无新增代码"))
+        qa = self.claim("verify")
+        checkout = Path(qa["workspace"])
+        self.assertEqual(qa["sandbox"], "read-only")
+        self.assertEqual((checkout / "module/a.txt").read_text(), "fixed a")
+        self.assertEqual((checkout / "module/b.txt").read_text(), "fixed b")
+        self.assertEqual(self.git(project, "status", "--porcelain"), "?? AGENTS.md")
+
+    def test_project_binding_preserves_rules_and_worktrees_across_runs(self):
+        project = self.git_project()
+        rules = project / "AGENTS.md"
+        original = "# 项目原有规则\n\n用项目自己的测试命令。\n"
+        rules.write_text(original, encoding="utf-8")
+        self.git(project, "add", "AGENTS.md")
+        self.git(project, "commit", "-qm", "project instructions")
+        baseline = self.git(project, "rev-parse", "HEAD")
+
+        self.host([self.task("first")], project)
+        self.assertEqual(self.started["project_rules"], str(rules))
+        content = rules.read_text(encoding="utf-8")
+        self.assertTrue(content.startswith(original))
+        self.assertIn("用户无需重复指定", content)
+        self.assertIn("不另起运行", content)
+        self.assertEqual(self.state()["git_base"], baseline)
+        self.assertEqual(self.git(project, "config", "--local", "--get", "pioneers.framework"), str(ROOT))
+        self.assertEqual(self.cli("--bind-project", "--workspace", project)["status"], "existing")
+        self.host([self.task("second")], project)
+        self.assertEqual(self.state()["git_base"], baseline)
+        self.assertEqual(rules.read_text(encoding="utf-8"), content)
+        rules.write_text(content + "\n# 尚未提交的项目约定\n", encoding="utf-8")
+        self.host([self.task("third")], project)
+        self.assertNotIn("git_base", self.state())
+
+    def test_bind_project_can_enroll_an_existing_project_without_starting_run(self):
+        original = "# 已交付项目\n"
+        rules = self.root / "AGENTS.md"
+        rules.write_text(original, encoding="utf-8")
+        result = self.cli("--bind-project", "--workspace", self.root)
+        self.assertEqual(result["status"], "bound")
+        self.assertEqual(result["project_rules"], str(rules))
+        self.assertTrue(rules.read_text(encoding="utf-8").startswith(original))
+        self.assertEqual(self.cli("--bind-project", "--workspace", self.root)["status"], "existing")
+        self.assertEqual(list(self.root.iterdir()), [rules])
+
+    def test_host_serializes_writes_in_shared_workspace(self):
+        self.host([
+            self.task("one", role="engineer", write_paths=["a"]),
+            self.task("two", role="engineer", write_paths=["b"]),
+            self.task("verify", ["one", "two"], role="qa", review=True),
+        ])
+        self.assertEqual(self.claim("one")["workspace"], str(self.root))
+        self.assertIn("shared workspace", self.claim("two", code=1))
+        self.judge(self.submit("one", "已交接"))
+        self.assertEqual(self.claim("two")["workspace"], str(self.root))
 
     def test_intervention_pauses_and_scopes_rerun(self):
         self.host([self.task("plan"), self.task("build", ["plan"]), self.task("other")])
@@ -453,6 +692,9 @@ class ApprovalTest(unittest.TestCase):
             stdout, stderr = process.communicate(timeout=10)
             self.assertEqual(process.returncode, 0, stdout + stderr)
             self.assertEqual(self.state()["tasks"]["next"]["state"], "completed")
+            self.assertEqual({result["task"] for result in self.state()["summary"]["results"]}, {"plan", "next"})
+            project = self.cli("--project-history", "--workspace", self.root, "--output-dir", self.root)
+            self.assertEqual(project["latest_delivery"]["run"], self.run_dir.name)
             self.assertEqual((self.root / "delivery.txt").read_text(), "implementation")
             snapshot, source = self.remove_source_from_snapshot()
             resumed = subprocess.run([*CLI, "--continue", str(self.run_dir), "--no-open-browser"], env=OFFLINE_ENV,

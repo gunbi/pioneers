@@ -5,6 +5,39 @@ def waiting_on(data, task):
     return [dep for dep in task.get("depends_on", []) if data["tasks"][dep]["state"] != "completed"]
 
 
+def design_only(task):
+    return not task.get("effect") and task.get("impact") in ("architecture", "feature_design")
+
+
+def writes_workspace(task):
+    return task["role"] in ("engineer", "backend", "frontend", "ios", "android") and not design_only(task)
+
+
+def path_is_within(path, scope):
+    return scope == "." or path == scope or path.startswith(scope + "/")
+
+
+def write_conflicts(data, tasks, task_id):
+    task = tasks[task_id]
+    if data["mode"] != "host" or not writes_workspace(task):
+        return []
+    isolated = bool(data.get("git_base"))
+    scopes = [path.casefold() for path in task.get("write_paths") or ["."]]
+    blockers = []
+    for key, job in data["tasks"].items():
+        holding_scope = job["state"] in ("running", "judging") or (
+            job["state"] == "awaiting_confirmation" and job.get("evidence")
+        )
+        if key == task_id or not holding_scope or not writes_workspace(tasks[key]):
+            continue
+        other = [path.casefold() for path in tasks[key].get("write_paths") or ["."]]
+        if not isolated or any(path_is_within(a, b) or path_is_within(b, a) for a in scopes for b in other):
+            reason = "overlapping write paths" if isolated else "the shared workspace"
+            blockers.append({"code": "workspace_conflict", "task": key, "state": job["state"],
+                             "decision": job.get("decision"), "message": f"Task {task_id} is waiting for {key}: {reason}"})
+    return blockers
+
+
 def preapproval_required(task):
     return bool(task.get("effect") or task.get("impact") == "costly_change")
 
@@ -52,6 +85,8 @@ def claim_blockers(data, workflow_tasks, task_id):
                              "message": f"Task {task_id} requires human authorization before execution"})
     if job["state"] != "pending" and not blockers:
         blockers.append(unavailable)
+    if not blockers:
+        blockers.extend(write_conflicts(data, workflow_tasks, task_id))
     return blockers
 
 
@@ -67,9 +102,10 @@ def dispatch_summary(data, tasks):
     for key in order:
         job = data["tasks"][key]
         item = {"task": key, "role": job["role"], "state": job["state"], "attempt": job.get("attempt", 1),
-                "scope": tasks[key].get("prompt", "")}
+                "scope": tasks[key].get("prompt", ""), "write_paths": tasks[key].get("write_paths", [])}
         if job["state"] in ("running", "judging"):
-            active.append({**item, "member": job.get("member"), "decision": job.get("decision")})
+            active.append({**item, "member": job.get("member"), "decision": job.get("decision"),
+                           "branch": job.get("git", {}).get("branch")})
         elif job["state"] in ("pending", "awaiting_confirmation", "blocked"):
             blockers = claim_blockers(data, tasks, key)
             if blockers:
@@ -79,6 +115,22 @@ def dispatch_summary(data, tasks):
     ready.sort(key=lambda item: -item["remaining_steps"])
     summary = {"run_state": data["state"], "paused": data.get("paused"),
                "ready": ready, "waiting": waiting, "active": active}
+    if data["mode"] == "host":
+        summary["worktrees"] = bool(data.get("git_base"))
     if plan := pending_replan(data):
         summary["replan"] = {**plan, "ready": replan_ready(data)}
+    if release := data.get("release"):
+        decision = data.get("decisions", {}).get(release.get("decision"), {})
+        summary["release_ready"] = (not data.get("paused") and not pending_replan(data)
+                                    and release["state"] == "accepted" and decision.get("state") == "approved")
     return summary
+
+
+def dispatch_can_continue(summary):
+    state = summary["run_state"]
+    if state in ("published", "blocked", "failed", "interrupted") or (state == "completed" and not summary["paused"]):
+        return True
+    if summary["paused"]:
+        return False
+    return bool(summary["ready"] or summary.get("replan", {}).get("ready") or summary.get("release_ready")
+                or any(item["state"] == "judging" for item in summary["active"]))

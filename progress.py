@@ -8,6 +8,8 @@ import sqlite3
 import tempfile
 import time
 
+from iterations import DELIVERED, build_summary
+
 
 STATUS_LABELS = {
     "running": "进行中",
@@ -132,6 +134,7 @@ class Progress:
             "state": "running",
             "mode": mode,
             "goal": goal,
+            "started_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
             "roles": {role_id: role.name for role_id, role in roles.items()},
             "tasks": {},
             "events": [],
@@ -190,6 +193,10 @@ class Progress:
         if getattr(self, "deferred", False):
             return
         self.data["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        if self.data["state"] in DELIVERED and self.data["mode"] != "offline":
+            self.data["summary"] = build_summary(self.data)
+        else:
+            self.data.pop("summary", None)
         with tempfile.TemporaryDirectory(dir=self.path.parent) as staging:
             draft = Path(staging) / self.path.name
             draft.write_text(json.dumps(self.data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -229,6 +236,10 @@ class Progress:
             print(f"[{role_name}] {task_id} · {STATUS_LABELS[state]} · {detail}", flush=True)
 
     def set_outcome(self, state):
+        if state in DELIVERED and self.data["state"] != state:
+            self.data["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+        elif state not in DELIVERED:
+            self.data.pop("finished_at", None)
         self.data["state"] = state
         for task in self.data["tasks"].values():
             if task["state"] == "pending" and state in ("failed", "interrupted", "blocked"):

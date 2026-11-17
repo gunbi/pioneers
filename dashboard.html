@@ -170,6 +170,13 @@
     dialog textarea { resize:vertical; min-height:4.2rem; }
     .dialog-targets { margin:.55rem 0; padding-left:1.2rem; font-size:.85rem; }
     .dialog-actions { justify-content:flex-end; margin-top:.85rem; }
+    .iteration-summary { margin-top:1.25rem; border:1px solid var(--line); border-radius:.9rem;
+      padding:1rem; background:#fff; scroll-margin-top:1rem; }
+    .iteration-summary h2 { margin:0; }
+    .iteration-summary ul { padding-left:1.2rem; }
+    .iteration-summary li { margin:.7rem 0; overflow-wrap:anywhere; }
+    .iteration-summary li p { white-space:pre-wrap; margin:.25rem 0; }
+    .iteration-summary .meta { margin-top:.45rem; }
     .history { margin:0; padding:0; list-style:none; }
     .history li { border-top:1px solid var(--line); padding:.8rem 0; }
     .history small { display:block; color:var(--muted); }
@@ -201,16 +208,28 @@
   <main>
     <header>
       <p class="brand">Pioneers</p>
+      <a id="project-home" class="quiet-link" href="../../" hidden>← 项目看板</a>
       <h1>运行看板</h1>
       <p id="goal"></p>
       <div class="meta">
         <span id="state" class="pill">载入中</span>
         <span id="count"></span>
         <span id="connection" role="status">正在连接</span>
+        <a id="summary-jump" class="quiet-link" href="#iteration-summary" hidden>迭代摘要 ↓</a>
         <a id="dispatch-jump" class="quiet-link" href="#dispatch-title" hidden>派工判断 ↓</a>
         <a id="approval-jump" class="quiet-link" href="#human-title" hidden>人工确认与介入 ↓</a>
       </div>
     </header>
+    <section id="iteration-summary" class="iteration-summary" aria-labelledby="summary-title" hidden>
+      <div class="section-title"><h2 id="summary-title">迭代摘要</h2><span id="summary-state"></span></div>
+      <div class="meta">
+        <a href="summary.md" download="iteration-summary.md">下载 Markdown</a>
+        <a href="workflow.json">查看执行计划</a>
+      </div>
+      <ul id="summary-results"></ul>
+      <div id="summary-approvals" hidden><h3>人工确认</h3><ul id="summary-approval-list"></ul></div>
+      <div id="summary-release" hidden></div>
+    </section>
     <section class="flow" aria-labelledby="flow-title">
       <div class="flow-head">
         <h2 id="flow-title">团队协作流程</h2>
@@ -329,6 +348,10 @@
       approved:"已确认", superseded:"已作废"
     };
     const byId = id => document.getElementById(id);
+    const nestedRun = /^\/runs\/[^/]+\/$/.test(location.pathname);
+    byId("project-home").hidden = !nestedRun;
+    let deepLink = location.hash.slice(1);
+    let requestedDecision = new URLSearchParams(location.search).get("decision");
     function element(tag, value, className) {
       const node = document.createElement(tag);
       node.textContent = value;
@@ -339,7 +362,7 @@
       node.append(element("p", activity, "action"));
       if (evidence) {
         const link = element("a", evidence + " ↗", "evidence");
-        link.href = "/evidence/" + encodeURIComponent(evidence);
+        link.href = "evidence/" + encodeURIComponent(evidence);
         link.target = "_blank";
         link.rel = "noopener";
         link.setAttribute("aria-label", "查看证据 " + evidence + "（新标签页）");
@@ -641,7 +664,7 @@
 
     function fileLink(name) {
       const link = element("a", name + " ↗", "file-link");
-      link.href = "/evidence/" + encodeURIComponent(name);
+      link.href = "evidence/" + encodeURIComponent(name);
       link.target = "_blank";
       link.rel = "noopener";
       return link;
@@ -721,6 +744,8 @@
       const pending = pendingDecisions();
       const waiting = waitingIds();
       for (const key of selected) if (!waiting.includes(key)) selected.delete(key);
+      if (pending.some(item => item.id === requestedDecision)) activeId = requestedDecision;
+      requestedDecision = null;
       if (!pending.some(item => item.id === activeId)) activeId = pending[0]?.id;
       const count = byId("pending-count");
       count.hidden = !pending.length;
@@ -908,7 +933,7 @@
       try {
         const headers = {"Content-Type":"application/json"};
         if (cloud) headers["X-Pioneers-Control"] = key;
-        const response = await fetch("/human-action", {method:"POST", headers, mode:"same-origin",
+        const response = await fetch("human-action", {method:"POST", headers, mode:"same-origin",
           redirect:"error", body:JSON.stringify(body)});
         const result = await response.json().catch(() => null);
         if (!response.ok) {
@@ -965,6 +990,8 @@
       row.append(stageLink({key:item.task + "." + item.attempt}, item.task + attemptLabel(item.attempt)));
       row.append(element("p", [data.roles[item.role], item.member?.name,
         item.remaining_steps ? "最长剩余依赖链 " + item.remaining_steps + " 步" : labels[item.state]].filter(Boolean).join(" · ")));
+      if (item.branch) row.append(element("p", "分支 · " + item.branch));
+      if (item.write_paths?.length) row.append(element("p", "可写 · " + item.write_paths.join("、")));
       for (const blocker of item.blockers || []) {
         const label = labels[blocker.state] || blocker.state;
         const reason = {
@@ -972,6 +999,7 @@
           authorization:"执行前需人工授权",
           paused:"运行暂停",
           replan:"等待 LD 更新计划",
+          workspace_conflict:"等待 " + blocker.task + " 交接 · 写入范围重叠或共用工作区",
           run_state:"运行状态 · " + label,
           task_state:label,
         }[blocker.code] || blocker.message;
@@ -998,7 +1026,8 @@
       byId("dispatch-note").textContent = dispatch.paused ? "运行已暂停，保留进行中的任务。" :
         dispatch.replan ? (dispatch.replan.ready ? "等待 LD 提交新计划。" : "在途任务回报后，由 LD 更新计划。") :
         !Object.keys(data.tasks).length ?
-        "等待工作流规划。" : parallel ? "就绪任务可按成员容量和写入范围同批派发，长依赖链优先。" :
+        "等待工作流规划。" : parallel ? (dispatch.worktrees ? "独立工作区按写入范围并行，长依赖链优先。" :
+          "共用项目工作区，写入任务逐个执行。") :
         "按依赖就绪情况显示任务，本地执行器依次处理。";
       for (const [key, name, empty] of [["ready", "可派发", "暂无就绪任务"],
         ["active", "处理中", "暂无处理中任务"], ["waiting", "等待中", "暂无受阻任务"]]) {
@@ -1007,6 +1036,27 @@
         byId("dispatch-" + key).replaceChildren(...(rows.length ? rows.map(item => dispatchItem(item, data)) :
           [element("li", empty, "notice")]));
       }
+    }
+    function renderIterationSummary(summary) {
+      byId("iteration-summary").hidden = !summary;
+      byId("summary-jump").hidden = !summary;
+      if (!summary) return;
+      const finishedAt = new Date(summary.finished_at?.replace(/^(\d{4}-\d{2}-\d{2}) (\d\d:\d\d:\d\d) UTC$/, "$1T$2Z"));
+      byId("summary-state").textContent = labels[summary.state] +
+        (Number.isNaN(finishedAt.getTime()) ? "" : " · " + finishedAt.toLocaleString("zh-CN", {hour12:false}));
+      byId("summary-results").replaceChildren(...summary.results.map(item => {
+        const row = element("li", "");
+        row.append(element("strong", item.role + " · " + item.task + " · 第 " + item.attempt + " 次"));
+        appendActivity(row, item.result, item.evidence);
+        if (item.git) row.append(element("p", [item.git.branch, item.git.commit].filter(Boolean).join(" · ")));
+        return row;
+      }));
+      byId("summary-approvals").hidden = !summary.approvals.length;
+      byId("summary-approval-list").replaceChildren(...summary.approvals.map(item =>
+        element("li", [item.id, item.task || "发布", item.by || "人工确认", item.operator_reason || item.reason].join(" · "))));
+      const release = byId("summary-release");
+      release.hidden = !summary.release.state;
+      release.replaceChildren(element("p", [summary.release.activity, summary.release.url].filter(Boolean).join(" · ")));
     }
     function render(data) {
       const tasks = Object.values(data.tasks);
@@ -1018,6 +1068,7 @@
       state.className = "pill " + shown;
       byId("count").textContent = (data.mode === "offline" ? "离线演练 · " : "") +
         completed + " / " + tasks.length + " 项任务完成";
+      renderIterationSummary(data.summary);
       renderFlow(data);
       renderHuman(data);
       renderDispatch(data);
@@ -1035,11 +1086,16 @@
     async function refresh() {
       const connection = byId("connection");
       try {
-        const response = await fetch("/dashboard-data.json", {cache:"no-store"});
+        const response = await fetch("dashboard-data.json", {cache:"no-store"});
         if (!response.ok) throw new Error("status unavailable");
         const snapshot = await response.text();
         if (snapshot !== previous) {
           render(JSON.parse(snapshot));
+          const anchor = ["iteration-summary", "human-title"].includes(deepLink) && byId(deepLink);
+          if (anchor && !anchor.closest("[hidden]")) {
+            anchor.scrollIntoView();
+            deepLink = "";
+          }
           previous = snapshot;
         }
         if (connection.textContent !== "实时更新") connection.textContent = "实时更新";

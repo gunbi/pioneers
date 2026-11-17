@@ -10,10 +10,11 @@ import sqlite3
 import sys
 from threading import Thread
 from time import monotonic
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 import webbrowser
 
-from progress import artifact_name
+from iterations import iteration_summary, project_snapshot, registered_run
+from progress import STATUS_LABELS, artifact_name
 from dispatch import dispatch_summary, workflow_path
 
 
@@ -180,7 +181,7 @@ pre {{ white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 1rem;
        background: white; border: 1px solid #dce3dc; border-radius: .8rem; font-size: .95rem; }}
 </style>
 <main>
-  <a href="/">返回运行看板</a>
+  <a href="../">返回运行看板</a>
   <h1>{title}</h1>
   <pre>{escape(text)}</pre>
 </main>
@@ -188,18 +189,52 @@ pre {{ white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 1rem;
 """.encode("utf-8")
 
 
-def dashboard_server(run_dir, port, control=None, *, cloud_origin=None):
-    run_dir = run_dir.resolve()
-    status = run_dir / "status.json"
-    if not status.is_file():
-        raise ValueError(f"Run status does not exist: {status}")
+def summary_markdown(summary):
+    lines = ["# 迭代摘要", "", summary["goal"], "",
+             f"{STATUS_LABELS[summary['state']]} · {summary['finished_at']}", "",
+             "## 任务与验收", ""]
+    for item in summary["results"]:
+        lines.extend([f"### {item['role']} · {item['task']}（第 {item['attempt']} 次）", "", item["result"], ""])
+        if item["evidence"]:
+            lines.extend([f"[查看产物](evidence/{item['evidence']})", ""])
+        if item["git"]:
+            git = item["git"]
+            lines.extend([f"Git：{git.get('branch', '')} · {git.get('commit', '')}", ""])
+    if summary["approvals"]:
+        lines.extend(["## 人工确认", ""])
+        for item in summary["approvals"]:
+            reason = item.get("operator_reason") or item["reason"]
+            lines.append(f"- {item['id']} · {item['task'] or '发布'} · {item['by'] or '人工确认'} · {reason}")
+    if summary["release"]:
+        release = summary["release"]
+        lines.extend(["", "## 发布", "", release["activity"]])
+        if release.get("url"):
+            lines.append(release["url"])
+    return "\n".join(lines) + "\n"
+
+
+def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=None):
+    if run_dir is not None:
+        run_dir = run_dir.resolve()
+        if not (run_dir / "status.json").is_file():
+            raise ValueError(f"Run status does not exist: {run_dir}")
     page = Path(__file__).with_name("dashboard.html").read_bytes()
+    project_page = Path(__file__).with_name("project-dashboard.html").read_bytes() if project else None
     control_key = secrets.token_urlsafe(32) if cloud_origin else None
     key_deadline = monotonic() + CLOUD_CONTROL_SECONDS
 
     class DashboardHandler(BaseHTTPRequestHandler):
+        def run_route(self, path):
+            if project is None:
+                return run_dir, path
+            match = re.fullmatch(r"/runs/([^/]+)(/.*)", path)
+            if match:
+                return registered_run(project[0], match[1]), match[2]
+            return None, path
+
         def do_POST(self):
-            if self.path != "/human-action":
+            target_run, path = self.run_route(urlsplit(self.path).path)
+            if target_run is None or path != "/human-action":
                 self.send_error(404)
                 return
             if control is None:
@@ -215,7 +250,7 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None):
                 request = json.loads(self.rfile.read(size))
                 if not isinstance(request, dict):
                     raise ValueError("Request must be a JSON object")
-                result = control(run_dir, request)
+                result = control(target_run, request)
             except (ValueError, OSError, sqlite3.Error) as error:
                 code = 400
                 result = {"error": str(error)}
@@ -250,20 +285,47 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None):
             self.respond(json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json", code)
 
         def do_GET(self):
-            if self.path == "/":
+            path = urlsplit(self.path).path
+            if project and path == "/":
+                self.respond(project_page, "text/html")
+                return
+            if project and path == "/project-data.json":
+                self.respond_json(project_snapshot(*project), 200)
+                return
+            target_run, route = self.run_route(path)
+            if target_run is None:
+                self.send_error(404)
+                return
+            status = target_run / "status.json"
+            if route == "/":
                 content, kind = page, "text/html"
-            elif self.path == f"/health/{quote(run_dir.name, safe='')}":
-                content, kind = run_dir.name.encode("utf-8"), "text/plain"
-            elif self.path == "/status.json":
+            elif route == f"/health/{quote(target_run.name, safe='')}":
+                content, kind = target_run.name.encode("utf-8"), "text/plain"
+            elif route == "/status.json":
                 content, kind = status.read_bytes(), "application/json"
-            elif self.path == "/dashboard-data.json":
+            elif route == "/workflow.json":
+                current = workflow_path(target_run, json.loads(status.read_bytes()))
+                if current.is_symlink() or not current.is_file():
+                    self.send_error(404)
+                    return
+                content, kind = current.read_bytes(), "application/json"
+            elif route == "/summary.md":
                 snapshot, _ = dashboard_snapshot(status)
+                summary = iteration_summary(snapshot)
+                if summary is None:
+                    self.send_error(404)
+                    return
+                content, kind = summary_markdown(summary).encode("utf-8"), "text/plain"
+            elif route == "/dashboard-data.json":
+                snapshot, _ = dashboard_snapshot(status)
+                if summary := iteration_summary(snapshot):
+                    snapshot["summary"] = summary
                 if cloud_origin:
                     snapshot["cloud_control"] = True
                 snapshot["flow"] = flow_with_approvals(collaboration_flow(snapshot), snapshot.get("decisions", {}))
                 if snapshot["mode"] in ("host", "live"):
                     try:
-                        workflow = json.loads(workflow_path(run_dir, snapshot).read_bytes())
+                        workflow = json.loads(workflow_path(target_run, snapshot).read_bytes())
                         planned = {task["id"]: task for task in workflow["tasks"]}
                     except (OSError, json.JSONDecodeError):
                         planned = {}
@@ -272,13 +334,13 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None):
                     snapshot["dispatch"] = dispatch_summary(snapshot, tasks)
                 content, kind = json.dumps(snapshot, ensure_ascii=False).encode("utf-8"), "application/json"
             else:
-                match = ARTIFACT_PATH.fullmatch(self.path)
+                match = ARTIFACT_PATH.fullmatch(route)
                 if match is None:
                     self.send_error(404)
                     return
                 name = match[1]
                 _, artifacts = dashboard_snapshot(status)
-                path = run_dir / name
+                path = target_run / name
                 if name not in artifacts or path.is_symlink() or not path.is_file():
                     self.send_error(404)
                     return
@@ -316,12 +378,14 @@ def announce(url):
     print(f"Dashboard: {url}", flush=True)
 
 
-def dashboard_is_running(run_dir, port):
+def dashboard_is_running(run_dir, port, *, project=False):
     if not isinstance(port, int) or not 1 <= port <= 65535:
         return False
     connection = HTTPConnection("127.0.0.1", port, timeout=1)
     try:
-        connection.request("GET", f"/health/{quote(run_dir.name, safe='')}")
+        name = quote(run_dir.name, safe="")
+        prefix = f"/runs/{name}" if project else ""
+        connection.request("GET", f"{prefix}/health/{name}")
         response = connection.getresponse()
         expected = run_dir.name.encode("utf-8")
         return response.status == 200 and response.read(len(expected) + 1) == expected
@@ -343,8 +407,9 @@ def request_browser_open(url):
     Thread(target=launch, daemon=True).start()
 
 
-def serve_dashboard(run_dir, port, control=None, *, on_ready=announce, open_browser=False, cloud_origin=None):
-    with dashboard_server(run_dir, port, control, cloud_origin=cloud_origin) as server:
+def serve_dashboard(run_dir, port, control=None, *, on_ready=announce, open_browser=False, cloud_origin=None,
+                    project=None):
+    with dashboard_server(run_dir, port, control, cloud_origin=cloud_origin, project=project) as server:
         url = dashboard_url(server)
         on_ready(url)
         if open_browser:
