@@ -63,6 +63,8 @@ python3 pioneers.py --run-tool backend_api_check --role engineer --workspace /pa
 | Skill | 分配 | 用途 |
 | --- | --- | --- |
 | [架构设计](skills/architecture-design/SKILL.md) | LD、交付工程师 | 识别复杂度，记录方案取舍、模块边界和共享契约。 |
+| [变更影响面预检](skills/change-impact-preflight/SKILL.md) | LD、交付工程师 | 核对基线、共享契约、旧数据及回滚条件。 |
+| [交付证据包](skills/verifiable-delivery-evidence/SKILL.md) | LD、交付工程师、QA | 将可复跑的结论绑定到实际提交或构建，按风险独立回读。 |
 | [编程设计](skills/engineering-design/SKILL.md) | 交付工程师 | 划分业务规则、状态、副作用和调度，按契约实现与测试。 |
 | [代码评审](skills/code-review/SKILL.md) | LD、QA、交付工程师 | 核查实际变更、接口兼容和验收证据，区分阻塞问题和建议。 |
 | [系统化调试](skills/systematic-debugging/SKILL.md) | 交付工程师、QA | 复现问题、验证根因并复验修复结果。 |
@@ -74,6 +76,8 @@ python3 pioneers.py --run-tool backend_api_check --role engineer --workspace /pa
 ```bash
 python3 pioneers.py examples/todo-sync.json
 ```
+
+[单模块缺陷修复](examples/small-fix.json) 演示小改动试跑，由一名工程师定位、修复并定向自测，再由 QA 独立验收。涉及共享契约、旧数据、并行写入、权限或回滚风险时，先做影响面预检，由 LD 确定验证范围。
 
 ### MCP Tool
 

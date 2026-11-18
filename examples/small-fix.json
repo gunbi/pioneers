@@ -1,0 +1,64 @@
+{
+  "goal": "修复现有待办页面允许仅含空格的标题问题，保留正常添加行为。",
+  "tasks": [
+    {
+      "id": "fix-title",
+      "role": "engineer",
+      "depends_on": [],
+      "skills": [
+        "systematic-debugging",
+        "test-engineering",
+        "verifiable-delivery-evidence"
+      ],
+      "tools": [
+        "pioneers_git.git_diff"
+      ],
+      "write_paths": [
+        "index.html"
+      ],
+      "review": false,
+      "effect": null,
+      "impact": null,
+      "prompt": "本示例假设待办页在 index.html，且空白标题应被拒绝。确认 Git 基线和已有校验，复现缺陷，在分配范围内修复并自测。交付验证命令或步骤、结果和变更版本。",
+      "complexity": {
+        "level": "low",
+        "reason": "单页面输入校验，已有入口，交付路径明确。"
+      },
+      "acceptance": [
+        "输入仅由空格或制表符组成时显示校验提示，列表保持原样。",
+        "正常标题仍可添加，列表显示新事项。"
+      ]
+    },
+    {
+      "id": "verify-title",
+      "role": "qa",
+      "depends_on": [
+        "fix-title"
+      ],
+      "skills": [
+        "acceptance-testing",
+        "verifiable-delivery-evidence"
+      ],
+      "tools": [
+        "pioneers_git.git_diff",
+        "pioneers_playwright.browser_navigate",
+        "pioneers_playwright.browser_snapshot",
+        "pioneers_playwright.browser_fill_form",
+        "pioneers_playwright.browser_click"
+      ],
+      "write_paths": [],
+      "review": true,
+      "effect": null,
+      "impact": null,
+      "prompt": "在实际交付版本上独立验证空白标题和正常添加，记录版本、操作、预期与实际结果，并按验收项报告。",
+      "complexity": {
+        "level": "low",
+        "reason": "在同一页面复验两个边界清楚的场景。"
+      },
+      "acceptance": [
+        "输入仅由空格或制表符组成时显示校验提示，列表保持原样。",
+        "正常标题仍可添加，列表显示新事项。"
+      ]
+    }
+  ]
+}
