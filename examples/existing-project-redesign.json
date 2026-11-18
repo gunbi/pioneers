@@ -1,0 +1,100 @@
+{
+  "goal": "改版已有 Web 项目的分类入口和商品列表。移动端用户能找到鞋类、按尺码筛选、查看详情，再返回原列表。",
+  "tasks": [
+    {
+      "id": "baseline",
+      "role": "qa",
+      "depends_on": [],
+      "skills": ["existing-ui-audit", "acceptance-testing", "verifiable-delivery-evidence"],
+      "tools": ["pioneers_git.git_status", "pioneers_git.git_log", "pioneers_playwright.browser_navigate", "pioneers_playwright.browser_click", "pioneers_playwright.browser_press_key", "pioneers_playwright.browser_snapshot", "pioneers_playwright.browser_take_screenshot", "pioneers_playwright.browser_resize"],
+      "write_paths": [],
+      "review": false,
+      "effect": null,
+      "impact": null,
+      "prompt": "读目标项目的 AGENTS.md，记录目标分支、基线 commit、启动命令、测试数据、预览入口和窄屏尺寸。在旧版用隔离测试数据依次复现首页分类入口、尺码筛选、无结果恢复、详情返回，以及已知的旧链接。保存步骤、可观察结果及关键页面截图或快照的位置。按任务影响记录界面审计发现和证据，把已有缺陷和未验证项分开记录。环境不满足核心路径验证时报告阻塞。",
+      "complexity": {"level": "medium", "reason": "需要在真实旧版中建立可重放的行为基线。"},
+      "acceptance": [
+        "记录基线 commit、目标分支、验证环境及测试数据。",
+        "交付核心路径、旧链接的实际结果及可复用步骤，列出已有缺陷与未验证项。"
+      ]
+    },
+    {
+      "id": "experience",
+      "role": "pm",
+      "depends_on": ["baseline"],
+      "skills": ["requirements-design", "product-experience-design"],
+      "tools": [],
+      "write_paths": [],
+      "review": false,
+      "effect": null,
+      "impact": "feature_design",
+      "prompt": "基于真实旧版和用户要完成的任务，设计首页分类、列表筛选、详情及返回。交付关键页面动线、低保真布局或等价结构说明、窄屏操作顺序，以及无结果时如何恢复。逐项列出本轮改善的行为和必须保留的行为，包括适用的旧路由、筛选状态、浏览位置与数据兼容。写成工程师与 QA 可共用的验收场景。",
+      "complexity": {"level": "medium", "reason": "涉及跨页面动线和移动端交互决策。"},
+      "acceptance": [
+        "给出从首页到鞋类列表、筛选、详情及返回的动线和布局。",
+        "明确要改变与保留的行为，并为关键差异写出可观察的验收结果。"
+      ]
+    },
+    {
+      "id": "implementation",
+      "role": "engineer",
+      "depends_on": ["baseline", "experience"],
+      "skills": ["product-experience-design", "existing-ui-redesign", "frontend-development", "change-impact-preflight", "test-engineering"],
+      "tools": ["pioneers_git.git_diff", "pioneers_playwright.browser_navigate", "pioneers_playwright.browser_click", "pioneers_playwright.browser_press_key", "pioneers_playwright.browser_snapshot", "pioneers_playwright.browser_resize"],
+      "write_paths": [],
+      "review": false,
+      "effect": null,
+      "impact": null,
+      "prompt": "在分配的工作区按已确认设计实现。按旧版审计的优先级定向调整，沿用项目组件和数据约定，重点覆盖窄屏入口、筛选、无结果恢复和详情返回。复用基线数据和场景自测，报告有意变化、保留行为、受影响文件及验证结果。交付干净的本地提交。",
+      "complexity": {"level": "medium", "reason": "需改动首页、列表与返回状态，沿用既有数据契约。"},
+      "acceptance": ["交付本地提交、对照设计的变更说明与主要场景自测结果。"]
+    },
+    {
+      "id": "candidate",
+      "role": "engineer",
+      "depends_on": ["baseline", "implementation"],
+      "skills": ["change-integration", "verifiable-delivery-evidence"],
+      "tools": ["pioneers_git.git_status", "pioneers_git.git_diff", "pioneers_git.git_log"],
+      "write_paths": [],
+      "review": false,
+      "effect": null,
+      "impact": null,
+      "prompt": "在分配的集成 worktree 中核对已放行的改动和目标分支基线。准备一个干净的候选 HEAD，运行构建与关键路径冒烟检查，记录候选分支、完整 commit SHA、预览或启动命令、验证命令和实际结果。候选 HEAD 必须包含本轮交付的全部改动。目标分支的合入由后续授权步骤处理。",
+      "complexity": {"level": "medium", "reason": "验收需要绑定一个可复跑的实际候选版本。"},
+      "acceptance": ["提供固定的候选 commit、启动或预览入口，以及冒烟验证结果。"]
+    },
+    {
+      "id": "verification",
+      "role": "qa",
+      "depends_on": ["baseline", "experience", "implementation", "candidate"],
+      "skills": ["product-experience-design", "existing-ui-audit", "acceptance-testing", "webapp-testing", "verifiable-delivery-evidence"],
+      "tools": ["pioneers_git.git_status", "pioneers_git.git_log", "pioneers_git.git_diff", "pioneers_playwright.browser_navigate", "pioneers_playwright.browser_click", "pioneers_playwright.browser_press_key", "pioneers_playwright.browser_snapshot", "pioneers_playwright.browser_take_screenshot", "pioneers_playwright.browser_resize"],
+      "write_paths": [],
+      "review": true,
+      "effect": null,
+      "impact": null,
+      "prompt": "先确认独立验证工作区的 HEAD 与候选交付中的 SHA 一致，再用同一测试数据、视口和核心步骤比对旧版证据与实际新版。对照设计验收有意变化及保留行为，逐项记录旧版、新版、验证命令或操作、实际结果和未覆盖项。核心路径未验证或版本不一致时不得验收。实现错误把 repair_task 指向对应的上游实现或集成任务 ID（implementation 或 candidate）。",
+      "complexity": {"level": "medium", "reason": "需要同口径比较两版行为，并在确切候选版本上独立验证。"},
+      "acceptance": [
+        "窄屏能从首页分类入口进入鞋类列表，选择尺码后能看到生效状态和匹配商品。",
+        "筛选无结果时能清除条件并恢复浏览；打开详情再返回时符合约定的筛选和浏览位置。",
+        "设计约定保留的旧路由与核心行为仍可用，记录有意变更、已有问题及未验证范围。",
+        "验收报告明确记录实际跑过的候选 commit 和可复跑证据。"
+      ]
+    },
+    {
+      "id": "merge-handoff",
+      "role": "ld",
+      "depends_on": ["baseline", "candidate", "verification"],
+      "skills": ["change-integration", "verifiable-delivery-evidence"],
+      "tools": ["pioneers_git.git_status", "pioneers_git.git_log", "pioneers_git.git_diff"],
+      "write_paths": [],
+      "review": false,
+      "effect": null,
+      "impact": null,
+      "prompt": "把已通过独立验收的候选 SHA 和目标仓库、目标分支、期望基线绑定到一份合入交接。说明由有授权的操作者核对目标工作区、合入候选、核对实际目标分支 HEAD 等于验收 SHA，再在该版本冒烟复验并记录证据的步骤。交接时标记候选已验收、目标分支待合入。若无法快进，或目标分支实际 HEAD 与验收 SHA 不同，重新集成并复验新的交付版本。",
+      "complexity": {"level": "low", "reason": "核对验收版本并交付可执行的合入和复验步骤。"},
+      "acceptance": ["列出目标仓库和分支、已验收的候选 SHA、合入前检查及合入后的复验和回滚说明。"]
+    }
+  ]
+}

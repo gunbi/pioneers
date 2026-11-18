@@ -83,6 +83,20 @@ python3 pioneers.py examples/todo-sync.json
 
 关键界面改动先明确用户动线和布局，再按需加载 `frontend-design` 定视觉方向。复杂动线可以由 PM 先交付设计，简单布局可由工程师在同一个任务内先设计再实现，交 QA 按场景复验。
 
+### 已有项目改版
+
+[已有项目改版](examples/existing-project-redesign.json) 以既有商品分类页为例，依次记录旧版基线、评审新动线和布局、实现、冻结候选 commit、独立对照验收，再交接目标分支合入。位于不同任务的设计、基线和候选产物通过直接依赖交给 QA。
+
+旧版基线和复验加载 `existing-ui-audit`，使用 Impeccable 的体验评审与技术审计思路。实现阶段加载 `existing-ui-redesign`，参考 TasteSkill 的原版改版方法。上游主分支已移除此 Skill，引用固定在含完整正文的提交。候选集成和合入交接加载 `change-integration`，沿用 Superpowers 的分支收尾参考。
+
+```bash
+python3 pioneers.py examples/existing-project-redesign.json
+```
+
+这条命令演练任务交接。真实运行时，复制示例，按已存在的目标项目替换页面、场景和验收条件，给写入任务填写实际的 `write_paths`。提前在项目 `AGENTS.md` 说明启动命令、测试数据和冒烟检查。 首次接入时先运行 `python3 pioneers.py --bind-project --workspace PROJECT`，审阅项目 `AGENTS.md` 的绑定规则并纳入所用的基线提交，然后从干净工作区启动改版。优先用宿主模式，将 `--workspace PROJECT` 指向干净且已有提交的目标仓库，由 Pioneers 分配隔离 worktree。使用 `--live` 时，先从目标分支创建独立的候选分支和 worktree，再把该 worktree 传给 `--workspace PROJECT`。示例使用 `impact: feature_design`，由操作者在设计交付后确认布局与动线，再放行实现。
+
+独立 QA 应先确认当前 HEAD 等于候选 SHA，再按旧版场景复验。工作流结束会交付已验收候选和合入步骤。获得合入授权后，由操作者在目标仓库核对目标分支和工作区，按项目流程合入该候选。单机本地可在干净目标分支上用 `git merge --ff-only <accepted-sha>`。如果目标分支变化导致无法快进，或合入后的 HEAD 与验收 SHA 不同，重新集成并复验新的交付版本。记录目标分支实际 HEAD 和冒烟结果，分别登记「已验收」和「已合入」。有远端推送或部署时，按项目的授权流程另行处理。
+
 ### MCP Tool
 
 | 能力 | 角色与范围 |

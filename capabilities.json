@@ -131,6 +131,31 @@
       "description": "实现 API 和业务逻辑，验证接口契约及服务端行为。",
       "path": "skills/backend-development/SKILL.md"
     },
+    "existing-ui-audit": {
+      "description": "沿现有用户路径检查界面层级、响应式与可访问性，留下旧版和复验依据。",
+      "path": "skills/existing-ui-audit/SKILL.md",
+      "sources": [
+        [
+          "pbakaus/impeccable",
+          "plugin/skills/impeccable/reference/critique.md"
+        ],
+        [
+          "pbakaus/impeccable",
+          "plugin/skills/impeccable/reference/audit.md"
+        ]
+      ]
+    },
+    "existing-ui-redesign": {
+      "description": "参照旧版审计和确认的设计，在现有技术栈内改造界面布局与层级。",
+      "path": "skills/existing-ui-redesign/SKILL.md",
+      "sources": [
+        [
+          "Leonxlnx/taste-skill",
+          "skills/redesign-skill/SKILL.md",
+          "e04409a461022e1b9d0e898eac6b9224e2b9dc4e"
+        ]
+      ]
+    },
     "frontend-design": {
       "description": "设计并实现有清晰视觉方向的前端界面。",
       "path": "skills/frontend-design/SKILL.md",
@@ -193,13 +218,13 @@
     "pm": {"skills": ["requirements-design", "product-experience-design", "customer-journey-mapping"], "mcp": {"pioneers_github": ["read"]}},
     "engineer": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "change-integration", "test-engineering", "aliyun-ecs-container-deployment", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "change-integration", "test-engineering", "aliyun-ecs-container-deployment", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit", "existing-ui-redesign"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
-    "ui": {"skills": ["frontend-design", "product-experience-design"], "mcp": {"pioneers_playwright": ["test"]}},
+    "ui": {"skills": ["frontend-design", "product-experience-design", "existing-ui-audit"], "mcp": {"pioneers_playwright": ["test"]}},
     "frontend": {
       "tools": ["architecture_check", "frontend_html_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "frontend-design", "webapp-testing", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "frontend-design", "webapp-testing", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit", "existing-ui-redesign"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
     "backend": {
@@ -217,7 +242,7 @@
     },
     "qa": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["code-review", "webapp-testing", "acceptance-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "test-engineering", "aliyun-ecs-container-deployment", "verifiable-delivery-evidence", "product-experience-design"],
+      "skills": ["code-review", "webapp-testing", "acceptance-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "test-engineering", "aliyun-ecs-container-deployment", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit"],
       "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     }
   }
