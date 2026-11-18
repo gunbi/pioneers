@@ -486,6 +486,15 @@ def run_agent_process(command, workspace, payload, report, env, external=False):
     return last_message
 
 
+PRODUCT_EXPERIENCE_PLANNING = (
+    "新建或重做关键页面、导航或用户动线时，让 pm 或 engineer 加载 product-experience-design，"
+    "交付用户任务、动线、关键屏幕布局和可观察的验收场景；需要独立验证时可让 qa 加载同一技能。"
+    "布局依赖跨页面决策时先设计再实现。设计和实现分开派工时，让 qa 直接依赖两项任务，以便收到原设计和实际交付。"
+    "布局简单且边界清楚时可以由同一工程师先设计再实现。"
+    "有访谈、反馈或行为数据需要归纳跨阶段旅程时，让 pm 按需加载 customer-journey-mapping。"
+)
+
+
 def plan_workflow(goal, executor, run_dir, progress):
     schema = ROOT / "workflow.schema.json"
     roles = "\n".join(
@@ -505,6 +514,7 @@ def plan_workflow(goal, executor, run_dir, progress):
         "为写入任务在 write_paths 声明相对项目根目录的文件或目录。只读任务或范围尚不明确时填空数组。"
         "同一根因合并修复，同一段实现需要连续修改时用 depends_on 传递已验收的提交。并行修复安排依赖它们的集成与回归验收。"
         "任务提示写清真正等待的产物和可独立交付的边界。实现任务要有下游独立 qa 验收任务，只有实际验收填写 review=true。"
+        f"{PRODUCT_EXPERIENCE_PLANNING}"
         "把实际执行的对外发送、发布、付款、权限变更、删除及其他难以撤销操作拆成独立任务，"
         "分别填写 effect 为 send、publish、payment、permissions、delete 或 irreversible；常规任务填 null。"
         "重大架构方案标 architecture，重要功能设计标 feature_design，先出方案再安排下游实现。"
@@ -1228,6 +1238,7 @@ def replan_assignment(progress, tasks):
         "用 write_paths 声明可写的相对文件或目录。只读任务或范围不明确填空数组。"
         "需要接续上一项改动的任务，使用 depends_on 并安排合并后的回归验收。"
         "沿用原工作流规范。重大架构和功能设计标记 impact，难以撤销的操作单列 effect。"
+        f"{PRODUCT_EXPERIENCE_PLANNING}"
         "保持只读，仅返回符合 schema 的 JSON。\n"
         + f"运行目录：{progress.path.parent}\n"
         + json.dumps(context, ensure_ascii=False)

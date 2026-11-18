@@ -22,6 +22,34 @@
         ["yuusakuri/agent-skills", "skills/deliver-acceptance-criteria/SKILL.md"]
       ]
     },
+    "product-experience-design": {
+      "description": "从用户任务推导导航、页面动线与布局，并交接关键状态和验收场景。",
+      "path": "skills/product-experience-design/SKILL.md",
+      "sources": [
+        [
+          "magnus919/agent-skills",
+          "product-design-and-ux/SKILL.md"
+        ],
+        [
+          "Emmraan/agent-skills",
+          "skills/design-ux/ui-ux/SKILL.md"
+        ],
+        [
+          "mblode/agent-skills",
+          "skills/product-design/SKILL.md"
+        ]
+      ]
+    },
+    "customer-journey-mapping": {
+      "description": "结合访谈、用户反馈或行为数据，梳理跨阶段用户旅程和证据。",
+      "path": "skills/customer-journey-mapping/SKILL.md",
+      "sources": [
+        [
+          "product-on-purpose/pm-skills",
+          "skills/discover-journey-map/SKILL.md"
+        ]
+      ]
+    },
     "acceptance-testing": {
       "description": "按风险独立复现验收条件，并交付逐项证据。",
       "path": "skills/acceptance-testing/SKILL.md",
@@ -162,16 +190,16 @@
       "skills": ["architecture-design", "code-review", "change-integration", "aliyun-ecs-container-deployment", "change-impact-preflight", "verifiable-delivery-evidence"],
       "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"]}
     },
-    "pm": {"skills": ["requirements-design"], "mcp": {"pioneers_github": ["read"]}},
+    "pm": {"skills": ["requirements-design", "product-experience-design", "customer-journey-mapping"], "mcp": {"pioneers_github": ["read"]}},
     "engineer": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "change-integration", "test-engineering", "aliyun-ecs-container-deployment", "change-impact-preflight", "verifiable-delivery-evidence"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "change-integration", "test-engineering", "aliyun-ecs-container-deployment", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
-    "ui": {"skills": ["frontend-design"], "mcp": {"pioneers_playwright": ["test"]}},
+    "ui": {"skills": ["frontend-design", "product-experience-design"], "mcp": {"pioneers_playwright": ["test"]}},
     "frontend": {
       "tools": ["architecture_check", "frontend_html_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "frontend-design", "webapp-testing", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "frontend-design", "webapp-testing", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
     "backend": {
@@ -180,16 +208,16 @@
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"]}
     },
     "ios": {
-      "skills": ["engineering-design", "code-review", "ios-development", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence"],
+      "skills": ["engineering-design", "code-review", "ios-development", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design"],
       "mcp": {"pioneers_git": ["read", "write"]}
     },
     "android": {
-      "skills": ["engineering-design", "code-review", "android-development", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence"],
+      "skills": ["engineering-design", "code-review", "android-development", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design"],
       "mcp": {"pioneers_git": ["read", "write"]}
     },
     "qa": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["code-review", "webapp-testing", "acceptance-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "test-engineering", "aliyun-ecs-container-deployment", "verifiable-delivery-evidence"],
+      "skills": ["code-review", "webapp-testing", "acceptance-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "test-engineering", "aliyun-ecs-container-deployment", "verifiable-delivery-evidence", "product-experience-design"],
       "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     }
   }

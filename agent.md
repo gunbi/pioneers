@@ -37,6 +37,7 @@
 
 1. LD 按 [workflow.schema.json](workflow.schema.json) 拆出工作计划，或用 CLI 的 `--goal` 生成。以满足验收标准后的最短交付时间为目标。先安排会阻塞多个下游的决定与共享契约；`depends_on` 只列开工前必要的产物。让可独立修改、验证和交接的任务尽早并行。共享契约确定后，前端可用 Mock 开发，QA 可同时准备验收。交接成本高的轻量任务由一名工程师端到端完成。多人修改同一项目时明确各自范围、隔离方式和集成负责人。每项实现任务安排下游独立 QA，实际验收任务标记 `review: true`。
    - 涉及共享契约、默认值或灰度、旧数据或并行写入、共享资源、权限及跨模块合入的任务，选择 `change-impact-preflight`。需要绑定实际交付版本的实现与独立验收任务，选择 `verifiable-delivery-evidence`。可局部修复并定向复验的任务，可参照 [单模块缺陷修复示例](examples/small-fix.json)。
+   - 新建或重做关键页面、导航或用户动线时，让 PM 或工程师选择 `product-experience-design`，交付用户任务、关键布局、状态和验收场景。跨页面决策先安排设计交接，边界清楚的简单任务可由工程师先设计再实现。QA 可用同一技能核对动线。设计和实现分开时，将二者都列为 QA 的直接依赖。需要结合访谈、反馈或行为数据研究跨阶段旅程时，PM 按需选择 `customer-journey-mapping`。
 2. 有可用运行器时启动 `pioneers.py ... --live`，由 CLI 派工。使用宿主原生 Agent 时，优先复用项目看板，用 `--host-start WORKFLOW --workspace PROJECT --register-only` 登记新迭代。JSON 返回 `run_dir`、`project_dashboard_url` 和 `project_run_url`。项目看板不可用时，可用 `--dashboard RUN_DIR` 启动单轮看板。看板停止后，先恢复可访问入口再领取任务。
 3. 宿主协调者用 `--host-ready RUN_DIR` 查询 `ready`、`active` 和 `waiting`。有成员容量时，同批领取独立的任务并优先较长的依赖链。领取用 `--host-claim RUN_DIR --task TASK_ID --member MEMBER_ID --member-name DISPLAY_NAME`。若领取因写入冲突被阻塞，等关联任务交接后重查队列。领取成功后交给执行端返回的提示、角色、工作目录、分支、复杂度和回报方式。每次产物放行、审批通过、恢复或退回后重查队列。没有并发能力的宿主按队列顺序执行。
 4. 宿主协调者或执行端使用 `--host-report` 回写里程碑、阻塞和完成情况。工作流用 `write_paths` 声明确切写入路径，未知范围按整个项目安排。Pioneers 在干净且已提交的 Git 项目上自动分配工作区及分支。工程师在返回的分支本地提交后回报，将测试证据写到运行目录或项目外的交付文件。需要接续代码的任务用 `depends_on`，并行修复安排下游集成及独立 QA。集成工作区领取时会合入相应依赖的已交接提交。最后向用户提供集成分支、工作区和验证结果。

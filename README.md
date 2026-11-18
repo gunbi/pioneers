@@ -63,6 +63,8 @@ python3 pioneers.py --run-tool backend_api_check --role engineer --workspace /pa
 | Skill | 分配 | 用途 |
 | --- | --- | --- |
 | [架构设计](skills/architecture-design/SKILL.md) | LD、交付工程师 | 识别复杂度，记录方案取舍、模块边界和共享契约。 |
+| [产品体验设计](skills/product-experience-design/SKILL.md) | PM、交付工程师、QA | 从用户任务确定导航、页面动线、布局、失败恢复和验收场景。 |
+| [用户旅程地图](skills/customer-journey-mapping/SKILL.md) | PM | 在有访谈、反馈或行为数据时，梳理跨阶段触点和障碍。 |
 | [变更影响面预检](skills/change-impact-preflight/SKILL.md) | LD、交付工程师 | 核对基线、共享契约、旧数据及回滚条件。 |
 | [交付证据包](skills/verifiable-delivery-evidence/SKILL.md) | LD、交付工程师、QA | 将可复跑的结论绑定到实际提交或构建，按风险独立回读。 |
 | [编程设计](skills/engineering-design/SKILL.md) | 交付工程师 | 划分业务规则、状态、副作用和调度，按契约实现与测试。 |
@@ -78,6 +80,8 @@ python3 pioneers.py examples/todo-sync.json
 ```
 
 [单模块缺陷修复](examples/small-fix.json) 演示小改动试跑，由一名工程师定位、修复并定向自测，再由 QA 独立验收。涉及共享契约、旧数据、并行写入、权限或回滚风险时，先做影响面预检，由 LD 确定验证范围。
+
+关键界面改动先明确用户动线和布局，再按需加载 `frontend-design` 定视觉方向。复杂动线可以由 PM 先交付设计，简单布局可由工程师在同一个任务内先设计再实现，交 QA 按场景复验。
 
 ### MCP Tool
 
