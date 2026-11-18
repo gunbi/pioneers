@@ -18,6 +18,9 @@ from urllib.parse import urlsplit
 
 from capabilities import REGISTRY, ROOT, assigned_capabilities, capability_prompt, mcp_config, run_tool, tool_ids
 from approval import EFFECTS, IMPACTS, audit, judgment, proposal, supersede, timestamp
+from continuity import (
+    attempt_operations, continuation_prompt, mark_interruption, record_execution, recovery_context, verify_external_operations,
+)
 from progress import Progress, artifact_name, codex_activity, print_board, show_progress
 from dashboard import announce, dashboard_is_running, live_dashboard, preview_origin, serve_dashboard
 from dispatch import (
@@ -379,7 +382,8 @@ class Executor:
     model: Optional[str]
     runner: Optional[Path] = None
 
-    def run(self, role_id, prompt, report, *, phase="task", schema=None, tools=None, sandbox=None):
+    def run(self, role_id, prompt, report, *, phase="task", schema=None, tools=None, sandbox=None,
+            task=None, attempt=None, continuation=None, on_event=None):
         role = ROLES[role_id]
         sandbox = sandbox or role.sandbox
         servers = mcp_config(role_id, self.workspace, tools)
@@ -398,9 +402,13 @@ class Executor:
                 "mcp_servers": servers,
                 "builtin_tools": builtin_tools,
             }
+            if task is not None:
+                request.update(task=task, attempt=attempt)
+            if continuation:
+                request["continuation"] = continuation
             return run_agent_process(
                 [str(self.runner)], self.workspace, json.dumps(request, ensure_ascii=False),
-                report, env, external=True,
+                report, env, external=True, on_event=on_event,
             )
         command = ["codex", "exec", "--json", "--model", self.model, "--sandbox", sandbox]
         for name in REGISTRY["mcp_servers"].keys() - servers.keys():
@@ -412,10 +420,10 @@ class Executor:
                     command.extend(["-c", f"mcp_servers.{name}.{key}={encoded}"])
         if schema:
             command.extend(["--output-schema", str(schema)])
-        return run_agent_process([*command, "-"], self.workspace, prompt, report, env)
+        return run_agent_process([*command, "-"], self.workspace, prompt, report, env, on_event=on_event)
 
 
-def run_agent_process(command, workspace, payload, report, env, external=False):
+def run_agent_process(command, workspace, payload, report, env, external=False, *, on_event=None):
     lines = Queue()
     last_message = ""
     turn_failed = False
@@ -439,6 +447,7 @@ def run_agent_process(command, workspace, payload, report, env, external=False):
         with process:
             Thread(target=queue_lines, args=(process.stdout, lines), daemon=True).start()
             deadline = time.monotonic() + 600
+            observed = set()
             try:
                 while True:
                     remaining = deadline - time.monotonic()
@@ -459,16 +468,32 @@ def run_agent_process(command, workspace, payload, report, env, external=False):
                             report(message)
                         if event.get("type") == "result" and isinstance(message, str):
                             last_message = message
+                        if on_event and event.get("type") in ("checkpoint", "operation"):
+                            on_event(event)
                         continue
                     activity = codex_activity(event)
                     if activity:
                         report(activity)
+                    if on_event and activity and event.get("type") in ("item.started", "item.completed"):
+                        item = event["item"]
+                        key = item.get("id")
+                        kind = {"file_change": "workspace_write", "command_execution": "tool",
+                                "mcp_tool_call": "tool", "web_search": "read"}.get(item.get("type"))
+                        if kind and isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", key):
+                            if key in observed or len(observed) < 200:
+                                observed.add(key)
+                                status = ("started" if event["type"] == "item.started" else
+                                          "failed" if item.get("exit_code", 0) or item.get("status") == "failed" else "completed")
+                                on_event({"type": "operation", "id": key, "kind": kind, "status": status,
+                                          "summary": activity[:500]})
                     if event.get("type") == "turn.failed":
                         turn_failed = True
                     if event.get("type") == "item.completed":
                         item = event.get("item") or {}
                         if item.get("type") == "agent_message":
                             last_message = item.get("text") or ""
+                            if on_event and isinstance(last_message, str) and last_message.strip():
+                                on_event({"type": "checkpoint", "summary": last_message[:8000]})
                 code = process.wait(timeout=max(0, deadline - time.monotonic()))
             except (Empty, subprocess.TimeoutExpired) as error:
                 raise RuntimeError("Executor exceeded the 600-second task timeout") from error
@@ -678,6 +703,7 @@ def reopen_tasks(progress, review_id, target, affected, evidence, summary):
         job.pop("evidence", None)
         job.pop("feedback", None)
         job.pop("member", None)
+        job.pop("continuity_from", None)
     tasks[target].update(activity=f"等待修复 · {summary}", feedback=evidence)
     tasks[review_id]["feedback"] = evidence
     progress.event("ld", target, "pending", f"退回 {target} 修复 · {summary}")
@@ -741,13 +767,14 @@ def expired_assignment(job, now):
 def queue_recovery(progress, task_id, reason):
     job = progress.data["tasks"][task_id]
     clear_decisions(progress, job)
+    job.setdefault("continuity_from", job.get("attempt", 1))
     job["attempt"] = job.get("attempt", 1) + 1
     for field in ("member", "lease_expires_at"):
         job.pop(field, None)
     progress.task(task_id, "pending", reason, announce=False)
 
 
-def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True):
+def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True, executor_stopped=False):
     job = progress.data["tasks"][task_id]
     task = tasks[task_id]
     attempt = job.get("attempt", 1)
@@ -755,11 +782,13 @@ def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True):
     isolated = git and git["attempt"] == attempt
     history = job.setdefault("recoveries", [])
     within_budget = sum(entry["automatic"] for entry in history) < MAX_AUTOMATIC_RECOVERIES
-    retry = automatic and within_budget and not preapproval_required(task) and (
-        not writes_workspace(task) or isolated
-    )
+    kinds = mark_interruption(job)
+    retry = (automatic and within_budget and not preapproval_required(task) and "external" not in kinds
+             and (isolated or (not writes_workspace(task) and "workspace_write" not in kinds)))
     history.append({"attempt": attempt, "at": timestamp(), "reason": reason, "git": git,
-                    "member": job.get("member"), "automatic": retry})
+                    "member": job.get("member"), "automatic": retry, "activity": job.get("activity"),
+                    "workspace": git["workspace"] if isolated else progress.data.get("workspace"),
+                    "executor_stopped": executor_stopped})
     if retry:
         progress.event(job["role"], task_id, "interrupted", reason)
         queue_recovery(progress, task_id, "已回收失联任务，等待重新派发 · " + reason)
@@ -1090,7 +1119,12 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
         if waiting:
             raise ValueError(f"Task {task_id} is waiting for: {', '.join(waiting)}")
         raise ValueError(blockers[0]["message"])
-    assign_member(progress, tasks[task_id], member_id, member_name)
+    job = tasks[task_id]
+    if job.get("continuity_from") and member_id is None:
+        previous = job["recoveries"][-1].get("member")
+        if previous:
+            member_id = previous["id"]
+    assign_member(progress, job, member_id, member_name)
     review = task.get("review", False)
     workspace, checkout = task_worktree(progress, workflow_tasks, task_id)
     prompt = assignment_prompt(progress.data["goal"], workflow_tasks, task_id, progress, workspace)
@@ -1115,6 +1149,11 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
     }
     if checkout:
         assignment["git"] = checkout
+    if continuation := recovery_context(job, workspace, local_executor=progress.data["mode"] == "live"):
+        if preapproval_required(task):
+            continuation.pop("resume_session_id", None)
+        assignment["continuation"] = continuation
+        assignment["prompt"] += continuation_prompt(continuation)
     if progress.data["mode"] == "host":
         expires = time.time() + HOST_LEASE_SECONDS
         tasks[task_id]["lease_expires_at"] = expires
@@ -1143,9 +1182,17 @@ def report_task(progress, workflow_tasks, task_id, state, activity, result, atte
         if activity is None:
             return {"task": task_id, "attempt": current_attempt, "lease_expires_at": job["lease_expires_at"]}
     if state == "lost":
-        record_assignment_loss(progress, workflow_tasks, task_id, activity)
+        record_assignment_loss(progress, workflow_tasks, task_id, activity, executor_stopped=True)
         return {"task": task_id, "state": job["state"], "attempt": job["attempt"]}
+    if state in ("completed", "failed", "blocked") and any(
+        op["kind"] == "external" and (state != "completed" or op["status"] != "completed")
+        for op in attempt_operations(job).values()
+    ):
+        record_assignment_loss(progress, workflow_tasks, task_id, "外部操作结果尚未核实",
+                               automatic=False, executor_stopped=True)
+        return {"task": task_id, "state": job["state"], "attempt": current_attempt}
     if state == "completed":
+        mark_interruption(job)
         return submit_assignment(progress, workflow_tasks, task_id, activity, result)
     if state in ("failed", "blocked") and progress.data["state"] == "running":
         progress.set_outcome(state)
@@ -1368,8 +1415,15 @@ def execute_live(tasks, order, executor, progress):
             with Progress.locked(run_dir) as current:
                 report_task(current, tasks, task_id, "running", activity, None, attempt)
 
+        def report_event(event):
+            with Progress.locked(run_dir) as current:
+                job = current.data["tasks"][task_id]
+                active_assignment(job, task_id, attempt)
+                record_execution(job, event)
+
         try:
             result = executor.run(assignment["role"], assignment["prompt"], report, phase=phase,
+                                  task=task_id, attempt=attempt, continuation=assignment.get("continuation"), on_event=report_event,
                                   schema=ROOT / "review.schema.json" if phase == "review" else None,
                                   tools=[] if design_only(tasks[task_id]) else tasks[task_id].get("tools"),
                                   sandbox=assignment["sandbox"])
@@ -1378,7 +1432,7 @@ def execute_live(tasks, order, executor, progress):
         except (KeyboardInterrupt, OSError, RuntimeError, ValueError) as error:
             reason = "用户中断了执行器" if isinstance(error, KeyboardInterrupt) else str(error)
             with Progress.locked(run_dir) as current:
-                record_assignment_loss(current, tasks, task_id, reason)
+                record_assignment_loss(current, tasks, task_id, reason, executor_stopped=True)
             if isinstance(error, KeyboardInterrupt):
                 raise
 
@@ -1404,6 +1458,12 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
                 raise ValueError("Start the run dashboard with --project-dashboard --workspace PROJECT or --dashboard RUN_DIR before claiming tasks")
             return claim_task(progress, tasks, task_id, member_id, member_name)
         result = artifact.read_text(encoding="utf-8") if artifact else None
+        if state == "checkpoint":
+            job = progress.data["tasks"][task_id]
+            active_assignment(job, task_id, attempt)
+            record_execution(job, json.loads(result))
+            job["lease_expires_at"] = time.time() + HOST_LEASE_SECONDS
+            return {"task": task_id, "attempt": attempt, "lease_expires_at": job["lease_expires_at"]}
         return report_task(progress, tasks, task_id, state, activity, result, attempt)
 
 
@@ -1441,7 +1501,7 @@ def reset_tasks(progress, tasks, keys):
         clear_decisions(progress, job)
         if job["state"] != "pending":
             job["attempt"] = job.get("attempt", 1) + 1
-        for field in ("feedback", "decision_note", "evidence", "member"):
+        for field in ("feedback", "decision_note", "evidence", "member", "continuity_from"):
             job.pop(field, None)
         progress.task(key, "pending", "等待重新执行", announce=False)
 
@@ -1508,6 +1568,8 @@ def resolve_recovery(progress, tasks, request, reason):
             record_assignment_loss(progress, tasks, task_id, "人工确认旧执行端已停止", automatic=False)
     if job["state"] != "recovery_required":
         raise ValueError("Choose a task waiting for recovery")
+    verify_external_operations(job, request.get("checks", []), adopting=content is not None)
+    job["recoveries"][-1]["executor_stopped"] = True
     audit(progress, "recover", reason, task=task_id, attempt=attempt, resolution="adopt" if content else "retry")
     if content:
         return submit_assignment(progress, tasks, task_id, "人工核对并接续已有产物", content)
@@ -1654,6 +1716,7 @@ def main():
     action.add_argument("--host-start", type=Path, metavar="WORKFLOW", help="Register a validated workflow for a native execution host.")
     action.add_argument("--host-ready", type=Path, metavar="RUN_DIR", help="List ready, active and blocked host tasks as JSON.")
     action.add_argument("--host-claim", type=Path, metavar="RUN_DIR", help="Claim a dependency-ready task and return its assignment as JSON.")
+    action.add_argument("--host-checkpoint", type=Path, metavar="RUN_DIR", help="Record a checkpoint or operation for a running host assignment.")
     action.add_argument("--host-heartbeat", type=Path, metavar="RUN_DIR", help="Renew the lease of a running host assignment.")
     action.add_argument("--recover", type=Path, metavar="RUN_DIR", help="Resolve an interrupted task after checking its previous executor.")
     action.add_argument("--host-report", type=Path, metavar="RUN_DIR", help="Report work on a claimed task.")
@@ -1686,6 +1749,7 @@ def main():
     parser.add_argument("--reason", help="Reason or instructions for a human action.")
     parser.add_argument("--approver", help="Optional operator display name for --approve.")
     parser.add_argument("--from", dest="rerun_from", help="Rerun this task and its dependents while paused.")
+    parser.add_argument("--recovery-checks", type=Path, help="JSON list of verified external operation outcomes for --recover.")
     parser.add_argument("--artifact", type=Path, help="Deliverable to report or adopt during recovery.")
     parser.add_argument("--revision", type=int, help="Revision returned by --replan, required when submitting its plan.")
     parser.add_argument("--wait", type=int, metavar="SECONDS", help="With --host-ready, wait for actionable work or a terminal state.")
@@ -1742,7 +1806,7 @@ def main():
     human_action = next((name for name in ("approve", "revise", "pause", "intervene", "resume", "recover")
                          if getattr(args, name) is not None), None)
     host_action = human_action or any(value is not None for value in (
-        args.host_start, args.host_ready, args.host_claim, args.host_report, args.host_heartbeat, args.release, args.judge, args.replan,
+        args.host_start, args.host_ready, args.host_claim, args.host_report, args.host_heartbeat, args.host_checkpoint, args.release, args.judge, args.replan,
         args.continue_run,
     ))
     tool_action = any(value is not None for value in (args.list_capabilities, args.mcp_config, args.run_tool))
@@ -1750,8 +1814,12 @@ def main():
         parser.error("team setup, status, host commands and tools are separate actions from running a workflow")
     if (args.host_claim or args.host_report) and not args.task:
         parser.error("host claim and report require --task")
-    if (args.host_heartbeat or args.recover) and (not args.task or not args.attempt or args.attempt < 1):
-        parser.error("--host-heartbeat and --recover require --task and a positive --attempt")
+    if (args.host_heartbeat or args.host_checkpoint or args.recover) and (not args.task or not args.attempt or args.attempt < 1):
+        parser.error("--host-heartbeat, --host-checkpoint and --recover require --task and a positive --attempt")
+    if args.host_checkpoint and args.artifact is None:
+        parser.error("--host-checkpoint requires --artifact containing a JSON event")
+    if args.recovery_checks is not None and not args.recover:
+        parser.error("--recovery-checks requires --recover")
     if args.host_report and (args.state not in ("running", "completed", "failed", "blocked", "lost") or not (args.activity or "").strip()):
         parser.error("--host-report requires a task state and a non-empty --activity")
     if args.host_report and args.state == "lost" and (not args.attempt or args.attempt < 1):
@@ -1837,6 +1905,8 @@ def main():
                        "approver": args.approver, "task": args.task, "attempt": args.attempt}
             if (args.revise or args.recover) and args.artifact:
                 request["content"] = args.artifact.read_text(encoding="utf-8")
+            if args.recovery_checks:
+                request["checks"] = json.loads(args.recovery_checks.read_text(encoding="utf-8"))
             result = control_run(getattr(args, human_action), request)
             print(json.dumps(result, ensure_ascii=False))
             return 0
@@ -1857,10 +1927,11 @@ def main():
             else:
                 serve_run_dashboard(Path(result["run_dir"]), args, result)
             return 0
-        if args.host_claim or args.host_report or args.host_heartbeat:
-            state = "running" if args.host_heartbeat else args.state if args.host_report else None
+        if args.host_claim or args.host_report or args.host_heartbeat or args.host_checkpoint:
+            state = ("checkpoint" if args.host_checkpoint else "running" if args.host_heartbeat
+                     else args.state if args.host_report else None)
             activity = None if args.host_heartbeat else (args.activity or "").strip()[:1000]
-            result = update_host(args.host_claim or args.host_report or args.host_heartbeat, args.task, state,
+            result = update_host(args.host_claim or args.host_report or args.host_heartbeat or args.host_checkpoint, args.task, state,
                                  activity, args.artifact, args.attempt,
                                  args.member, args.member_name)
             print(json.dumps(result, ensure_ascii=False))

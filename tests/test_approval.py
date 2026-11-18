@@ -137,6 +137,113 @@ class ApprovalTest(unittest.TestCase):
         self.assertEqual([item["automatic"] for item in history], [True, True, False])
         self.assertEqual(history[0]["git"]["workspace"], old["workspace"])
 
+    def checkpoint(self, task, attempt, **event):
+        self.artifact.write_text(json.dumps(event), encoding="utf-8")
+        return self.cli("--host-checkpoint", self.run_dir, "--task", task, "--attempt", attempt,
+                        "--artifact", self.artifact)
+
+    def test_host_prefers_original_member_and_carries_execution_history(self):
+        self.host([self.task("analysis"), self.task("other"), self.task("handoff")])
+        claim = lambda task, *member: self.cli("--host-claim", self.run_dir, "--task", task, *member)
+        claim("analysis", "--member", "alice", "--member-name", "Alice")
+        self.checkpoint("analysis", 1, type="checkpoint", summary="已定位到解析器", session_id="private-session")
+        self.checkpoint("analysis", 1, type="operation", id="inspect", kind="read", status="completed", summary="已检查配置")
+        self.checkpoint("analysis", 1, type="operation", id="query", kind="tool", status="started", summary="结果尚未回报")
+        self.expire("analysis")
+        ready = self.cli("--host-ready", self.run_dir)["ready"]
+        assignment = next(job for job in ready if job["task"] == "analysis")
+        self.assertEqual(assignment["preferred_member"]["id"], "alice")
+        recovered = claim("analysis")
+        self.assertEqual(recovered["member"]["id"], "alice")
+        continuation = recovered["continuation"]
+        self.assertEqual(continuation["checkpoint"]["summary"], "已定位到解析器")
+        self.assertEqual({item["id"]: item["status"] for item in continuation["operations"]},
+                         {"inspect": "completed", "query": "unknown"})
+        self.assertIn("已检查配置", recovered["prompt"])
+        self.assertNotIn("resume_session_id", continuation)
+        self.assertNotIn("private-session", recovered["prompt"])
+        self.assertIn("active --attempt 2", self.cli("--host-checkpoint", self.run_dir, "--task", "analysis",
+                                                     "--attempt", 1, "--artifact", self.artifact, code=1))
+        for path in ("status.json", "dashboard-data.json"):
+            with urlopen(self.started["dashboard_url"] + path, timeout=3) as response:
+                payload = response.read()
+                self.assertNotIn(b"private-session", payload)
+                self.assertIn(b"inspect", payload)
+
+        for task in ("other", "handoff"):
+            claim(task, "--member", "alice")
+            self.checkpoint(task, 1, type="checkpoint", summary="尚待整理", session_id=task + "-session")
+            self.cli("--host-report", self.run_dir, "--task", task, "--attempt", 1,
+                     "--state", "lost", "--activity", "旧执行端已退出")
+        self.assertEqual(claim("other")["continuation"]["resume_session_id"], "other-session")
+        handoff = claim("handoff", "--member", "bob")
+        self.assertEqual(handoff["member"]["id"], "bob")
+        self.assertEqual(handoff["continuation"]["previous_member"]["id"], "alice")
+        self.assertNotIn("resume_session_id", handoff["continuation"])
+
+    def test_external_receipt_is_required_before_recovery_and_prevents_replay(self):
+        self.host([self.task("send", effect="send"), self.task("next", ["send"]),
+                   self.task("publish", ["send"], effect="publish")])
+        self.cli("--approve", self.run_dir, "--all", "--reason", "授权发送")
+        self.claim("send")
+        self.checkpoint("send", 1, type="operation", id="mail", kind="external", status="started",
+                        summary="已调用发送，回执未返回")
+        self.expire("send")
+        self.cli("--host-ready", self.run_dir)
+        self.assertIn("Verify unresolved external operations", self.cli("--recover", self.run_dir, "--task", "send",
+                                                                         "--attempt", 1, "--reason", "查看回执", code=1))
+        checks = self.root / "checks.json"
+        checks.write_text(json.dumps([{"id": "mail", "outcome": "completed", "reason": "外部系统有邮件回执"}]))
+        self.assertIn("adopt verified evidence", self.cli("--recover", self.run_dir, "--task", "send", "--attempt", 1,
+                                                            "--reason", "核对回执", "--recovery-checks", checks, code=1))
+        self.artifact.write_text("已投递，外部系统显示回执。")
+        adopted = self.cli("--recover", self.run_dir, "--task", "send", "--attempt", 1, "--reason", "核对回执",
+                           "--recovery-checks", checks, "--artifact", self.artifact)
+        self.judge(adopted["judgment"])
+        result = self.state()["tasks"]["send"]["execution"]["1"]["operations"]["mail"]
+        self.assertEqual(result["verification"]["outcome"], "completed")
+        self.claim("next")
+        self.cli("--approve", self.run_dir, "--all", "--reason", "授权发布")
+        self.claim("publish")
+        self.checkpoint("publish", 1, type="operation", id="publish-1", kind="external", status="started",
+                        summary="已准备发布，连接中断")
+        self.cli("--host-report", self.run_dir, "--task", "publish", "--attempt", 1,
+                 "--state", "lost", "--activity", "执行端退出")
+        checks.write_text(json.dumps([{"id": "publish-1", "outcome": "not_executed", "reason": "发布系统没有此记录"}]))
+        recovered = self.cli("--recover", self.run_dir, "--task", "publish", "--attempt", 1, "--reason", "已确保旧执行关闭",
+                             "--recovery-checks", checks)
+        self.assertEqual(recovered["state"], "awaiting_confirmation")
+        self.claim("publish", code=1)
+
+    def test_live_adapter_receives_checkpoint_and_session_on_retry(self):
+        workspace = self.git_project()
+        self.write_workflow([self.task("analysis")])
+        runner = self.root / "runner"
+        runner.write_text(
+            "#!/usr/bin/env python3\nimport json,sys\n"
+            "job = json.load(sys.stdin)\n"
+            "def emit(**event): print(json.dumps(event), flush=True)\n"
+            "if job['phase'] == 'approval':\n"
+            "    emit(type='result',message=json.dumps({'needs_confirmation':False,'reason':'通过'}))\n"
+            "elif job['attempt'] == 1:\n"
+            "    emit(type='checkpoint',summary='已读取项目材料',session_id='session-1')\n"
+            "    emit(type='operation',id='read',kind='read',status='completed',summary='已读取文档')\n"
+            "    sys.exit(17)\n"
+            "else:\n"
+            "    resume = job['continuation']\n"
+            "    assert resume['resume_session_id'] == 'session-1' and resume['operations'][0]['id'] == 'read'\n"
+            "    assert resume['checkpoint']['summary'] == '已读取项目材料'\n"
+            "    emit(type='result',message='已续接完成')\n", encoding="utf-8",
+        )
+        runner.chmod(0o755)
+        result = subprocess.run([*CLI, str(self.workflow), "--live", "--runner", str(runner),
+                                 "--workspace", str(workspace), "--output-dir", str(self.root), "--no-open-browser"],
+                                capture_output=True, text=True, env=OFFLINE_ENV, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.run_dir = next(self.root.glob("run-*"))
+        self.assertEqual(self.state()["tasks"]["analysis"]["attempt"], 2)
+        self.assertIn("已续接完成", (self.run_dir / "analysis.2.md").read_text())
+
     def test_host_requires_review_of_shared_writes_and_external_effects(self):
         self.host([
             self.task("writer", role="engineer"),

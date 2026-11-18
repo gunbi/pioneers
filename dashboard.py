@@ -135,8 +135,17 @@ def flow_with_approvals(flow, decisions):
     return {"nodes": nodes, "edges": edges}
 
 
-def dashboard_snapshot(status):
+def read_dashboard_status(status):
     data = json.loads(status.read_bytes())
+    for task in data["tasks"].values():
+        for attempt in task.get("execution", {}).values():
+            if "checkpoint" in attempt:
+                attempt["checkpoint"].pop("session_id", None)
+    return data
+
+
+def dashboard_snapshot(status):
+    data = read_dashboard_status(status)
     tasks = data["tasks"]
     records = [(task_id, task) for task_id, task in tasks.items()]
     records.extend((event.get("task"), event) for event in data.get("events", []))
@@ -302,7 +311,8 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
             elif route == f"/health/{quote(target_run.name, safe='')}":
                 content, kind = target_run.name.encode("utf-8"), "text/plain"
             elif route == "/status.json":
-                content, kind = status.read_bytes(), "application/json"
+                self.respond_json(read_dashboard_status(status), 200)
+                return
             elif route == "/workflow.json":
                 current = workflow_path(target_run, json.loads(status.read_bytes()))
                 if current.is_symlink() or not current.is_file():

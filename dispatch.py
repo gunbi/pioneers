@@ -116,6 +116,8 @@ def dispatch_summary(data, tasks):
             if blockers:
                 waiting.append({**item, "blockers": blockers})
             else:
+                if job.get("continuity_from"):
+                    item["preferred_member"] = job["recoveries"][-1].get("member")
                 ready.append({**item, "remaining_steps": remaining[key]})
     ready.sort(key=lambda item: -item["remaining_steps"])
     summary = {"run_state": data["state"], "paused": data.get("paused"),

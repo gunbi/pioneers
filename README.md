@@ -286,6 +286,32 @@ python3 pioneers.py --recover RUN_DIR --task fix --attempt 1 --reason "旧进程
 python3 pioneers.py --recover RUN_DIR --task send --attempt 1 --artifact evidence.md --reason "已核对外部回执"
 ```
 
+### 成员续接与操作记录
+
+故障重派时，`--host-ready` 给出 `preferred_member`，未指定 `--member` 的领取会沿用原成员。原成员不可用时显式指定新成员。新的分配会附带 `continuation`，包含上次执行的成员、工作区、最近检查点和操作状态。提示词内的交接摘要会优先列出外部操作和待核对事项。新 worktree 仍按现行隔离规则创建，原 worktree 的未提交改动需先核对，再有选择地接续。
+
+宿主在任务进行中通过以下命令记录一条 JSON 事件。命令会校验当前 `attempt` 并续约。自定义 `--runner` 可以把同格式的事件写到 stdout，并从任务请求的 `task`、`attempt` 和 `continuation` 字段接收续接资料。
+
+```bash
+python3 pioneers.py --host-checkpoint RUN_DIR --task fix --attempt 1 --artifact event.json
+```
+
+```jsonl
+{"type":"checkpoint","summary":"已定位到解析器。下一步增加空输入的回归用例。","session_id":"executor-session-1"}
+{"type":"operation","id":"read-config","kind":"read","status":"completed","summary":"已核对配置格式"}
+{"type":"operation","id":"patch","kind":"workspace_write","status":"started","summary":"正在修改解析器"}
+```
+
+操作 `kind` 支持 `read`、`workspace_write`、`external` 和 `tool`。用同一 ID 上报 `started`、`completed` 或 `failed`。中断时，没有确定结果的操作会标成待核对。记录只填续接所需摘要，避免写入密钥、原始工具输出和完整会话。内置 Codex 执行器从事件流保留最后的工作说明和可辨识的操作摘要；它用这些资料开启新执行。支持原生会话的宿主或适配器可以使用 `resume_session_id`。Pioneers 只在确认旧执行端已停止、仍是原成员和原工作区、且没有外部或待核对的写入类动作时交回此引用。浏览器看板不返回会话引用。
+
+已登记的外部操作需要核对真实回执。用 `--recover ... --recovery-checks checks.json` 登记待核对操作的结果，例如：
+
+```json
+[{"id":"send-1","outcome":"completed","reason":"外部系统返回已投递回执"}]
+```
+
+确认已发生时，通过 `--artifact` 接续证据，再走原验收和审批流程。确认未发生时，把 `outcome` 填成 `not_executed`，之后重新申请执行授权。Pioneers 只跟踪已观察或上报的动作，外部系统的真实状态需通过回执核对。外部操作仍须事先声明 `effect`。
+
 ## 项目看板与迭代记录
 
 同一交付项目复用一个入口。先在可持续运行的终端启动项目看板，后续迭代沿用同一个项目目录。默认本地地址为 [http://127.0.0.1:8790/](http://127.0.0.1:8790/)。同时运行多个项目时，为每个项目固定一个 `--port`。云端按上面的私有预览方式映射此端口，需要在看板上审批时同时配置 `--dashboard-origin`。
