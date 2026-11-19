@@ -1550,6 +1550,36 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
         return report_task(progress, tasks, task_id, state, activity, result, attempt)
 
 
+def execute_host(run_dir, task_id, attempt, command):
+    run_dir = run_dir.resolve(strict=True)
+    progress = Progress.open(run_dir)
+    job = progress.data["tasks"].get(task_id)
+    if job is None:
+        raise ValueError(f"Unknown workflow task: {task_id}")
+    checkout = job.get("git")
+    workspace = checkout["workspace"] if checkout and checkout["attempt"] == attempt else progress.data["workspace"]
+
+    def renew():
+        update_host(run_dir, task_id, "running", None, None, attempt)
+
+    renew()
+    with subprocess.Popen(command, cwd=workspace) as process:
+        try:
+            while True:
+                try:
+                    code = process.wait(timeout=HOST_LEASE_SECONDS / 3)
+                    return code if code >= 0 else 128 - code
+                except subprocess.TimeoutExpired:
+                    if process.poll() is None:
+                        renew()
+        finally:
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+
+
 def handle_judgment(run_dir, key, task_id, attempt, artifact):
     with Progress.locked(run_dir.resolve(strict=True)) as progress:
         if progress.data["mode"] != "host":
@@ -1803,6 +1833,7 @@ def main():
     action.add_argument("--host-claim", type=Path, metavar="RUN_DIR", help="Claim a dependency-ready task and return its assignment as JSON.")
     action.add_argument("--host-checkpoint", type=Path, metavar="RUN_DIR", help="Record a checkpoint or operation for a running host assignment.")
     action.add_argument("--host-heartbeat", type=Path, metavar="RUN_DIR", help="Renew the lease of a running host assignment.")
+    action.add_argument("--host-exec", type=Path, metavar="RUN_DIR", help="Run a host executor with independent lease renewal.")
     action.add_argument("--recover", type=Path, metavar="RUN_DIR", help="Resolve an interrupted task after checking its previous executor.")
     action.add_argument("--host-report", type=Path, metavar="RUN_DIR", help="Report work on a claimed task.")
     action.add_argument("--judge", type=Path, metavar="RUN_DIR", help="Fetch or submit a host LLM judgment.")
@@ -1822,6 +1853,8 @@ def main():
     parser.add_argument("--runner", type=Path, help="Executable adapter for a non-Codex platform.")
     parser.add_argument("--role", choices=ROLES, help="Role invoking a built-in tool.")
     parser.add_argument("--input", type=Path, help="Input file for a built-in tool, relative to the workspace.")
+    parser.add_argument("--exec-command", nargs=argparse.REMAINDER, metavar="COMMAND",
+                        help="Executor command and arguments for --host-exec (must be last).")
     parser.add_argument("--task", help="Task ID for a host assignment or recovery.")
     parser.add_argument("--member", help="Stable ID of the member receiving a host assignment.")
     parser.add_argument("--member-name", help="Display name for --member when first assigning that member.")
@@ -1891,7 +1924,7 @@ def main():
     human_action = next((name for name in ("approve", "revise", "pause", "intervene", "resume", "recover")
                          if getattr(args, name) is not None), None)
     host_action = human_action or any(value is not None for value in (
-        args.host_start, args.host_ready, args.host_claim, args.host_report, args.host_heartbeat, args.host_checkpoint, args.release, args.judge, args.replan,
+        args.host_start, args.host_ready, args.host_claim, args.host_report, args.host_heartbeat, args.host_exec, args.host_checkpoint, args.release, args.judge, args.replan,
         args.continue_run,
     ))
     tool_action = any(value is not None for value in (args.list_capabilities, args.mcp_config, args.run_tool))
@@ -1901,6 +1934,10 @@ def main():
         parser.error("host claim and report require --task")
     if (args.host_heartbeat or args.host_checkpoint or args.recover) and (not args.task or not args.attempt or args.attempt < 1):
         parser.error("--host-heartbeat, --host-checkpoint and --recover require --task and a positive --attempt")
+    if args.host_exec and (not args.task or not args.attempt or args.attempt < 1 or not args.exec_command):
+        parser.error("--host-exec requires --task, a positive --attempt and --exec-command COMMAND")
+    if args.exec_command is not None and not args.host_exec:
+        parser.error("--exec-command requires --host-exec")
     if args.host_checkpoint and args.artifact is None:
         parser.error("--host-checkpoint requires --artifact containing a JSON event")
     if args.recovery_checks is not None and not args.recover:
@@ -2012,6 +2049,8 @@ def main():
             else:
                 serve_run_dashboard(Path(result["run_dir"]), args, result)
             return 0
+        if args.host_exec:
+            return execute_host(args.host_exec, args.task, args.attempt, args.exec_command)
         if args.host_claim or args.host_report or args.host_heartbeat or args.host_checkpoint:
             state = ("checkpoint" if args.host_checkpoint else "running" if args.host_heartbeat
                      else args.state if args.host_report else None)

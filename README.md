@@ -266,7 +266,13 @@ python3 pioneers.py --release RUN_DIR --state published --activity "部署成功
 
 ## 执行器故障恢复
 
-宿主领取任务时会获得 `attempt` 和 180 秒租约。执行器仍活跃时，宿主至少每 60 秒续约一次。带 `--state running` 的进度回报也会续约。只有确认执行器或其会话仍活跃时才续约。确认执行器异常退出时，可以报告 `--state lost`。宿主查就绪队列或尝试领取时，也会回收租约超时的任务。
+宿主领取任务后，使用 `--host-exec` 启动本地执行器（例如浏览器测试命令或执行器适配器）。Pioneers 在分配的工作目录启动该命令，并在独立的父进程中每 60 秒续约，无需等待命令输出。子进程退出即停止续约，命令退出码传回宿主。适配器应在实际任务结束前保持前台运行。宿主仍负责回报完成、失败或失联。
+
+```bash
+python3 pioneers.py --host-exec RUN_DIR --task verify --attempt 1 --exec-command python3 verify_browser.py
+```
+
+无法通过本地命令启动的原生会话，应由宿主调度独立的存活检查和续约。宿主领取任务时会获得 `attempt` 和 180 秒租约。执行器仍活跃时，宿主至少每 60 秒续约一次。带 `--state running` 的进度回报也会续约。只有确认执行器或其会话仍活跃时才续约。确认执行器异常退出时，可以报告 `--state lost`。宿主查就绪队列或尝试领取时，也会回收租约超时的任务。
 
 ```bash
 python3 pioneers.py --host-heartbeat RUN_DIR --task fix --attempt 1
