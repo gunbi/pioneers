@@ -426,7 +426,9 @@ def request_browser_open(url):
             pass
         print(f"Browser launch unavailable. Open the dashboard manually: {url}", file=sys.stderr, flush=True)
 
-    Thread(target=launch, daemon=True).start()
+    worker = Thread(target=launch, daemon=True)
+    worker.start()
+    return worker
 
 
 def serve_dashboard(run_dir, port, control=None, *, on_ready=announce, open_browser=False, cloud_origin=None,

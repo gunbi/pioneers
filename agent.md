@@ -29,7 +29,7 @@
 
 先确认交付项目的独立工作目录。维护已有产品时用项目仓库根目录或它的专用 Git worktree。创建新产品时，在平台授权的可写目录下新建项目，例如与 pioneers 并列的 `todo-app/`，并用 `git init` 初始化。为这次运行显式传入 `--workspace PROJECT`。启动协调命令可以在 pioneers 检出目录执行，开发、测试和预览都在交付项目目录执行。
 
-为项目复用一个运营看板。先用 `--project-history --workspace PROJECT` 查询运行和上一轮已交付摘要，LD 规划时核对当前代码、决策、验收和遗留事项。若项目看板尚未启动，在可保持运行的终端用 `--project-dashboard --workspace PROJECT` 启动，默认端口 8790。已使用其他固定端口或云端私有预览时，复用现有入口。仅恢复或介入已有迭代时保留原运行目录。
+为项目复用一个运营看板。先用 `--project-history --workspace PROJECT` 查询运行和上一轮已交付摘要，LD 规划时核对当前代码、决策、验收和遗留事项。若项目看板尚未启动，用 `--project-dashboard --workspace PROJECT --detach` 独立启动，保留命令返回的地址和 PID，默认端口 8790。已使用其他固定端口或云端私有预览时，复用现有入口。仅恢复或介入已有迭代时保留原运行目录。
 
 宿主启动执行端时，用领取结果中的 `workspace` 设置工作目录，并按 `sandbox` 落实访问权限。宿主无法指定执行目录时，报告阻塞并暂停派工。
 

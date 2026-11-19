@@ -323,10 +323,12 @@ python3 pioneers.py --host-checkpoint RUN_DIR --task fix --attempt 1 --artifact 
 同一交付项目复用一个入口。先在可持续运行的终端启动项目看板，后续迭代沿用同一个项目目录。默认本地地址为 [http://127.0.0.1:8790/](http://127.0.0.1:8790/)。同时运行多个项目时，为每个项目固定一个 `--port`。云端按上面的私有预览方式映射此端口，需要在看板上审批时同时配置 `--dashboard-origin`。
 
 ```bash
-python3 pioneers.py --project-dashboard --workspace /path/to/project
+python3 pioneers.py --project-dashboard --workspace /path/to/project --detach
 python3 pioneers.py --project-history --workspace /path/to/project
 python3 pioneers.py --host-start WORKFLOW.json --workspace /path/to/project --register-only
 ```
+
+使用 `--detach` 时，看板在独立进程中监听，命令输出 `dashboard_url` 和 `pid` 后返回。协调会话退出后仍可在看板审批。重新接入时，对原运行目录执行 `--host-ready RUN_DIR`，并领取已放行的任务。停止独立看板时，结束启动命令返回的 PID。省略 `--detach` 可在前台运行。
 
 宿主用 `--register-only` 开新一轮时，返回的 `project_run_url` 指向同一项目看板里的当轮详情。保持项目看板运行即可领取任务。CLI 的真实交付也会自动登记。首页集中展示当前迭代、历史迭代和跨迭代待确认事项。点待确认事项可以进入对应审批，点协作流程可以查看任务交接、返工和进度。
 

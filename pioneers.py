@@ -22,7 +22,7 @@ from continuity import (
     attempt_operations, continuation_prompt, mark_interruption, record_execution, recovery_context, verify_external_operations,
 )
 from progress import Progress, artifact_name, codex_activity, print_board, show_progress
-from dashboard import announce, dashboard_is_running, live_dashboard, preview_origin, serve_dashboard
+from dashboard import announce, dashboard_is_running, live_dashboard, preview_origin, request_browser_open, serve_dashboard
 from dispatch import (
     claim_blockers, design_only, dispatch_can_continue, dispatch_summary, path_is_within, pending_replan,
     preapproval_required, replan_ready, waiting_on, workflow_path, writes_workspace,
@@ -1097,6 +1097,40 @@ def run_dashboard_project(data):
     return (project_registry(workspace), workspace.name) if workspace.is_dir() else None
 
 
+def start_detached_project_dashboard(workspace, args):
+    command = [sys.executable, str(ROOT / "pioneers.py"), "--project-dashboard",
+               "--workspace", str(workspace), "--output-dir", str(args.output_dir.resolve()),
+               "--port", str(args.port), "--no-open-browser"]
+    if args.dashboard_origin:
+        command.extend(["--dashboard-origin", args.dashboard_origin])
+    options = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+               if os.name == "nt" else {"start_new_session": True})
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, encoding="utf-8", **options)
+    lines = Queue()
+    Thread(target=queue_lines, args=(process.stdout, lines), daemon=True).start()
+    deadline = time.monotonic() + 15
+    try:
+        while True:
+            line = lines.get(timeout=max(0, deadline - time.monotonic()))
+            if line is None:
+                raise RuntimeError("Project dashboard exited before startup completed")
+            if line.startswith("Dashboard: "):
+                url = line.removeprefix("Dashboard: ").strip()
+                break
+            print(line.rstrip(), file=sys.stderr, flush=True)
+    except BaseException as error:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        if isinstance(error, Empty):
+            raise RuntimeError("Project dashboard did not start within 15 seconds") from error
+        raise
+    print(json.dumps({"dashboard_url": url, "pid": process.pid}), flush=True)
+    if args.open_browser:
+        request_browser_open(url).join(timeout=2)
+
+
 def serve_run_dashboard(run_dir, args, result=None):
     def on_ready(url):
         if Progress.open(run_dir).data["mode"] == "host":
@@ -1879,6 +1913,7 @@ def main():
                                  help="With --host-start, serve the dashboard in the foreground (default).")
     host_start_mode.add_argument("--register-only", action="store_true",
                                  help="With --host-start, register the run and exit. Start --dashboard before claiming.")
+    parser.add_argument("--detach", action="store_true", help="Start the project dashboard in a separate process and return its URL and PID.")
     parser.add_argument("--open-browser", action=argparse.BooleanOptionalAction,
                         help="Open the dashboard in the local browser (default on desktop environments).")
     parser.add_argument("--dashboard-origin", metavar="HTTPS_ORIGIN", help="Enable credential-protected controls on this private HTTPS preview origin.")
@@ -1894,6 +1929,8 @@ def main():
     serves_dashboard = (args.host_start and not args.register_only) or args.dashboard or args.project_dashboard or args.continue_run or args.live
     if args.open_browser is not None and not serves_dashboard:
         parser.error("--open-browser and --no-open-browser require a dashboard-serving action")
+    if args.detach and not args.project_dashboard:
+        parser.error("--detach requires --project-dashboard")
     if args.dashboard_origin is not None:
         if not serves_dashboard:
             parser.error("--dashboard-origin requires a dashboard-serving action")
@@ -1977,6 +2014,9 @@ def main():
         if project_view:
             workspace = project_workspace(args.workspace)
             registry = project_registry(workspace)
+            if args.detach:
+                start_detached_project_dashboard(workspace, args)
+                return 0
             import_project_runs(workspace, registry, args.output_dir)
             if args.project_history:
                 snapshot = project_snapshot(registry, workspace.name)

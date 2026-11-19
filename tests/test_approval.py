@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -640,6 +641,40 @@ class ApprovalTest(unittest.TestCase):
         self.assertNotIn("timed_out", result)
         self.assertEqual([item["task"] for item in result["ready"]], ["next"])
         self.assertEqual(self.claim("next")["task"], "next")
+
+    def test_detached_project_dashboard_can_approve_after_coordinator_exits(self):
+        self.write_workflow([self.task("requirements", impact="feature_design"),
+                             self.task("next", ["requirements"])])
+        board = self.cli("--project-dashboard", "--workspace", self.root, "--output-dir", self.root,
+                         "--port", 0, "--no-open-browser", "--detach")
+        self.addCleanup(os.kill, board["pid"], signal.SIGTERM)
+        url = board["dashboard_url"]
+        started = self.cli("--host-start", self.workflow, "--workspace", self.root,
+                           "--output-dir", self.root, "--register-only")
+        self.run_dir = Path(started["run_dir"])
+        self.claim("requirements")
+        decision = self.submit("requirements", "等待确认范围")
+        self.judge(decision)
+        coordinator = subprocess.Popen([*CLI, "--host-ready", str(self.run_dir), "--wait", "25"],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=OFFLINE_ENV)
+        self.addCleanup(self.stop_host, coordinator)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            coordinator.communicate(timeout=0.35)
+        self.stop_host(coordinator)
+        self.assertIsNotNone(coordinator.returncode)
+
+        run_url = started["project_run_url"]
+        with urlopen(run_url + "dashboard-data.json", timeout=3) as response:
+            self.assertEqual(json.load(response)["decisions"][decision["decision"]]["state"], "waiting")
+        body = json.dumps({"action": "approve", "decisions": [decision["decision"]], "reason": "测试确认"}).encode()
+        with urlopen(Request(run_url + "human-action", data=body,
+                             headers={"Origin": url.rstrip("/"), "Content-Type": "application/json"}), timeout=3) as response:
+            self.assertEqual(json.load(response)["approved"], [decision["decision"]])
+        ready = self.cli("--host-ready", self.run_dir)
+        self.assertEqual([item["task"] for item in ready["ready"]], ["next"])
+        assignment = self.claim("next")
+        self.assertEqual(assignment["run_dir"], str(self.run_dir))
+        self.assertEqual(assignment["attempt"], 1)
 
     def test_selective_approval_and_forced_design_impact(self):
         self.host([self.task("architecture", impact="architecture"), self.task("feature"),
