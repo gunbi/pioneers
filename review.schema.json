@@ -4,6 +4,20 @@
     "outcome": {"enum": ["accepted", "changes_requested", "needs_clarification", "blocked"]},
     "summary": {"type": "string"},
     "repair_task": {"type": ["string", "null"]},
+    "visual_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "design": {"type": "string"},
+          "screenshot": {"type": "string"},
+          "viewport": {"type": "string", "pattern": "^[1-9][0-9]*x[1-9][0-9]*$"},
+          "scenario": {"type": "string"}
+        },
+        "required": ["design", "screenshot", "viewport", "scenario"],
+        "additionalProperties": false
+      }
+    },
     "checks": {
       "type": "array",
       "items": {

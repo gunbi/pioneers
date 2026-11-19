@@ -30,8 +30,8 @@ class ApprovalTest(unittest.TestCase):
         self.assertEqual(process.returncode, code, process.stdout + process.stderr)
         return json.loads(process.stdout) if code == 0 else process.stderr
 
-    def write_workflow(self, tasks):
-        self.workflow.write_text(json.dumps({"goal": "团队交付", "tasks": tasks}), encoding="utf-8")
+    def write_workflow(self, tasks, **metadata):
+        self.workflow.write_text(json.dumps({"goal": "团队交付", "tasks": tasks, **metadata}), encoding="utf-8")
 
     def task(self, key, deps=(), **fields):
         return {"id": key, "role": "pm", "prompt": f"{key} 的决策和交付",
@@ -55,8 +55,8 @@ class ApprovalTest(unittest.TestCase):
         self.git(path, "commit", "-qm", "baseline")
         return path
 
-    def host(self, tasks, workspace=None):
-        self.write_workflow(tasks)
+    def host(self, tasks, workspace=None, **metadata):
+        self.write_workflow(tasks, **metadata)
         self.host_process = subprocess.Popen(
             [*CLI, "--host-start", str(self.workflow), "--workspace", str(workspace or self.root),
              "--output-dir", str(self.root), "--no-open-browser"],
@@ -243,6 +243,47 @@ class ApprovalTest(unittest.TestCase):
         self.run_dir = next(self.root.glob("run-*"))
         self.assertEqual(self.state()["tasks"]["analysis"]["attempt"], 2)
         self.assertIn("已续接完成", (self.run_dir / "analysis.2.md").read_text())
+
+    def test_ui_workflow_requires_design_and_independent_visual_review(self):
+        design = self.task("design")
+        implementation = self.task("build", ["design"], role="engineer", ui_design=["design"])
+        qa = self.task("qa", ["build", "design"], role="qa", review=True)
+        for build, review, message in [
+            ({**implementation, "depends_on": []}, qa, "ui_design needs distinct direct design dependencies"),
+            (implementation, {**qa, "depends_on": ["build"]}, "UI review must directly depend"),
+        ]:
+            with self.subTest(message=message):
+                self.write_workflow([design, build, review])
+                result = self.cli("--host-start", self.workflow, "--workspace", self.root,
+                                  "--output-dir", self.root, "--register-only", code=1)
+                self.assertIn(message, result)
+
+    def test_ui_design_handoff_and_browser_evidence_gate(self):
+        design = self.task("design", impact="feature_design")
+        implementation = self.task("build", ["design"], role="engineer", ui_design=["design"])
+        qa = self.task("qa", ["design", "build"], role="qa", review=True)
+        self.host([design, implementation, qa])
+        self.assertIn("waiting for: design", self.claim("build", code=1))
+        self.claim("design")
+        decision = self.submit("design", "设计稿在 design.png，含桌面与窄屏的操作规则。")
+        self.judge(decision, required=True, impact="feature_design")
+        self.assertIn("waiting for: design", self.claim("build", code=1))
+        self.cli("--approve", self.run_dir, "--decision", decision["decision"], "--reason", "确认设计")
+        self.assertIn("按已放行的设计", self.claim("build")["prompt"])
+        self.judge(self.submit("build", "已实现页面并完成真实页面自测。"))
+        self.assertIn("visual_evidence", self.claim("qa")["prompt"])
+
+        report = {"outcome": "accepted", "summary": "布局和动线符合设计", "repair_task": None,
+                  "checks": [{"criterion": qa["acceptance"][0], "status": "pass", "evidence": "对照页面"}]}
+        self.artifact.write_text(json.dumps(report), encoding="utf-8")
+        error = self.cli("--host-report", self.run_dir, "--task", "qa", "--attempt", 1, "--state", "completed",
+                         "--activity", "报告 UI 验收", "--artifact", self.artifact, code=1)
+        self.assertIn("UI acceptance needs design and browser screenshot evidence", error)
+        self.assertEqual(self.state()["tasks"]["qa"]["state"], "running")
+        report["visual_evidence"] = [{"design": "design.png", "screenshot": "candidate.png",
+                                      "viewport": "1440x900", "scenario": "项目概览，存在待审批任务"}]
+        self.judge(self.submit("qa", json.dumps(report)))
+        self.assertEqual(self.state()["state"], "completed")
 
     def test_host_requires_review_of_shared_writes_and_external_effects(self):
         self.host([
@@ -682,8 +723,38 @@ class ApprovalTest(unittest.TestCase):
         self.cli("--approve", self.run_dir, "--decision", revised["decision"], "--reason", "接受新方案")
         self.assertIn("新方案", self.claim("build")["prompt"])
 
+    def test_standalone_run_links_to_project_history(self):
+        workspace = self.git_project()
+        self.host([self.task("current")], workspace, title="当前迭代")
+        self.write_workflow([self.task("previous")], title="另一轮")
+        other = self.cli("--host-start", self.workflow, "--workspace", workspace,
+                         "--output-dir", self.root, "--register-only")
+        url = self.started["dashboard_url"]
+
+        def get(path):
+            with urlopen(url + path, timeout=3) as response:
+                return json.load(response)
+
+        root = get("dashboard-data.json")
+        self.assertEqual(root["project_href"], "project/")
+        self.assertFalse(root.get("read_only"))
+        project = get("project/project-data.json")
+        other_run = Path(other["run_dir"]).name
+        self.assertEqual({run["id"] for run in project["runs"]}, {self.run_dir.name, other_run})
+        other_path = f"project/runs/{other_run}/"
+        target = get(other_path + "dashboard-data.json")
+        self.assertEqual(target["project_href"], "../../")
+        self.assertTrue(target["read_only"])
+        request = Request(url + other_path + "human-action",
+                          data=json.dumps({"action": "pause", "reason": "测试"}).encode(),
+                          headers={"Origin": url.rstrip("/"), "Content-Type": "application/json"})
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request, timeout=3)
+        self.assertEqual(error.exception.code, 404)
+        error.exception.close()
+
     def test_dashboard_instruction_replans_after_inflight_work(self):
-        self.host([self.task("contract")], self.git_project())
+        self.host([self.task("contract")], self.git_project(), title="移动端并行交付")
         self.claim("contract")
         url = self.started["dashboard_url"]
 
@@ -706,9 +777,15 @@ class ApprovalTest(unittest.TestCase):
         snapshot = self.state()
         self.assertEqual(snapshot["state"], "running")
         original = snapshot["tasks"]["contract"]
-        with urlopen(url + "dashboard-data.json", timeout=3) as response:
-            self.assertTrue(json.load(response)["dispatch"]["replan"]["ready"])
+        def plan_snapshot():
+            with urlopen(url + "dashboard-data.json", timeout=3) as response:
+                return json.load(response)["replan"]
+
+        self.assertTrue(self.cli("--host-ready", self.run_dir)["replan"]["ready"])
+        self.assertFalse(plan_snapshot().get("started"))
         request = self.cli("--replan", self.run_dir)
+        self.assertTrue(plan_snapshot()["started"])
+        self.assertEqual(self.cli("--host-ready", self.run_dir)["ready"], [])
         self.assertEqual(request["role"], "ld")
         self.assertIn(note, request["prompt"])
         self.assertIn(original["evidence"], request["prompt"])
@@ -722,14 +799,24 @@ class ApprovalTest(unittest.TestCase):
         ios = self.task("ios", ["contract"], role="engineer", skills=["ios-development"], write_paths=["ios"])
         qa = self.task("verify", ["android", "ios"], role="qa", review=True)
         self.assertIn("started or authorized", submit_plan([self.task("contract")], code=1))
+        self.assertIn("started or authorized", plan_snapshot()["error"])
         self.assertIn("independent QA", submit_plan([android, ios], code=1))
         self.assertIn("stale", submit_plan([android, ios, qa], version=revision + 1, code=1))
+        self.assertIn("independent QA", plan_snapshot()["error"])
+        self.assertEqual(self.cli("--replan", self.run_dir)["revision"], revision)
+        self.assertNotIn("error", plan_snapshot())
+        self.assertIn("independent QA", submit_plan([android], code=1))
         self.assertEqual(submit_plan([android, ios, qa])["tasks"], ["android", "ios", "verify"])
         self.assertEqual(self.state()["tasks"]["contract"], original)
         with urlopen(url + "dashboard-data.json", timeout=3) as response:
             page = json.load(response)
         self.assertEqual({item["task"] for item in page["dispatch"]["ready"]}, {"android", "ios"})
         self.assertEqual(page["replan"]["state"], "applied")
+        self.assertNotIn("error", page["replan"])
+        self.assertEqual(page["title"], "移动端并行交付")
+        self.assertEqual(page["goal"], "团队交付")
+        with urlopen(url + "workflow.json", timeout=3) as response:
+            self.assertEqual(json.load(response)["title"], "移动端并行交付")
         self.assertEqual(self.claim("android")["task"], "android")
         self.assertEqual(self.claim("ios")["task"], "ios")
 

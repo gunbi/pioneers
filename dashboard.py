@@ -229,6 +229,7 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
             raise ValueError(f"Run status does not exist: {run_dir}")
     page = Path(__file__).with_name("dashboard.html").read_bytes()
     project_page = Path(__file__).with_name("project-dashboard.html").read_bytes() if project else None
+    project_prefix = "/project" if run_dir is not None else ""
     control_key = secrets.token_urlsafe(32) if cloud_origin else None
     key_deadline = monotonic() + CLOUD_CONTROL_SECONDS
 
@@ -236,18 +237,21 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
         def run_route(self, path):
             if project is None:
                 return run_dir, path
-            match = re.fullmatch(r"/runs/([^/]+)(/.*)", path)
+            match = re.fullmatch(project_prefix + r"/runs/([^/]+)(/.*)", path)
             if match:
                 return registered_run(project[0], match[1]), match[2]
-            return None, path
+            return run_dir, path
+
+        def can_control(self, target_run):
+            return control is not None and (run_dir is None or run_dir == target_run)
 
         def do_POST(self):
             target_run, path = self.run_route(urlsplit(self.path).path)
             if target_run is None or path != "/human-action":
                 self.send_error(404)
                 return
-            if control is None:
-                self.respond_json({"error": "这个看板没有启用人工操作。请使用运行环境的命令行。"}, 404)
+            if not self.can_control(target_run):
+                self.respond_json({"error": "当前入口仅供查看此轮。请使用该轮的独立看板或运行环境的命令行。"}, 404)
                 return
             if not self.authorize_action():
                 return
@@ -295,11 +299,15 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
 
         def do_GET(self):
             path = urlsplit(self.path).path
-            if project and path == "/":
+            if project and path == project_prefix + "/":
                 self.respond(project_page, "text/html")
                 return
-            if project and path == "/project-data.json":
-                self.respond_json(project_snapshot(*project), 200)
+            if project and path == project_prefix + "/project-data.json":
+                snapshot = project_snapshot(*project)
+                if run_dir is not None:
+                    for decision in snapshot["pending"]:
+                        decision["read_only"] = decision["run"] != run_dir.name
+                self.respond_json(snapshot, 200)
                 return
             target_run, route = self.run_route(path)
             if target_run is None:
@@ -330,7 +338,11 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
                 snapshot, _ = dashboard_snapshot(status)
                 if summary := iteration_summary(snapshot):
                     snapshot["summary"] = summary
-                if cloud_origin:
+                if project:
+                    snapshot["project_href"] = "../../" if path != route else "project/"
+                if run_dir is not None and target_run != run_dir:
+                    snapshot["read_only"] = True
+                if cloud_origin and self.can_control(target_run):
                     snapshot["cloud_control"] = True
                 snapshot["flow"] = flow_with_approvals(collaboration_flow(snapshot), snapshot.get("decisions", {}))
                 if snapshot["mode"] in ("host", "live"):
@@ -428,8 +440,8 @@ def serve_dashboard(run_dir, port, control=None, *, on_ready=announce, open_brow
 
 
 @contextmanager
-def live_dashboard(run_dir, port, control=None, *, open_browser=False, cloud_origin=None):
-    with dashboard_server(run_dir, port, control, cloud_origin=cloud_origin) as server:
+def live_dashboard(run_dir, port, control=None, *, open_browser=False, cloud_origin=None, project=None):
+    with dashboard_server(run_dir, port, control, cloud_origin=cloud_origin, project=project) as server:
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:

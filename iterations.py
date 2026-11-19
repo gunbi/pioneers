@@ -78,7 +78,7 @@ def project_snapshot(registry, project_name):
         state = data["state"]
         active = state in ACTIVE or bool(data.get("paused") and state == "completed")
         runs.append({
-            "id": entry.stem, "goal": data["goal"], "state": state, "active": active,
+            "id": entry.stem, "title": data.get("title"), "goal": data["goal"], "state": state, "active": active,
             "paused": bool(data.get("paused")),
             "started_at": data.get("started_at") or next((event["at"] for event in data.get("events", [])), None),
             "updated_at": data.get("updated_at"),
@@ -86,7 +86,7 @@ def project_snapshot(registry, project_name):
             "has_summary": state in DELIVERED, "finished_at": data.get("finished_at") or data.get("updated_at"),
         })
         if active:
-            pending.extend({"run": entry.stem, "goal": data["goal"], "id": item["id"],
+            pending.extend({"run": entry.stem, "title": data.get("title"), "goal": data["goal"], "id": item["id"],
                             "task": item.get("task"), "reason": item["reason"], "at": item["at"]}
                            for item in data.get("decisions", {}).values() if item["state"] == "waiting")
     runs.sort(key=lambda row: (row["started_at"] or row["updated_at"] or "", row["id"]), reverse=True)

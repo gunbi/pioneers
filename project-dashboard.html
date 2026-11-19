@@ -5,63 +5,74 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>项目看板 · Pioneers</title>
 <style>
-  :root { color-scheme:light; --ink:#18243b; --muted:#4e6077; --line:#d6dfe9; --accent:#174b87;
-    font:1rem/1.6 Geist,"PingFang SC",system-ui,sans-serif; color:var(--ink); background:#f6f7fb; }
+  :root { color-scheme:light; --ink:#18243b; --muted:#4e6077; --line:#dbe1e9; --accent:#1756b4;
+    font:1rem/1.6 Geist,"PingFang SC",system-ui,sans-serif; color:var(--ink); background:#fff; }
   * { box-sizing:border-box; }
   [hidden] { display:none !important; }
   body { margin:0; }
-  .shell { display:grid; grid-template-columns:11.5rem minmax(0,1fr); max-width:1520px; margin:auto; min-height:100vh; }
-  .rail { position:sticky; top:0; align-self:start; min-height:100vh; padding:1.65rem 1rem; border-right:1px solid var(--line); background:#f7f8fc; }
-  .brand { color:#222d50; font-size:1.15rem; font-weight:760; padding:0 .55rem; letter-spacing:-.035em; }
-  .rail nav { display:grid; gap:.25rem; margin-top:1.55rem; }
-  .rail a { display:block; padding:.43rem .55rem; border-radius:.35rem; color:#435270; font-size:.88rem; text-decoration:none; }
-  .rail a:hover { background:#e8ecf7; color:var(--ink); }
-  .rail a[aria-current="location"] { background:#e5eafa; color:#283d80; }
-  main { min-width:0; padding:clamp(1rem,3vw,2.5rem); }
-  header > p:first-child { font-weight:650; }
-  h1 { max-width:32ch; margin:.28rem 0 .55rem; font-size:clamp(1.65rem,3.15vw,2.5rem); line-height:1.2; letter-spacing:-.035em; overflow-wrap:anywhere; }
+  .shell { display:grid; grid-template-columns:clamp(12rem,15.5vw,15.75rem) minmax(0,1fr); min-height:100vh; }
+  .rail { position:sticky; top:0; align-self:start; min-height:100vh; padding:1.65rem .65rem; border-inline-end:1px solid var(--line); background:#f4f6f9; }
+  .brand { color:#111b2b; font-size:1.4rem; font-weight:780; padding:0 1rem; letter-spacing:-.035em; }
+  .rail nav { display:grid; gap:.3rem; margin-top:1.5rem; }
+  .rail nav a,.rail-back { display:flex; align-items:center; gap:.65rem; position:relative; min-height:2.6rem;
+    padding:.48rem .72rem; border-radius:.42rem; color:var(--ink); font-size:.91rem; font-weight:600; text-decoration:none; }
+  .rail nav a:hover,.rail-back:hover { background:#e9eff7; }
+  .rail nav a[aria-current="location"] { color:#124daa; background:#e3edfc; }
+  .rail nav a[aria-current="location"]::before { content:""; position:absolute; inset-block:.27rem; inset-inline-start:0;
+    width:3px; border-radius:0 3px 3px 0; background:#2165d4; }
+  .nav-icon { width:1.16rem; height:1.16rem; flex:none; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+  main { min-width:0; padding:clamp(1rem,3vw,2.65rem); }
+  header > p:first-child { font-weight:500; }
+  .project-heading { display:flex; align-items:center; flex-wrap:wrap; gap:.4rem 1rem; margin-top:.2rem; }
+  h1 { margin:0; font-size:clamp(1.35rem,2.4vw,1.75rem); line-height:1.3; letter-spacing:-.02em; overflow-wrap:anywhere; }
   h2 { margin:0; font-size:1.18rem; }
   h3 { margin:0; font-size:1rem; }
   p { margin:0; }
   .muted { color:var(--muted); font-size:.84rem; }
   #connection::before { content:""; display:inline-block; width:.4rem; height:.4rem; margin-inline-end:.38rem; border-radius:50%; background:#74809b; vertical-align:.1em; }
-  #connection[data-live]::before { background:#20836c; }
+  #connection[data-live]::before { background:#17854b; }
   #connection[data-error]::before { background:#a45c20; }
-  .overview { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); margin:1.05rem 0 0; padding:0; border:1px solid var(--line); border-radius:.7rem; background:#fff; overflow:hidden; }
-  .overview > div { min-width:0; padding:.75rem .95rem; border-inline-start:1px solid var(--line); }
+  .overview { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); margin:1.05rem 0 0; padding:0; border-block:1px solid var(--line); padding:.6rem 0; }
+  .overview > div { display:grid; min-width:0; padding:.55rem 1.05rem; border-inline-start:1px solid var(--line); }
   .overview > div:first-child { border-inline-start:0; }
   .overview dt { color:var(--muted); font-size:.83rem; font-weight:650; }
-  .overview dd { margin:.12rem 0 0; font-size:1.5rem; line-height:1.18; font-weight:750; font-variant-numeric:tabular-nums; }
-  .overview a { color:inherit; text-decoration-thickness:1px; }
+  .overview dd { grid-row:1; margin:0 0 .12rem; font-size:1.5rem; line-height:1.18; font-weight:750; font-variant-numeric:tabular-nums; }
+  .overview a { color:inherit; text-decoration:none; }
+  .overview a:hover { color:var(--accent); text-decoration:underline; }
   .overview .needs-attention { background:#fff7e8; color:#75450e; }
   .overview .needs-attention dt { color:#75450e; }
-  .work { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.35fr); align-items:start; gap:1rem; margin-top:1.1rem; }
-  .work[data-single] { grid-template-columns:1fr; }
-  .panel { min-width:0; border:1px solid var(--line); border-radius:.9rem; background:#fff; overflow:hidden; }
-  .panel.history { margin-top:1rem; }
-  .panel h2 { padding:.75rem 1rem; border-bottom:1px solid var(--line); }
-  .list { padding:0; margin:0; list-style:none; }
-  .item { padding:.8rem 1rem; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.5rem 1rem; }
+  .work { display:grid; gap:1.35rem; margin-top:1.35rem; }
+  .panel { min-width:0; }
+  .panel.history { margin-top:1.35rem; }
+  .panel h2 { padding:0 0 .6rem; border-bottom:1px solid var(--line); }
+  .list { padding:0; margin:0; list-style:none; border-bottom:1px solid var(--line); }
+  .item { padding:.8rem .25rem; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.5rem 1rem; }
   .item + .item { border-top:1px solid var(--line); }
   .item.waiting { border-inline-start:.25rem solid #ad711a; background:#fffbf2; }
-  .empty { padding:.8rem 1rem; }
+  .empty { padding:.95rem .25rem; text-align:center; }
   .info { flex:1 1 13rem; min-width:0; overflow-wrap:anywhere; }
   .info p { margin-top:.22rem; }
+  .item-title { font-size:.96rem; font-weight:700; }
+  .item-description { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; max-width:76ch; }
+  .item .item-meta { color:var(--muted); font-size:.78rem; margin-top:.35rem; }
   .links { display:flex; flex-wrap:wrap; align-items:center; gap:.35rem .75rem; font-size:.84rem; }
-  .list a { font-size:.87rem; }
+  .list a { font-size:.87rem; text-decoration:none; }
+  .list a:hover { text-decoration:underline; }
+  .run-link { display:inline-flex; align-items:center; gap:.35rem; }
+  .run-link::after { content:""; width:.4em; height:.4em; border:solid currentColor; border-width:1px 1px 0 0; transform:rotate(45deg); }
   a { color:var(--accent); font-weight:650; text-underline-offset:.19em; }
   a:focus-visible { outline:2px solid #435fa3; outline-offset:3px; }
   .status { background:#e2eaf3; padding:.12rem .55rem; border-radius:1rem; white-space:nowrap; }
+  .status.active { color:#124daa; background:#e3edfc; }
   .status.delivered { color:#226050; background:#dcefe9; }
   .status.attention { color:#71440a; background:#f9ecd0; }
   [data-error] { color:#8a341d; }
-  @media (max-width:1220px) {
+  @media (max-width:1040px) {
     .shell { display:block; }
     .rail { position:static; min-height:0; border:0; border-bottom:1px solid var(--line); display:flex; align-items:baseline; flex-wrap:wrap; gap:.25rem 1rem; padding:.65rem clamp(.55rem,2vw,1.5rem); }
     .rail nav { display:flex; flex-wrap:wrap; gap:.12rem .25rem; margin:0; }
   }
   @media (max-width:760px) {
-    .work { grid-template-columns:1fr; }
     .overview > div { padding:.65rem; }
   }
 </style>
@@ -71,17 +82,19 @@
   <aside class="rail">
     <p class="brand">Pioneers</p>
     <nav id="project-nav" aria-label="项目看板导航">
-      <a href="#project-overview" aria-current="location">项目概览</a>
-      <a href="#pending-title">待人工确认</a>
-      <a href="#current-title">当前迭代</a>
-      <a href="#history-title">历史迭代</a>
+      <a href="#project-overview" aria-current="location"><svg class="nav-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="2"/><path d="M9 3.5v17M9 10h11.5"/></svg><span>项目概览</span></a>
+      <a href="#pending-title"><svg class="nav-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="m8 12 2.5 2.5 5-5"/></svg><span>待人工确认</span></a>
+      <a href="#current-title"><svg class="nav-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5m8-10 5 5-5 5"/></svg><span>当前迭代</span></a>
+      <a href="#history-title"><svg class="nav-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M3 11a9 9 0 1 1 2.5 7M3 5v6h6m3-4v5l3 2"/></svg><span>历史迭代</span></a>
     </nav>
   </aside>
   <main id="project-overview">
     <header>
       <p class="muted">项目看板</p>
-      <h1 id="project" tabindex="-1">项目迭代</h1>
-      <p class="muted" id="connection" role="status">正在连接</p>
+      <div class="project-heading">
+        <h1 id="project" tabindex="-1">项目迭代</h1>
+        <p class="muted" id="connection" role="status">正在连接</p>
+      </div>
       <dl id="overview" class="overview" aria-label="项目迭代概览" hidden>
         <div id="pending-metric"><dt>待人工确认</dt><dd><a id="pending-count" href="#pending-title"></a></dd></div>
         <div><dt>当前迭代</dt><dd><a id="current-count" href="#current-title"></a></dd></div>
@@ -119,7 +132,6 @@
     }
     const work = byId("project-work");
     work.hidden = view === "#history-title";
-    work.toggleAttribute("data-single", !overview);
     for (const link of byId("project-nav").querySelectorAll("a")) {
       if (link.getAttribute("href") === view) link.setAttribute("aria-current", "location");
       else link.removeAttribute("aria-current");
@@ -150,16 +162,28 @@
     const date = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2}) (\d\d:\d\d:\d\d) UTC$/, "$1T$2Z"));
     return Number.isNaN(date.getTime()) ? raw : date.toLocaleString("zh-CN", {hour12:false});
   }
+  function iterationTitle(record) {
+    const goal = record.goal.trim();
+    const firstClause = goal.split(/[\n（(，,。！？!?；;：:]/u)[0].trim();
+    const title = (record.title || firstClause || goal).replace(/\s+/g, " ").trim();
+    const characters = Array.from(title);
+    return characters.length > 48 ? characters.slice(0, 47).join("").trimEnd() + "…" : title || "本轮迭代";
+  }
   function renderRun(run) {
     const node = element("li", "", "item");
     const info = element("div", "", "info");
     const count = Object.values(run.counts).reduce((sum, value) => sum + value, 0);
     const detail = [(run.counts.completed || 0) + " / " + count + " 项任务完成", localTime(run.updated_at)];
-    info.append(element("h3", run.goal), element("p", detail.filter(Boolean).join(" · "), "muted"));
+    const title = iterationTitle(run);
+    info.append(element("h3", title, "item-title"));
+    if (title !== run.goal.trim()) info.append(element("p", run.goal, "muted item-description"));
+    info.append(element("p", detail.filter(Boolean).join(" · "), "item-meta"));
     const links = element("div", "", "links");
-    const tone = run.paused ? " attention" : run.has_summary ? " delivered" : "";
+    const tone = run.paused ? " attention" : run.has_summary ? " delivered" : run.active ? " active" : "";
+    const runLink = link("运行看板", runUrl(run.id));
+    runLink.className = "run-link";
     links.append(element("span", run.paused ? "新任务已暂停" : labels[run.state] || run.state, "status" + tone),
-      link("运行看板", runUrl(run.id)));
+      runLink);
     if (run.counts.recovery_required) {
       const recovery = link(run.counts.recovery_required + " 项待恢复", runUrl(run.id) + "#dispatch-title");
       recovery.className = "status attention";
@@ -172,8 +196,9 @@
   function renderPending(item) {
     const node = element("li", "", "item waiting");
     const info = element("div", "", "info");
-    info.append(element("h3", item.goal), element("p", [item.task || "发布", item.id, item.reason].join(" · "), "muted"));
-    node.append(info, link("查看并处理", runUrl(item.run) + "?decision=" + encodeURIComponent(item.id) + "#human-title"));
+    info.append(element("h3", iterationTitle(item), "item-title"),
+      element("p", [item.task || "发布", item.id, item.reason].join(" · "), "muted item-description"));
+    node.append(info, link(item.read_only ? "查看详情" : "查看并处理", runUrl(item.run) + "?decision=" + encodeURIComponent(item.id) + "#human-title"));
     return node;
   }
   function renderList(id, records, render, empty) {

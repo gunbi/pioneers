@@ -242,6 +242,10 @@ def validate_workflow(workflow, generated=False):
         raise ValueError("Workflow must be a JSON object")
     goal = workflow.get("goal")
     items = workflow.get("tasks")
+    title = workflow.get("title")
+    if "title" in workflow and (not isinstance(title, str) or not 1 <= len(title.strip()) <= 48
+                                or len(title.splitlines()) != 1):
+        raise ValueError("Workflow title must be a single line of 1 to 48 characters")
     if not isinstance(goal, str) or not goal.strip():
         raise ValueError("Workflow needs a non-empty goal")
     if not isinstance(items, list) or not items:
@@ -303,6 +307,13 @@ def validate_workflow(workflow, generated=False):
         dependencies = task.get("depends_on", [])
         if not isinstance(dependencies, list) or not all(isinstance(dep, str) for dep in dependencies):
             raise ValueError(f"{task_id}: depends_on must be an array of task ids")
+        ui_design = task.get("ui_design")
+        if ui_design is not None and (
+            not writes_workspace(task) or task.get("effect") or not isinstance(ui_design, list)
+            or not ui_design or not all(isinstance(key, str) and key in dependencies for key in ui_design)
+            or len(set(ui_design)) != len(ui_design)
+        ):
+            raise ValueError(f"{task_id}: ui_design needs distinct direct design dependencies for UI implementation")
         scopes = task.get("write_paths", [])
         if not isinstance(scopes, list) or any(
             not isinstance(path, str) or not path or path != path.strip()
@@ -327,6 +338,16 @@ def validate_workflow(workflow, generated=False):
         order = tuple(graph.static_order())
     except CycleError as error:
         raise ValueError(f"Task dependencies form a cycle: {' -> '.join(error.args[1])}") from error
+    for task_id, task in tasks.items():
+        if not (designs := task.get("ui_design")):
+            continue
+        if any(tasks[key].get("effect") or (tasks[key]["role"] != "pm" and not design_only(tasks[key]))
+               for key in designs):
+            raise ValueError(f"{task_id}: UI design dependencies must be read-only design tasks")
+        required = {task_id, *designs}
+        if not any(candidate.get("review") and required.issubset(candidate.get("depends_on", []))
+                   for candidate in tasks.values()):
+            raise ValueError(f"{task_id}: UI review must directly depend on the implementation and its designs")
     if generated:
         ancestors = {}
         reviewed = set()
@@ -512,10 +533,12 @@ def run_agent_process(command, workspace, payload, report, env, external=False, 
 
 
 PRODUCT_EXPERIENCE_PLANNING = (
-    "新建或重做关键页面、导航或用户动线时，让 pm 或 engineer 加载 product-experience-design，"
-    "交付用户任务、动线、关键屏幕布局和可观察的验收场景；需要独立验证时可让 qa 加载同一技能。"
-    "布局依赖跨页面决策时先设计再实现。设计和实现分开派工时，让 qa 直接依赖两项任务，以便收到原设计和实际交付。"
-    "布局简单且边界清楚时可以由同一工程师先设计再实现。"
+    "新页面、整页改版或关键动线变更先安排只读设计并交付可核对的设计图、状态和窄屏规则。"
+    "设计由 pm 或只读方案任务承担，加载 product-experience-design，按影响使用现有审批。"
+    "需要时也让 qa 加载该能力。工程实现用 ui_design 列出设计任务 ID，"
+    "同时把它们列入 depends_on。让独立 qa 直接依赖设计与 UI 实现，并设定视觉对照验收项。"
+    "验收在同一数据场景和视口比对已确认设计与真实浏览器截图。缺少浏览器或证据时保持 blocked。"
+    "边界清楚的局部小修由工程师先说明预期表现再实现，可以省去 ui_design 和单独设计派工。"
     "有访谈、反馈或行为数据需要归纳跨阶段旅程时，让 pm 按需加载 customer-journey-mapping。"
 )
 
@@ -545,6 +568,7 @@ def plan_workflow(goal, executor, run_dir, progress):
         "重大架构方案标 architecture，重要功能设计标 feature_design，先出方案再安排下游实现。"
         "高成本实施标 costly_change，常规任务的 impact 填 null。"
         "每项任务列出复杂度、理由和可验证的验收条件。tools 和 skills 只选该角色本次需要的能力。"
+        "用 title 为本轮迭代写一个简短、可辨识的单行标题，goal 保留用户的完整目标。"
         "只返回符合指定结构的工作流 JSON。\n\n"
         f"用户目标：{goal}\n\n可用角色：\n{roles}"
     )
@@ -565,6 +589,8 @@ def plan_workflow(goal, executor, run_dir, progress):
         _, tasks, order = result
         with Progress.locked(run_dir) as current:
             write_json(path, workflow)
+            if "title" in workflow:
+                current.data["title"] = workflow["title"].strip()
             current.set_tasks(tasks, order)
             current.planning("completed", f"分工已保存到 {path.name}")
             progress.data = current.data
@@ -587,7 +613,13 @@ REVIEW_HANDOFFS = {
 }
 
 
-def validate_review(text, criteria):
+def requires_visual_review(tasks, task_id):
+    dependencies = tasks[task_id].get("depends_on", [])
+    return any((designs := tasks[key].get("ui_design")) and set(designs).issubset(dependencies)
+               for key in dependencies)
+
+
+def validate_review(text, criteria, *, visual=False):
     report = json.loads(text)
     if not isinstance(report, dict) or report.get("outcome") not in ("accepted", *REVIEW_HANDOFFS):
         raise ValueError("QA review returned an invalid outcome")
@@ -609,6 +641,17 @@ def validate_review(text, criteria):
         remaining.remove(check["criterion"])
     if report["outcome"] == "accepted" and any(check["status"] != "pass" for check in checks):
         raise ValueError("QA cannot accept failed or unverified criteria")
+    if visual and report["outcome"] == "accepted":
+        comparisons = report.get("visual_evidence")
+        if not isinstance(comparisons, list) or not comparisons or any(
+            not isinstance(item, dict)
+            or not all(isinstance(item.get(key), str) and item[key].strip()
+                       for key in ("design", "screenshot", "viewport", "scenario"))
+            or item["design"].strip() == item["screenshot"].strip()
+            or not re.fullmatch(r"[1-9][0-9]*x[1-9][0-9]*", item["viewport"])
+            for item in comparisons
+        ):
+            raise ValueError("UI acceptance needs design and browser screenshot evidence for the same viewport and scenario")
     if report["outcome"] == "changes_requested" and not any(check["status"] == "fail" for check in checks):
         raise ValueError("Changes requested requires at least one failed criterion")
     if report.get("repair_task") is not None and (report["outcome"] != "changes_requested" or not isinstance(report["repair_task"], str)):
@@ -650,7 +693,15 @@ def assignment_prompt(goal, tasks, task_id, progress, workspace=None):
         decision = progress.data.get("decisions", {}).get(key, {})
         if decision.get("note"):
             prompt += f"\n\n前置任务 {dep} 的人工补充意见：\n{decision['note']}"
+    if task.get("ui_design"):
+        prompt += ("\n按已放行的设计实现布局、导航、图标和关键交互。保持设计确认时的桌面与窄屏规则。"
+                   "自测用相同数据场景与视口记录实际浏览器截图，说明偏差。改变结构、图标语义或操作路径前先更新并确认设计。")
     if task.get("review"):
+        if requires_visual_review(tasks, task_id):
+            prompt += ("\n用真实浏览器在同一数据场景和视口对照已放行设计，核对布局、导航、图标、状态和交互。"
+                       "通过时在 visual_evidence 逐关键场景填写 design 设计稿引用、screenshot 实际浏览器截图引用、"
+                       "viewport 宽x高（如 1440x900）和 scenario 数据与状态。记录可接受的差异；"
+                       "关键偏差退回实现或重新确认设计。浏览器不可用或缺少截图时用 blocked 和未验证的验收项。")
         targets = repair_targets(tasks, task_id)
         if targets:
             prompt += "\n可退回的实现任务：" + "、".join(targets)
@@ -710,7 +761,9 @@ def reopen_tasks(progress, review_id, target, affected, evidence, summary):
 
 
 def save_deliverable(progress, tasks, task_id, result, review):
-    verdict = validate_review(result, tasks[task_id]["acceptance"]) if review else None
+    verdict = None
+    if review:
+        verdict = validate_review(result, tasks[task_id]["acceptance"], visual=requires_visual_review(tasks, task_id))
     artifact = artifact_path(progress, task_id)
     artifact.write_text(result + "\n", encoding="utf-8")
     if verdict:
@@ -1018,6 +1071,8 @@ def start_host(workflow_path, output_dir, workspace, require_release):
     run_dir, progress = create_run(output_dir, goal, tasks, order, "host", require_release)
     (run_dir / "workflow.json").write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     progress.data["workspace"] = str(workspace)
+    if "title" in workflow:
+        progress.data["title"] = workflow["title"].strip()
     if git_base:
         progress.data["git_base"] = git_base
     reconcile(progress, tasks)
@@ -1034,6 +1089,14 @@ def start_host(workflow_path, output_dir, workspace, require_release):
             "skill_sources": progress.data["skill_sources"]}
 
 
+def run_dashboard_project(data):
+    workspace = data.get("workspace")
+    if data["mode"] not in ("host", "live") or data.get("plan_only") or not workspace:
+        return None
+    workspace = Path(workspace)
+    return (project_registry(workspace), workspace.name) if workspace.is_dir() else None
+
+
 def serve_run_dashboard(run_dir, args, result=None):
     def on_ready(url):
         if Progress.open(run_dir).data["mode"] == "host":
@@ -1045,7 +1108,8 @@ def serve_run_dashboard(run_dir, args, result=None):
             print(json.dumps({**result, "dashboard_url": url}, ensure_ascii=False), flush=True)
 
     serve_dashboard(run_dir, args.port, control=control_run, on_ready=on_ready,
-                    open_browser=args.open_browser, cloud_origin=args.dashboard_origin)
+                    open_browser=args.open_browser, cloud_origin=args.dashboard_origin,
+                    project=run_dashboard_project(Progress.open(run_dir).data))
 
 
 def task_worktree(progress, tasks, task_id):
@@ -1227,7 +1291,10 @@ def run_live(tasks, order, executor, progress, *, reopen=False, refresh_skills=F
             with Progress.locked(run_dir) as current:
                 path = workflow_path(run_dir, current.data)
                 if path.is_file():
-                    _, tasks, order = load_workflow(path)
+                    workflow = json.loads(path.read_text(encoding="utf-8"))
+                    _, tasks, order = validate_workflow(workflow)
+                    if "title" in workflow:
+                        current.data["title"] = workflow["title"].strip()
                     if not current.data["tasks"]:
                         current.set_outcome("running")
                         current.set_tasks(tasks, order)
@@ -1290,6 +1357,10 @@ def replan_assignment(progress, tasks):
         + f"运行目录：{progress.path.parent}\n"
         + json.dumps(context, ensure_ascii=False)
     )
+    if not plan.get("started") or plan.get("error"):
+        plan["started"] = True
+        plan.pop("error", None)
+        progress.event("ld", None, "running", f"已领取第 {plan['revision']} 次重新规划")
     return {"revision": plan["revision"], "role": "ld", "phase": "plan", "sandbox": "read-only",
             "workspace": data.get("workspace"), "prompt": prompt,
             "output_schema": json.loads((ROOT / "workflow.schema.json").read_text(encoding="utf-8"))}
@@ -1318,6 +1389,8 @@ def apply_replan(progress, tasks, revision, raw):
         changed[key] = task
 
     workflow = {"goal": data["goal"], "tasks": list({**tasks, **changed}.values())}
+    if "title" in data:
+        workflow["title"] = data["title"]
     _, updated, order = validate_workflow(workflow)
     covered = set().union(*(task_ancestors(updated, key) for key in updated if updated[key].get("review")))
     missing = [key for key in changed if changed[key]["role"] == "engineer" and key not in covered]
@@ -1332,6 +1405,7 @@ def apply_replan(progress, tasks, revision, raw):
     workflow_path(progress.path.parent, data).write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n",
                                                          encoding="utf-8")
     progress.set_tasks(updated, [key for key in order if key in changed], preserve=True)
+    plan.pop("error", None)
     plan.update(state="applied", tasks=list(changed))
     progress.event("ld", None, "completed", "已更新任务计划 · " + "、".join(changed))
     reconcile(progress, updated)
@@ -1345,7 +1419,16 @@ def host_replan(run_dir, revision, artifact):
         _, tasks, _ = load_workflow(workflow_path(progress.path.parent, progress.data))
         if artifact is None:
             return replan_assignment(progress, tasks)
-        return apply_replan(progress, tasks, revision, artifact.read_text(encoding="utf-8"))
+        try:
+            return apply_replan(progress, tasks, revision, artifact.read_text(encoding="utf-8"))
+        except ValueError as error:
+            plan = pending_replan(progress.data)
+            if not (replan_ready(progress.data) and plan["revision"] == revision):
+                raise
+            failure = error
+            plan["error"] = str(error)
+            progress.event("ld", None, "blocked", "新计划校验未通过 · " + str(error))
+    raise failure
 
 
 def execute_live(tasks, order, executor, progress):
@@ -1542,7 +1625,7 @@ def revise_decision(progress, tasks, key, reason, content):
     if not result:
         raise ValueError("Replacement result must not be empty")
     if tasks[task_id].get("review"):
-        validate_review(result, tasks[task_id]["acceptance"])
+        validate_review(result, tasks[task_id]["acceptance"], visual=requires_visual_review(tasks, task_id))
     keys = [task_id, *affected_tasks(tasks, task_id)]
     reset_tasks(progress, tasks, keys)
     job = progress.data["tasks"][task_id]
@@ -1632,8 +1715,8 @@ def control_run(run_dir, request):
         elif action == "resume":
             if not data.pop("paused", None):
                 raise ValueError("Run is not paused")
-            if plan := pending_replan(data):
-                plan.pop("error", None)
+            if (plan := pending_replan(data)) and plan.pop("error", None):
+                plan.pop("started", None)
         elif action == "intervene":
             if not data.get("paused"):
                 raise ValueError("Pause the run before intervening")
@@ -1646,6 +1729,8 @@ def control_run(run_dir, request):
                 data.setdefault("instructions", []).append({"from": start, "reason": reason})
                 if plan := pending_replan(data):
                     plan["revision"] += 1
+                    plan.pop("started", None)
+                    plan.pop("error", None)
             else:
                 pending = pending_replan(data)
                 revision = data.get("replan", {}).get("revision", 0) + 1
@@ -1897,7 +1982,7 @@ def main():
             executor = Executor(workspace, config["model"],
                                 Path(config["runner"]) if config["runner"] else None)
             with live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser,
-                                cloud_origin=args.dashboard_origin):
+                                cloud_origin=args.dashboard_origin, project=run_dashboard_project(progress.data)):
                 return run_live(None, None, executor, progress, reopen=True, refresh_skills=True)
         if human_action:
             request = {"action": human_action, "reason": args.reason, "decisions": args.decision,
@@ -1968,8 +2053,10 @@ def main():
             print(json.dumps(result, ensure_ascii=False))
             return 0
 
+        workflow = None
         if args.goal is None:
-            goal, tasks, order = load_workflow(args.workflow)
+            workflow = json.loads(args.workflow.read_text(encoding="utf-8"))
+            goal, tasks, order = validate_workflow(workflow)
         else:
             goal, tasks, order = args.goal.strip(), {}, ()
         executor = None
@@ -2001,13 +2088,19 @@ def main():
             registry = project_registry(workspace)
             import_project_runs(workspace, registry, args.output_dir)
             register_run(registry, run_dir)
-        if args.workflow is not None:
-            workflow = {"goal": goal, "tasks": list(tasks.values())}
-            write_json(run_dir / "workflow.json", workflow)
+        if workflow is not None:
+            if "title" in workflow:
+                progress.data["title"] = workflow["title"].strip()
+                progress.save()
+            saved_workflow = {"goal": goal, "tasks": list(tasks.values())}
+            if "title" in progress.data:
+                saved_workflow["title"] = progress.data["title"]
+            write_json(run_dir / "workflow.json", saved_workflow)
         print(f"Mode: {'live' if args.live else 'offline demo'}", flush=True)
         print(f"Run output: {run_dir.resolve()}", flush=True)
         board = live_dashboard(run_dir, args.port, control=control_run, open_browser=args.open_browser,
-                               cloud_origin=args.dashboard_origin) if args.live else nullcontext()
+                               cloud_origin=args.dashboard_origin,
+                               project=run_dashboard_project(progress.data)) if args.live else nullcontext()
         with board:
             if args.live:
                 return run_live(tasks if args.goal is None else None, order, executor, progress, refresh_skills=True)

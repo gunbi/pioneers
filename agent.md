@@ -36,12 +36,15 @@
 新运行启动、CLI 用 `--continue RUN_DIR` 续跑，或宿主用 `--dashboard RUN_DIR` 重新打开已有运行时，Pioneers 会按能力清单刷新全部开源 Skill 来源。宿主重新启动后，等看板可访问再领取新任务。
 
 1. LD 按 [workflow.schema.json](workflow.schema.json) 拆出工作计划，或用 CLI 的 `--goal` 生成。以满足验收标准后的最短交付时间为目标。先安排会阻塞多个下游的决定与共享契约；`depends_on` 只列开工前必要的产物。让可独立修改、验证和交接的任务尽早并行。共享契约确定后，前端可用 Mock 开发，QA 可同时准备验收。交接成本高的轻量任务由一名工程师端到端完成。多人修改同一项目时明确各自范围、隔离方式和集成负责人。每项实现任务安排下游独立 QA，实际验收任务标记 `review: true`。
+   - 给本轮迭代填写简短的单行 `title`，用于运行看板。将完整需求、范围与约束保留在 `goal`。
    - 涉及共享契约、默认值或灰度、旧数据或并行写入、共享资源、权限及跨模块合入的任务，选择 `change-impact-preflight`。需要绑定实际交付版本的实现与独立验收任务，选择 `verifiable-delivery-evidence`。可局部修复并定向复验的任务，可参照 [单模块缺陷修复示例](examples/small-fix.json)。
-   - 新建或重做关键页面、导航或用户动线时，让 PM 或工程师选择 `product-experience-design`，交付用户任务、关键布局、状态和验收场景。跨页面决策先安排设计交接，边界清楚的简单任务可由工程师先设计再实现。QA 可用同一技能核对动线。设计和实现分开时，将二者都列为 QA 的直接依赖。需要结合访谈、反馈或行为数据研究跨阶段旅程时，PM 按需选择 `customer-journey-mapping`。
+   - 新页面、整页改版或关键动线变更先安排只读设计，并为设计角色选择 `product-experience-design`，QA 按需选择同一能力。交付可核对的设计图、页面布局、导航与图标、重点状态、交互和窄屏规则。实现任务用 `ui_design` 列出设计任务 ID，同时把它们列入 `depends_on`，按现有流程等待设计放行。独立 QA 直接依赖设计和实现。边界清楚的局部小修可由工程师先写预期表现，再实现和自测。
+   - 设计和开发可使用 [已有项目 UI 改版示例](examples/existing-project-redesign.json)。有访谈、反馈或行为数据需要归纳时，PM 按需选择 `customer-journey-mapping`。
 2. 有可用运行器时启动 `pioneers.py ... --live`，由 CLI 派工。使用宿主原生 Agent 时，优先复用项目看板，用 `--host-start WORKFLOW --workspace PROJECT --register-only` 登记新迭代。JSON 返回 `run_dir`、`project_dashboard_url` 和 `project_run_url`。项目看板不可用时，可用 `--dashboard RUN_DIR` 启动单轮看板。看板停止后，先恢复可访问入口再领取任务。
 3. 宿主协调者用 `--host-ready RUN_DIR` 查询 `ready`、`active` 和 `waiting`。有成员容量时，同批领取独立的任务并优先较长的依赖链。领取用 `--host-claim RUN_DIR --task TASK_ID --member MEMBER_ID --member-name DISPLAY_NAME`。若领取因写入冲突被阻塞，等关联任务交接后重查队列。领取成功后交给执行端返回的提示、角色、工作目录、分支、复杂度和回报方式。每次产物放行、审批通过、恢复或退回后重查队列。没有并发能力的宿主按队列顺序执行。
 4. 宿主协调者或执行端使用 `--host-report` 回写里程碑、阻塞和完成情况。工作流用 `write_paths` 声明确切写入路径，未知范围按整个项目安排。Pioneers 在干净且已提交的 Git 项目上自动分配工作区及分支。工程师在返回的分支本地提交后回报，将测试证据写到运行目录或项目外的交付文件。需要接续代码的任务用 `depends_on`，并行修复安排下游集成及独立 QA。集成工作区领取时会合入相应依赖的已交接提交。最后向用户提供集成分支、工作区和验证结果。
 5. QA 用 [review.schema.json](review.schema.json) 逐项报告验收证据。实现问题用 `changes_requested` 和 `repair_task` 退回。Pioneers 会重新排队实现任务和受影响的下游，保留上一轮证据。领取后按照返回的 `attempt` 上报修复和复验。需求歧义交回产品负责人，环境、依赖或证据缺失交回 LD。
+   - UI 还原验收用同一数据场景和视口，把确认的设计稿与候选版本的真实浏览器截图对照，核对布局、视觉层级、图标语义和操作路径。可接受的字体渲染或少量像素差异写进报告。关键偏差退回实现，或走设计确认后更新验收基线。通过时在 `visual_evidence` 附设计稿、实际截图、视口和场景。浏览器不可用或缺少截图时用 `blocked`，把相关项标为 `unverified`。
 6. 目标需要发布时，启动运行时加 `--require-release`。验收通过后，由 LD 通过 `--release` 登记开始、结果和真实访问地址。只有发布成功后，看板才显示「已发布」。
 7. 在计划里标记重大架构和重要功能方案的 `impact`，先形成只读方案再交下游。高成本实施标 `costly_change`。对外发送、发布、付款、权限变更、删除等操作用独立 `effect` 任务。前置产物齐备后由人授权执行范围。
 8. 每次角色提交产物后，宿主把回报里的 `judgment` 交给只读 LLM 判断，再用 `--judge` 回写。LLM 判断和人工确认未完成时，遵循 Pioneers 的依赖阻塞。只有实际用户操作才能调用 `--approve`、`--revise`、`--pause`、`--intervene` 或 `--resume`。收到暂停信号时，停止领取新任务，并收集已开始任务的回报。

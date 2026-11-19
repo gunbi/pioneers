@@ -1,6 +1,7 @@
 {
   "type": "object",
   "properties": {
+    "title": {"type": "string", "minLength": 1, "maxLength": 48},
     "goal": {"type": "string"},
     "tasks": {
       "type": "array",
@@ -11,6 +12,7 @@
           "role": {"enum": ["ld", "pm", "engineer", "qa"]},
           "prompt": {"type": "string"},
           "depends_on": {"type": "array", "items": {"type": "string"}},
+          "ui_design": {"type": ["array", "null"], "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
           "write_paths": {"type": "array", "items": {"type": "string"}},
           "skills": {"type": "array", "items": {"type": "string"}},
           "tools": {"type": "array", "items": {"type": "string"}},
