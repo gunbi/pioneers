@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from queue import Empty, Queue
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -1584,6 +1585,67 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
         return report_task(progress, tasks, task_id, state, activity, result, attempt)
 
 
+HOST_EXECUTOR_STOP_GRACE_SECONDS = 2
+
+
+def stop_host_executor(process):
+    if os.name == "nt":
+        if process.poll() is None:
+            process.kill()
+        return
+
+    # The executor is the leader of a group created by this invocation.
+    # Its children may still be alive after the command has returned.
+    def signal_group(signum):
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            return False
+        return True
+
+    if not signal_group(signal.SIGTERM):
+        return
+    deadline = time.monotonic() + HOST_EXECUTOR_STOP_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        process.poll()
+        if not signal_group(0):
+            return
+        time.sleep(0.05)
+    signal_group(signal.SIGKILL)
+
+
+def supervise_host_executor(command, workspace, renew):
+    active = False
+    requested = None
+
+    def interrupt(signum, _frame):
+        nonlocal requested
+        requested = signum
+        if active:
+            raise SystemExit(128 + signum)
+
+    previous = {signum: signal.signal(signum, interrupt) for signum in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        with subprocess.Popen(command, cwd=workspace, start_new_session=os.name != "nt") as process:
+            try:
+                active = True
+                if requested is not None:
+                    raise SystemExit(128 + requested)
+                while True:
+                    try:
+                        code = process.wait(timeout=HOST_LEASE_SECONDS / 3)
+                        return code if code >= 0 else 128 - code
+                    except subprocess.TimeoutExpired:
+                        if process.poll() is None:
+                            renew()
+            finally:
+                active = False
+                stop_host_executor(process)
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def execute_host(run_dir, task_id, attempt, command):
     run_dir = run_dir.resolve(strict=True)
     progress = Progress.open(run_dir)
@@ -1596,22 +1658,15 @@ def execute_host(run_dir, task_id, attempt, command):
     def renew():
         update_host(run_dir, task_id, "running", None, None, attempt)
 
-    renew()
-    with subprocess.Popen(command, cwd=workspace) as process:
+    with sqlite3.connect(run_dir / f"executor-{task_id}-{attempt}.db", timeout=0) as lock:
         try:
-            while True:
-                try:
-                    code = process.wait(timeout=HOST_LEASE_SECONDS / 3)
-                    return code if code >= 0 else 128 - code
-                except subprocess.TimeoutExpired:
-                    if process.poll() is None:
-                        renew()
-        finally:
-            if process.poll() is None:
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
+            lock.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as error:
+            if str(error) == "database is locked":
+                raise ValueError(f"An executor is already active for task {task_id}, attempt {attempt}") from error
+            raise
+        renew()
+        return supervise_host_executor(command, workspace, renew)
 
 
 def handle_judgment(run_dir, key, task_id, attempt, artifact):

@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import signal
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -100,6 +101,53 @@ class ApprovalTest(unittest.TestCase):
     def expire(self, key):
         with Progress.locked(self.run_dir) as current:
             current.data["tasks"][key]["lease_expires_at"] = time.time() - 1
+
+    @unittest.skipIf(os.name == "nt", "requires POSIX process groups")
+    def test_host_exec_cleans_owned_children_on_exit_and_interrupt(self):
+        self.host([self.task("normal"), self.task("interrupted")])
+        worker = self.root / "fixture.py"
+        worker.write_text(
+            "from pathlib import Path\n"
+            "import socket, subprocess, sys, time\n"
+            "mode, address = sys.argv[1:]\n"
+            "address = Path(address)\n"
+            "if mode == 'child':\n"
+            "    with socket.socket() as server:\n"
+            "        server.bind(('127.0.0.1', 0))\n"
+            "        server.listen()\n"
+            "        address.write_text(str(server.getsockname()[1]))\n"
+            "        time.sleep(10)\n"
+            "else:\n"
+            "    child = subprocess.Popen([sys.executable, __file__, 'child', str(address)])\n"
+            "    while not address.is_file() and child.poll() is None:\n"
+            "        time.sleep(.02)\n"
+            "    if mode == 'interrupted':\n"
+            "        time.sleep(10)\n",
+            encoding="utf-8",
+        )
+        for task_id in ("normal", "interrupted"):
+            with self.subTest(task=task_id):
+                self.claim(task_id)
+                address = self.root / (task_id + ".port")
+                command = ("--host-exec", self.run_dir, "--task", task_id, "--attempt", 1,
+                           "--exec-command", sys.executable, worker, task_id, address)
+                process = subprocess.Popen([*CLI, *map(str, command)], env=OFFLINE_ENV,
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                self.addCleanup(self.stop_host, process)
+                if task_id == "interrupted":
+                    deadline = time.monotonic() + 3
+                    while not address.is_file() and process.poll() is None and time.monotonic() < deadline:
+                        time.sleep(.02)
+                    with socket.create_connection(("127.0.0.1", int(address.read_text())), timeout=1):
+                        pass
+                    error = self.cli(*command, code=1)
+                    self.assertIn("An executor is already active", error)
+                    process.terminate()
+                stdout, stderr = process.communicate(timeout=5)
+                expected = 0 if task_id == "normal" else 128 + signal.SIGTERM
+                self.assertEqual(process.returncode, expected, stdout + stderr)
+                with self.assertRaises(ConnectionRefusedError):
+                    socket.create_connection(("127.0.0.1", int(address.read_text())), timeout=1)
 
     def test_host_recovery_fences_old_attempt_and_keeps_worktree(self):
         project = self.git_project()
