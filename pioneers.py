@@ -1601,6 +1601,12 @@ def stop_host_executor(process):
             os.killpg(process.pid, signum)
         except ProcessLookupError:
             return False
+        except PermissionError:
+            # macOS can deny the existence probe once the terminated children
+            # are reparented. A real signal failure still reaches the host.
+            if signum != 0:
+                raise
+            return False
         return True
 
     if not signal_group(signal.SIGTERM):
