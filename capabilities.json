@@ -161,6 +161,11 @@
       "path": "skills/frontend-design/SKILL.md",
       "sources": [["anthropics/skills", "skills/frontend-design/SKILL.md"]]
     },
+    "chrome-extensions": {
+      "description": "开发和验证 Manifest V3 Chrome 扩展，覆盖扩展 API、权限、调试与商店发布准备。",
+      "path": "skills/chrome-extensions/SKILL.md",
+      "sources": [["GoogleChrome/modern-web-guidance", "skills/chrome-extensions/SKILL.md", "64a6d708f5a43f2cd3fde5d4d7db3905ba1bdf65"]]
+    },
     "webapp-testing": {
       "description": "用 Python Playwright 验证 Web 应用，收集截图和浏览器日志。",
       "path": "skills/webapp-testing/SKILL.md",
@@ -218,13 +223,13 @@
     "pm": {"skills": ["requirements-design", "product-experience-design", "customer-journey-mapping"], "mcp": {"pioneers_github": ["read"]}},
     "engineer": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "change-integration", "test-engineering", "aliyun-ecs-container-deployment", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit", "existing-ui-redesign"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "chrome-extensions", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "change-integration", "test-engineering", "aliyun-ecs-container-deployment", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit", "existing-ui-redesign"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
     "ui": {"skills": ["frontend-design", "product-experience-design", "existing-ui-audit"], "mcp": {"pioneers_playwright": ["test"]}},
     "frontend": {
       "tools": ["architecture_check", "frontend_html_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "frontend-design", "webapp-testing", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit", "existing-ui-redesign"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "frontend-design", "webapp-testing", "chrome-extensions", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit", "existing-ui-redesign"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
     "backend": {
@@ -242,7 +247,7 @@
     },
     "qa": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["code-review", "webapp-testing", "acceptance-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "test-engineering", "aliyun-ecs-container-deployment", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit"],
+      "skills": ["code-review", "webapp-testing", "chrome-extensions", "acceptance-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "test-engineering", "aliyun-ecs-container-deployment", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit"],
       "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     }
   }

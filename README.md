@@ -117,11 +117,12 @@ python3 pioneers.py --mcp-config engineer --workspace /path/to/project
 
 - `frontend-design` 由交付工程师在设计 Web 界面时使用。
 - `webapp-testing` 由交付工程师和 QA 按需使用，运行 Python 测试脚本时需要 Python Playwright 及对应浏览器。
+- `chrome-extensions` 供开发和 QA 按任务加载，覆盖 Manifest V3、扩展调试和 Chrome Web Store 发布准备。保留 [Google Chrome 上游技能](https://github.com/GoogleChrome/modern-web-guidance/blob/64a6d708f5a43f2cd3fde5d4d7db3905ba1bdf65/skills/chrome-extensions/SKILL.md) 的参考文档和 Apache-2.0 许可证。
 - `ios-development` 和 `android-development` 由交付工程师或 QA 按任务加载，旧版 iOS 与 Android 兼容角色也可以加载对应能力。
 - `wechat-miniprogram-development` 由交付工程师或 QA 按任务加载，覆盖小程序实现、接口联调和独立验证。微信开发者工具和真机由宿主提供。
 - `requirements-design` 供 PM 定义需求和验收条件，`acceptance-testing` 供 QA 独立验证。
 
-两个 Skill 来自 [上游仓库的固定版本](https://github.com/anthropics/skills/tree/1780c5e5a552fd4d1c9d6a7b0cab26b0c2bef064/skills)，在各自的目录保留了许可证、可用脚本和示例。
+`frontend-design` 和 `webapp-testing` 来自 [Anthropic 上游仓库的固定版本](https://github.com/anthropics/skills/tree/1780c5e5a552fd4d1c9d6a7b0cab26b0c2bef064/skills)，在各自的目录保留了许可证、可用脚本和示例。
 
 两份 Anthropic 文件是仓库里的基础版本。新增或修改开源 Skill 引用时，在本地 `SKILL.md` 注明来源，并将 GitHub 仓库和 Markdown 路径登记到 [capabilities.json](capabilities.json) 的 `skills.<id>.sources`。现有刷新逻辑会自动包含新增条目。
 

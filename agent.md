@@ -22,6 +22,7 @@
 - 工作流的 `tools` 给出任务选用的 Tool，`skills` 给出需要预先提供的 Skill。做任务时也可按需读取角色获配的 `SKILL.md`。
 - 跨端或跨模块时，用架构设计 Skill 先确定职责、接口和验证方式，再把契约交给各开发角色。实现与重构时用编程设计 Skill 划分状态和副作用，独立核对实际变更时用代码评审 Skill。
 - 根据任务选择新增能力。构建失败、行为异常或 QA 退回后用 `systematic-debugging`。并行实现汇合或跨模块联调用 `change-integration`。新增关键行为或沉淀缺陷回归测试时用 `test-engineering`，独立验收任务仍按验收条件逐项给出证据。
+- Chrome 扩展开发和独立验证任务选择 `chrome-extensions`，按涉及的 Manifest V3 能力查阅该 Skill 随附的参考资料。
 - 有终端时，使用 [README.md](README.md) 的 `--run-tool` 命令运行角色获配的检查。保留工具返回的结果作为交接证据。平台的原生工具和访问权限仍由平台管理。
 - 连接 Git、远端仓库或浏览器 MCP 时，使用 `--mcp-config ROLE --workspace PATH` 获取该角色的配置。执行端负责启用其中的工具白名单和认证。Git 写操作分配给开发角色，远端仓库操作为只读。
 
