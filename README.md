@@ -118,6 +118,7 @@ python3 pioneers.py --mcp-config engineer --workspace /path/to/project
 - `frontend-design` 由交付工程师在设计 Web 界面时使用。
 - `webapp-testing` 由交付工程师和 QA 按需使用，运行 Python 测试脚本时需要 Python Playwright 及对应浏览器。
 - `chrome-extensions` 供开发和 QA 按任务加载，覆盖 Manifest V3、扩展调试和 Chrome Web Store 发布准备。保留 [Google Chrome 上游技能](https://github.com/GoogleChrome/modern-web-guidance/blob/64a6d708f5a43f2cd3fde5d4d7db3905ba1bdf65/skills/chrome-extensions/SKILL.md) 的参考文档和 Apache-2.0 许可证。
+- 桌面应用开发和 QA 按技术栈选择 `desktop-framework-electron`、`tauri-app-builder`、`macos-spm-app-packaging` 或 `winui-dev-workflow`。Windows 原生开发可按任务补充 `winui-design`、`winui-code-review`、`winui-ui-testing`、`winui-packaging`、`winui-setup` 和 `winui-wpf-migration`。各目录保留上游参考资料和许可证。
 - `ios-development` 和 `android-development` 由交付工程师或 QA 按任务加载，旧版 iOS 与 Android 兼容角色也可以加载对应能力。
 - `wechat-miniprogram-development` 由交付工程师或 QA 按任务加载，覆盖小程序实现、接口联调和独立验证。微信开发者工具和真机由宿主提供。
 - `requirements-design` 供 PM 定义需求和验收条件，`acceptance-testing` 供 QA 独立验证。
@@ -126,7 +127,7 @@ python3 pioneers.py --mcp-config engineer --workspace /path/to/project
 
 两份 Anthropic 文件是仓库里的基础版本。新增或修改开源 Skill 引用时，在本地 `SKILL.md` 注明来源，并将 GitHub 仓库和 Markdown 路径登记到 [capabilities.json](capabilities.json) 的 `skills.<id>.sources`。现有刷新逻辑会自动包含新增条目。
 
-新建宿主运行、启动真实 CLI、用 `--continue RUN_DIR` 续跑 CLI，或用 `--dashboard RUN_DIR` 重开宿主运行的看板时，都会按当前清单检查上游，把刷新结果写入运行目录的 `skill-sources.json`。`sources` 条目格式为 `[仓库, Markdown 路径, 可选分支]`，默认分支为 `main`。新派发的任务使用此次刷新后的版本，已领取的任务继续使用派工时收到的内容。浏览器刷新页面只会更新看板状态。
+新建宿主运行、启动真实 CLI、用 `--continue RUN_DIR` 续跑 CLI，或用 `--dashboard RUN_DIR` 重开宿主运行的看板时，都会按当前清单检查上游，把刷新结果写入运行目录的 `skill-sources.json`。`sources` 条目格式为 `[仓库, Markdown 路径, 可选分支或提交]`，默认分支为 `main`。新派发的任务使用此次刷新后的版本，已领取的任务继续使用派工时收到的内容。浏览器刷新页面只会更新看板状态。
 
 角色加载本地 Skill 后会看到选中能力的上游摘录。本地约定、脚本和权限优先。刷新只读取 Markdown。网络受限时使用最近的缓存，首次离线继续使用本地正文。可设置 `PIONEERS_SKILLS_OFFLINE=1` 直接跳过网络刷新。离线演练不联网。
 

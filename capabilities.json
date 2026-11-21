@@ -161,6 +161,56 @@
       "path": "skills/frontend-design/SKILL.md",
       "sources": [["anthropics/skills", "skills/frontend-design/SKILL.md"]]
     },
+    "desktop-framework-electron": {
+      "description": "开发和验证跨平台 Electron 应用，覆盖主进程、渲染、IPC、原生 API、打包和更新。",
+      "path": "skills/desktop-framework-electron/SKILL.md",
+      "sources": [["agents-inc/skills", "dist/plugins/desktop-framework-electron/skills/desktop-framework-electron/SKILL.md", "845a1f2833eedc494bb82e3172710c06cab547a1"]]
+    },
+    "tauri-app-builder": {
+      "description": "开发和验证 Tauri v2 桌面应用，覆盖 Rust 与前端集成、窗口、系统集成、安全和打包。",
+      "path": "skills/tauri-app-builder/SKILL.md",
+      "sources": [["pinkpixel-dev/tauri-skills", "skills/tauri-app-builder/SKILL.md", "99697aa3006bec7d65bb2a8f8be0d294407186da"]]
+    },
+    "macos-spm-app-packaging": {
+      "description": "搭建、构建和验证原生 SwiftPM macOS 应用，覆盖应用包、签名和公证。",
+      "path": "skills/macos-spm-app-packaging/SKILL.md",
+      "sources": [["Dimillian/Skills", "macos-spm-app-packaging/SKILL.md", "05ba982bfeb0d77d3c97d4542b0ee15034d05f84"]]
+    },
+    "winui-dev-workflow": {
+      "description": "搭建、构建和调试基于 Windows App SDK 的 WinUI 3 应用。",
+      "path": "skills/winui/winui-dev-workflow/SKILL.md",
+      "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-dev-workflow/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
+    },
+    "winui-design": {
+      "description": "设计和核对 WinUI 3 的 XAML 布局、控件、主题和可访问性。",
+      "path": "skills/winui/winui-design/SKILL.md",
+      "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-design/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
+    },
+    "winui-ui-testing": {
+      "description": "在 Windows 上用 UI Automation 验证桌面交互和窗口状态。",
+      "path": "skills/winui/winui-ui-testing/SKILL.md",
+      "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-ui-testing/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
+    },
+    "winui-code-review": {
+      "description": "审查 WinUI 3 XAML 和 C# 实现，核对正确性、可访问性和性能。",
+      "path": "skills/winui/winui-code-review/SKILL.md",
+      "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-code-review/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
+    },
+    "winui-packaging": {
+      "description": "准备和验证 WinUI 3 的应用包、签名和 MSIX 发布产物。",
+      "path": "skills/winui/winui-packaging/SKILL.md",
+      "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-packaging/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
+    },
+    "winui-setup": {
+      "description": "检查 WinUI 3 和 Windows App SDK 的开发与测试环境。",
+      "path": "skills/winui/winui-setup/SKILL.md",
+      "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-setup/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
+    },
+    "winui-wpf-migration": {
+      "description": "规划和验证从 WPF 到 WinUI 3 的迁移。",
+      "path": "skills/winui/winui-wpf-migration/SKILL.md",
+      "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-wpf-migration/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
+    },
     "chrome-extensions": {
       "description": "开发和验证 Manifest V3 Chrome 扩展，覆盖扩展 API、权限、调试与商店发布准备。",
       "path": "skills/chrome-extensions/SKILL.md",
@@ -223,13 +273,13 @@
     "pm": {"skills": ["requirements-design", "product-experience-design", "customer-journey-mapping"], "mcp": {"pioneers_github": ["read"]}},
     "engineer": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "chrome-extensions", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "change-integration", "test-engineering", "aliyun-ecs-container-deployment", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit", "existing-ui-redesign"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "backend-development", "frontend-design", "webapp-testing", "chrome-extensions", "desktop-framework-electron", "tauri-app-builder", "macos-spm-app-packaging", "winui-dev-workflow", "winui-design", "winui-ui-testing", "winui-code-review", "winui-packaging", "winui-setup", "winui-wpf-migration", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "change-integration", "test-engineering", "aliyun-ecs-container-deployment", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit", "existing-ui-redesign"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
     "ui": {"skills": ["frontend-design", "product-experience-design", "existing-ui-audit"], "mcp": {"pioneers_playwright": ["test"]}},
     "frontend": {
       "tools": ["architecture_check", "frontend_html_check"],
-      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "frontend-design", "webapp-testing", "chrome-extensions", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit", "existing-ui-redesign"],
+      "skills": ["architecture-design", "engineering-design", "code-review", "frontend-development", "frontend-design", "webapp-testing", "chrome-extensions", "desktop-framework-electron", "tauri-app-builder", "macos-spm-app-packaging", "winui-dev-workflow", "winui-design", "winui-ui-testing", "winui-code-review", "winui-packaging", "winui-setup", "winui-wpf-migration", "systematic-debugging", "change-integration", "test-engineering", "change-impact-preflight", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit", "existing-ui-redesign"],
       "mcp": {"pioneers_git": ["read", "write"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     },
     "backend": {
@@ -247,7 +297,7 @@
     },
     "qa": {
       "tools": ["architecture_check", "frontend_html_check", "backend_api_check"],
-      "skills": ["code-review", "webapp-testing", "chrome-extensions", "acceptance-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "test-engineering", "aliyun-ecs-container-deployment", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit"],
+      "skills": ["code-review", "webapp-testing", "chrome-extensions", "desktop-framework-electron", "tauri-app-builder", "macos-spm-app-packaging", "winui-dev-workflow", "winui-design", "winui-ui-testing", "winui-code-review", "winui-packaging", "winui-setup", "winui-wpf-migration", "acceptance-testing", "ios-development", "android-development", "wechat-miniprogram-development", "systematic-debugging", "test-engineering", "aliyun-ecs-container-deployment", "verifiable-delivery-evidence", "product-experience-design", "existing-ui-audit"],
       "mcp": {"pioneers_git": ["read"], "pioneers_github": ["read"], "pioneers_playwright": ["test"]}
     }
   }
