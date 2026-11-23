@@ -43,6 +43,19 @@ def preapproval_required(task):
     return bool(task.get("effect") or task.get("impact") == "costly_change")
 
 
+def can_adopt_merged(data, tasks, task_id):
+    task = tasks[task_id]
+    job = data["tasks"][task_id]
+    return (data["mode"] == "host" and data["state"] == "running" and bool(data.get("git_base"))
+            and job["state"] in ("pending", "recovery_required")
+            and writes_workspace(task) and not task.get("review") and not preapproval_required(task)
+            and not job.get("authorization") and not waiting_on(data, task)
+            and not write_conflicts(data, tasks, task_id)
+            and not any(operation["kind"] == "external"
+                        for execution in job.get("execution", {}).values()
+                        for operation in execution.get("operations", {}).values()))
+
+
 def pending_replan(data):
     plan = data.get("replan")
     return plan if plan and plan["state"] == "pending" else None
@@ -110,6 +123,8 @@ def dispatch_summary(data, tasks):
             active.append({**item, "member": job.get("member"), "decision": job.get("decision"),
                            "branch": job.get("git", {}).get("branch"), "lease_expires_at": job.get("lease_expires_at")})
         elif job["state"] in ("pending", "awaiting_confirmation", "blocked", "recovery_required"):
+            if can_adopt_merged(data, tasks, key):
+                item["can_adopt_merged"] = True
             blockers = claim_blockers(data, tasks, key)
             if job["state"] == "recovery_required":
                 item.update(branch=job.get("git", {}).get("branch"), member=job.get("member"))

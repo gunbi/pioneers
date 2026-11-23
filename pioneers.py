@@ -25,7 +25,7 @@ from continuity import (
 from progress import Progress, artifact_name, codex_activity, print_board, show_progress
 from dashboard import announce, dashboard_is_running, live_dashboard, preview_origin, request_browser_open, serve_dashboard
 from dispatch import (
-    claim_blockers, design_only, dispatch_can_continue, dispatch_summary, path_is_within, pending_replan,
+    can_adopt_merged, claim_blockers, design_only, dispatch_can_continue, dispatch_summary, path_is_within, pending_replan,
     preapproval_required, replan_ready, waiting_on, workflow_path, writes_workspace,
 )
 from iterations import latest_delivery, project_snapshot, register_run
@@ -1157,8 +1157,10 @@ def task_worktree(progress, tasks, task_id):
     attempt = job.get("attempt", 1)
     writing = writes_workspace(tasks[task_id])
     ancestors = task_ancestors(tasks, task_id)
-    inputs = [record["git"]["commit"] for key, record in data["tasks"].items() if key in ancestors
-              and record["state"] == "completed" and record.get("git", {}).get("commit")]
+    checkouts = [record["git"] for key, record in data["tasks"].items() if key in ancestors
+                 and record["state"] == "completed" and record.get("git", {}).get("commit")]
+    adopted = {checkout["commit"] for checkout in checkouts if checkout.get("adopted")}
+    inputs = [checkout["commit"] for checkout in checkouts]
     previous = job.get("git", {})
     repair_input = (previous.get("commit") or previous.get("repair_input")) if writing and job.get("feedback") else None
     if repair_input:
@@ -1182,13 +1184,38 @@ def task_worktree(progress, tasks, task_id):
     else:
         target.parent.mkdir(parents=True, exist_ok=True)
         worktree_git(project, "worktree", "add", "-b", branch, str(target), data["git_base"])
-    for commit in dict.fromkeys(inputs):
-        worktree_git(target, "merge", "--no-edit", commit)
+    for commit in sorted(dict.fromkeys(inputs), key=lambda commit: commit not in adopted):
+        options = ("--ff",) if commit in adopted else ()
+        worktree_git(target, "merge", "--no-edit", *options, commit)
     revision = worktree_git(target, "rev-parse", "HEAD").stdout.strip()
     checkout = {"attempt": attempt, "branch": branch, "base": revision, "workspace": str(target)}
     if repair_input:
         checkout["repair_input"] = repair_input
     return str(target), checkout
+
+
+def changed_paths(workspace, base, commit):
+    changed = worktree_git(workspace, "diff", "--name-only", "--no-renames", "-z", base, commit, "--").stdout
+    return set(changed.split("\0")) - {""}
+
+
+def verify_write_paths(workspace, base, commit, scopes, *, dependencies=()):
+    if "." in scopes:
+        return
+    inherited = {}
+    for dependency in dict.fromkeys(dependencies):
+        for path in changed_paths(workspace, base, dependency):
+            inherited.setdefault(path, []).append(dependency)
+    outside = []
+    for path in sorted(changed_paths(workspace, base, commit) | inherited.keys()):
+        if any(path_is_within(path, scope) for scope in scopes):
+            continue
+        if any(worktree_git(workspace, "--literal-pathspecs", "diff", "--quiet", dependency, commit, "--", path,
+                            check=False).returncode == 0 for dependency in inherited.get(path, [])):
+            continue
+        outside.append(path)
+    if outside:
+        raise ValueError("Changes outside the assigned write paths: " + ", ".join(outside))
 
 
 def reported_commit(task, checkout):
@@ -1200,11 +1227,7 @@ def reported_commit(task, checkout):
     head = worktree_git(workspace, "rev-parse", "HEAD").stdout.strip()
     if worktree_git(workspace, "merge-base", "--is-ancestor", checkout["base"], head, check=False).returncode:
         raise ValueError("The task branch must retain its assigned base commit")
-    changed = worktree_git(workspace, "diff", "--name-only", "--no-renames", "-z", checkout["base"], head, "--").stdout
-    scopes = task.get("write_paths") or ["."]
-    outside = [path for path in changed.split("\0") if path and not any(path_is_within(path, scope) for scope in scopes)]
-    if outside:
-        raise ValueError("Changes outside the assigned write paths: " + ", ".join(outside))
+    verify_write_paths(workspace, checkout["base"], head, task.get("write_paths") or ["."])
     return head
 
 
@@ -1786,6 +1809,59 @@ def resolve_recovery(progress, tasks, request, reason):
     return {"task": task_id, "state": job["state"], "attempt": job["attempt"]}
 
 
+def adopt_merged_commit(progress, tasks, request, reason):
+    data = progress.data
+    task_id, attempt = request.get("task"), request.get("attempt")
+    revision, content = request.get("commit"), request.get("content")
+    job = data["tasks"].get(task_id) if isinstance(task_id, str) else None
+    if not job or type(attempt) is not int or job.get("attempt", 1) != attempt:
+        raise ValueError("Adoption must match the current task and attempt")
+    if not can_adopt_merged(data, tasks, task_id):
+        raise ValueError("Choose an unassigned or interrupted implementation task with completed dependencies and no outstanding write conflicts or external actions")
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-fA-F]{7,64}", revision):
+        raise ValueError("Provide the Git commit SHA")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("Provide evidence for the merged commit and any remaining verification")
+
+    workspace = project_workspace(data.get("workspace"))
+    branch = worktree_git(workspace, "branch", "--show-current").stdout.strip()
+    if not branch:
+        raise ValueError("Check out the target project branch before adopting a commit")
+    commit = worktree_git(workspace, "rev-parse", "--verify", f"{revision}^{{commit}}").stdout.strip()
+
+    def includes(ancestor, descendant):
+        return worktree_git(workspace, "merge-base", "--is-ancestor", ancestor, descendant, check=False).returncode == 0
+
+    if not includes(commit, f"refs/heads/{branch}"):
+        raise ValueError(f"The commit is not merged into the checked-out project branch {branch}")
+    ancestors = task_ancestors(tasks, task_id)
+    if not includes(data["git_base"], commit):
+        raise ValueError("The merged commit must retain the run baseline")
+    dependencies = {key: data["tasks"][key].get("git", {}).get("commit") for key in sorted(ancestors)}
+    for key, dependency in dependencies.items():
+        if dependency and not includes(dependency, commit):
+            raise ValueError(f"The merged commit must contain the accepted commit for dependency {key}")
+
+    base = job.get("git", {}).get("base")
+    if base and includes(base, commit):
+        verify_write_paths(workspace, base, commit, tasks[task_id].get("write_paths") or ["."])
+    else:
+        base = data["git_base"]
+        verify_write_paths(workspace, base, commit, tasks[task_id].get("write_paths") or ["."],
+                           dependencies=[commit for commit in dependencies.values() if commit])
+
+    if job["state"] == "recovery_required" or job.get("continuity_from"):
+        job["recoveries"][-1]["executor_stopped"] = True
+    job.pop("lease_expires_at", None)
+    job["git"] = {"attempt": attempt, "branch": branch, "base": base,
+                  "workspace": str(workspace), "commit": commit, "adopted": True}
+    audit(progress, "adopt", reason, task=task_id, attempt=attempt, branch=branch, commit=commit)
+    result = f"已合入分支：{branch}\nGit 提交：{commit}\n接续原因：{reason}\n\n{content.strip()}"
+    judgment = stage_result(progress, tasks, task_id, result, "已登记合入提交，等待产物判断")
+    return {"task": task_id, "state": "judging", "run_state": data["state"],
+            "evidence": job["evidence"], "judgment": judgment}
+
+
 def control_run(run_dir, request):
     action = request.get("action")
     reason = request.get("reason")
@@ -1828,6 +1904,8 @@ def control_run(run_dir, request):
             raise ValueError(f"Cannot intervene while run is {data['state']}")
         if action == "recover":
             return resolve_recovery(progress, tasks, request, reason)
+        if action == "adopt":
+            return adopt_merged_commit(progress, tasks, request, reason)
         if action == "revise":
             content = request.get("content")
             if content is not None and not isinstance(content, str):
@@ -1930,6 +2008,7 @@ def main():
     action.add_argument("--host-heartbeat", type=Path, metavar="RUN_DIR", help="Renew the lease of a running host assignment.")
     action.add_argument("--host-exec", type=Path, metavar="RUN_DIR", help="Run a host executor with independent lease renewal.")
     action.add_argument("--recover", type=Path, metavar="RUN_DIR", help="Resolve an interrupted task after checking its previous executor.")
+    action.add_argument("--host-adopt", dest="adopt", type=Path, metavar="RUN_DIR", help="Adopt an implementation commit already merged into the project branch.")
     action.add_argument("--host-report", type=Path, metavar="RUN_DIR", help="Report work on a claimed task.")
     action.add_argument("--judge", type=Path, metavar="RUN_DIR", help="Fetch or submit a host LLM judgment.")
     action.add_argument("--replan", type=Path, metavar="RUN_DIR", help="Fetch or submit an LD workflow update in host mode.")
@@ -1963,7 +2042,8 @@ def main():
     parser.add_argument("--approver", help="Optional operator display name for --approve.")
     parser.add_argument("--from", dest="rerun_from", help="Rerun this task and its dependents while paused.")
     parser.add_argument("--recovery-checks", type=Path, help="JSON list of verified external operation outcomes for --recover.")
-    parser.add_argument("--artifact", type=Path, help="Deliverable to report or adopt during recovery.")
+    parser.add_argument("--artifact", type=Path, help="Deliverable or evidence file to report or adopt.")
+    parser.add_argument("--commit", help="Git commit SHA to adopt with --host-adopt.")
     parser.add_argument("--revision", type=int, help="Revision returned by --replan, required when submitting its plan.")
     parser.add_argument("--wait", type=int, metavar="SECONDS", help="With --host-ready, wait for actionable work or a terminal state.")
     parser.add_argument("--require-release", action="store_true", help="Wait for publication to finish after QA acceptance.")
@@ -2019,7 +2099,7 @@ def main():
         return 0
     project_view = args.project_dashboard or args.project_history
     viewing = project_view or any(value is not None for value in (args.status, args.watch, args.dashboard))
-    human_action = next((name for name in ("approve", "revise", "pause", "intervene", "resume", "recover")
+    human_action = next((name for name in ("approve", "revise", "pause", "intervene", "resume", "recover", "adopt")
                          if getattr(args, name) is not None), None)
     host_action = human_action or any(value is not None for value in (
         args.host_start, args.host_ready, args.host_claim, args.host_report, args.host_heartbeat, args.host_exec, args.host_checkpoint, args.release, args.judge, args.replan,
@@ -2032,6 +2112,10 @@ def main():
         parser.error("host claim and report require --task")
     if (args.host_heartbeat or args.host_checkpoint or args.recover) and (not args.task or not args.attempt or args.attempt < 1):
         parser.error("--host-heartbeat, --host-checkpoint and --recover require --task and a positive --attempt")
+    if args.adopt and (not args.task or not args.attempt or args.attempt < 1 or not args.commit or not args.artifact):
+        parser.error("--host-adopt requires --task, a positive --attempt, --commit and --artifact")
+    if args.commit is not None and not args.adopt:
+        parser.error("--commit requires --host-adopt")
     if args.host_exec and (not args.task or not args.attempt or args.attempt < 1 or not args.exec_command):
         parser.error("--host-exec requires --task, a positive --attempt and --exec-command COMMAND")
     if args.exec_command is not None and not args.host_exec:
@@ -2125,8 +2209,8 @@ def main():
         if human_action:
             request = {"action": human_action, "reason": args.reason, "decisions": args.decision,
                        "decision": (args.decision or [None])[0], "all": args.all, "from": args.rerun_from,
-                       "approver": args.approver, "task": args.task, "attempt": args.attempt}
-            if (args.revise or args.recover) and args.artifact:
+                       "approver": args.approver, "task": args.task, "attempt": args.attempt, "commit": args.commit}
+            if (args.revise or args.recover or args.adopt) and args.artifact:
                 request["content"] = args.artifact.read_text(encoding="utf-8")
             if args.recovery_checks:
                 request["checks"] = json.loads(args.recovery_checks.read_text(encoding="utf-8"))

@@ -149,6 +149,70 @@ class ApprovalTest(unittest.TestCase):
                 with self.assertRaises(ConnectionRefusedError):
                     socket.create_connection(("127.0.0.1", int(address.read_text())), timeout=1)
 
+    def test_adopt_merged_commit_preserves_judgment_and_qa(self):
+        project = self.git_project()
+        self.host([
+            self.task("part-a", role="engineer", write_paths=["module/a.txt"]),
+            self.task("part-b", role="engineer", write_paths=["module/b.txt"]),
+            self.task("integration", ["part-a", "part-b"], role="engineer", write_paths=["merge.txt"]),
+            self.task("qa", ["integration"], role="qa", review=True),
+        ], project)
+        commits = []
+        for part, file in (("part-a", "module/a.txt"), ("part-b", "module/b.txt")):
+            assignment = self.claim(part)
+            workspace = Path(assignment["workspace"])
+            (workspace / file).write_text(part, encoding="utf-8")
+            self.git(workspace, "add", file)
+            self.git(workspace, "commit", "-qm", part)
+            self.judge(self.submit(part, "提交 " + part))
+            commits.append(self.git(workspace, "rev-parse", "HEAD"))
+        self.artifact.write_text("合入后待独立复验", encoding="utf-8")
+
+        def adopt(commit, attempt=1):
+            return self.cli("--host-adopt", self.run_dir, "--task", "integration", "--attempt", attempt,
+                            "--commit", commit, "--artifact", self.artifact, "--reason", "已核对提交", code=1)
+
+        self.assertIn("not merged", adopt(commits[0]))
+        self.git(project, "merge", "--no-ff", "-m", "Manual merge part A", commits[0])
+        self.assertIn("dependency part-b", adopt(self.git(project, "rev-parse", "HEAD")))
+        self.git(project, "merge", "--no-ff", "-m", "Manual merge part B", commits[1])
+        self.claim("integration")
+        self.expire("integration")
+        self.cli("--host-ready", self.run_dir)
+
+        (project / "module/a.txt").write_text("unexpected change", encoding="utf-8")
+        self.git(project, "add", "module/a.txt")
+        self.git(project, "commit", "-qm", "out of scope")
+        self.assertIn("outside the assigned write paths", adopt(self.git(project, "rev-parse", "HEAD"), 2))
+        self.git(project, "revert", "--no-edit", "HEAD")
+        (project / "merge.txt").write_text("integrated", encoding="utf-8")
+        self.git(project, "add", "merge.txt")
+        self.git(project, "commit", "-qm", "verified merger")
+        merged = self.git(project, "rev-parse", "HEAD")
+        self.assertIn("current task and attempt", adopt(merged, 1))
+
+        url = self.started["dashboard_url"]
+        with urlopen(url + "dashboard-data.json", timeout=3) as response:
+            dispatch = json.load(response)["dispatch"]
+        self.assertTrue(next(row for row in dispatch["ready"] if row["task"] == "integration")["can_adopt_merged"])
+        body = {"action": "adopt", "task": "integration", "attempt": 2, "commit": merged,
+                "reason": "原执行已停止", "content": "已验证合入，后续需复验"}
+        request = Request(url + "human-action", data=json.dumps(body).encode(),
+                          headers={"Content-Type": "application/json", "Origin": url.rstrip("/")})
+        with urlopen(request, timeout=3) as response:
+            result = json.load(response)
+        self.assertEqual(result["state"], "judging")
+        with urlopen(url + "dashboard-data.json", timeout=3) as response:
+            snapshot = json.load(response)
+        self.assertEqual(snapshot["tasks"]["integration"]["git"]["commit"], merged)
+        self.assertTrue(snapshot["tasks"]["integration"]["git"]["adopted"])
+        self.assertIn("waiting for", self.claim("qa", code=1))
+        self.judge(result["judgment"])
+        self.assertEqual(self.state()["state"], "running")
+        qa = self.claim("qa")
+        self.assertEqual(qa["git"]["base"], merged)
+        self.assertEqual(self.git(Path(qa["workspace"]), "rev-parse", "HEAD"), merged)
+
     def test_host_recovery_fences_old_attempt_and_keeps_worktree(self):
         project = self.git_project()
         self.host([

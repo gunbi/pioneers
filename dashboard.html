@@ -398,8 +398,12 @@
           <label for="rerun-from">怎么处理这次调整</label>
           <select id="rerun-from"></select>
         </div>
+        <div id="merged-commit-field" hidden>
+          <label for="merged-commit">已合入的 Git 提交</label>
+          <input id="merged-commit" type="text" maxlength="64" pattern="[0-9a-fA-F]{7,64}" spellcheck="false" disabled>
+        </div>
         <div id="replacement-field" hidden>
-          <label for="replacement">替换产物内容（可选）</label>
+          <label id="replacement-label" for="replacement">替换产物内容（可选）</label>
           <textarea id="replacement" rows="4"></textarea>
         </div>
         <p id="dialog-feedback" class="notice error" role="alert"></p>
@@ -514,6 +518,12 @@
       const waiting = stage.state === "pending" && tasks[stage.task]?.depends_on.filter(dep => tasks[dep].state !== "completed");
       const activity = waiting && waiting.length ? "等待 " + waiting.join("、") : stage.activity;
       appendActivity(node, activity, stage.evidence);
+      const git = tasks[stage.task]?.git;
+      if (git?.attempt === stage.attempt && git.adopted) {
+        node.append(element("p", "已合入 " + git.branch + " · " + git.commit, "stage-meta"));
+      } else if (stage.role === "qa" && git?.attempt === stage.attempt && git.base) {
+        node.append(element("p", "验收版本 · " + git.base, "stage-meta"));
+      }
       for (const edge of incoming) {
         const source = stages.get(edge.from);
         node.append(note(source, edgeLabel(edge, source, stage) + " ↳ ", "incoming" + (edge.kind === "return" ? " return-line" : "")));
@@ -736,7 +746,7 @@
     const decisionLabels = {waiting:"待人工确认", judging:"等待 LLM 判断", approved:"人工已确认",
       auto:"LLM 已放行", superseded:"已被替换"};
     const decisionTones = {waiting:"awaiting_confirmation", judging:"judging", approved:"completed", auto:"completed"};
-    const actionLabels = {approve:"确认", revise:"修改决策", pause:"暂停", resume:"恢复", intervene:"介入", recover:"确认任务重跑"};
+    const actionLabels = {approve:"确认", revise:"修改决策", pause:"暂停", resume:"恢复", intervene:"介入", recover:"确认任务重跑", adopt:"接续合入提交"};
     const optionalActionReasons = {pause:"操作者暂停新任务", resume:"操作者允许领取新任务"};
     const decisionKinds = {result:"任务产物", effect:"执行授权", release:"发布授权"};
     let operatorData, operatorSnapshot, activeId, request, submitting = false, controlKey = "";
@@ -950,6 +960,7 @@
         pause:["暂停新任务？", "未开始的任务会等待。正在做的任务会继续执行并可回报。暂停后，你可以调整任务计划，或随时继续领取新任务。", "暂停新任务"],
         intervene:["调整任务计划", "", "交给 LD 更新计划"],
         recover:["确认重跑这项任务？", "请先确认旧执行端已停止，并核对残留修改和已经发生的外部操作。需要保留已有产物时，可从命令行提交已有证据。", "确认重跑"],
+        adopt:["接续合入提交", "请先确认原执行已经结束。提供已合入项目分支的提交、现有证据和仍需验证的内容。提交后会沿用产物判断和独立验收。", "登记合入提交"],
         resume:["继续领取新任务？", "满足依赖和审批条件的任务可以继续领取。", "继续领取新任务"],
       }[action];
       byId("dialog-title").textContent = title || settings[0];
@@ -964,7 +975,13 @@
       byId("action-form").reset();
       byId("dialog-feedback").textContent = "";
       byId("control-key-field").hidden = !operatorData.cloud_control || Boolean(controlKey);
-      byId("replacement-field").hidden = action !== "revise";
+      const adopting = action === "adopt";
+      byId("merged-commit-field").hidden = !adopting;
+      byId("merged-commit").disabled = !adopting;
+      byId("merged-commit").required = adopting;
+      byId("replacement-field").hidden = action !== "revise" && !adopting;
+      byId("replacement").required = adopting;
+      byId("replacement-label").textContent = adopting ? "交付证据与待验证项" : "替换产物内容（可选）";
       byId("rerun-field").hidden = action !== "intervene";
       byId("approver-field").hidden = action !== "approve";
       if (action === "intervene") {
@@ -1012,7 +1029,8 @@
       }
       const body = {...request, reason};
       if (body.action === "approve" && byId("approver-name").value.trim()) body.approver = byId("approver-name").value.trim();
-      if (body.action === "revise") body.content = byId("replacement").value.trim() || null;
+      if (["revise", "adopt"].includes(body.action)) body.content = byId("replacement").value.trim() || null;
+      if (body.action === "adopt") body.commit = byId("merged-commit").value.trim();
       if (body.action === "intervene") body.from = byId("rerun-from").value || null;
       submitting = true;
       byId("submit-action").disabled = true;
@@ -1043,6 +1061,7 @@
           intervene: Boolean(result.paused || result.replan),
           resume: result.paused === null,
           recover: result.task === body.task && result.attempt > body.attempt,
+          adopt: result.task === body.task && result.state === "judging" && Boolean(result.judgment),
         }[body.action];
         if (!confirmed) {
           throw new Error("看板未收到运行端的操作确认。请先检查当前状态，或在运行环境操作。");
@@ -1135,6 +1154,12 @@
         const button = element("button", "检查后重跑", "secondary");
         button.type = "button";
         button.onclick = () => openAction("recover", {task:item.task, attempt:item.attempt}, item.task + " · 确认重跑");
+        row.append(button);
+      }
+      if (item.can_adopt_merged && !data.read_only) {
+        const button = element("button", "接续合入提交", "secondary");
+        button.type = "button";
+        button.onclick = () => openAction("adopt", {task:item.task, attempt:item.attempt});
         row.append(button);
       }
       if (item.remaining_steps && item.scope) row.append(element("p", item.scope));

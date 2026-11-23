@@ -320,6 +320,17 @@ python3 pioneers.py --host-checkpoint RUN_DIR --task fix --attempt 1 --artifact 
 
 确认已发生时，通过 `--artifact` 接续证据，再走原验收和审批流程。确认未发生时，把 `outcome` 填成 `not_executed`，之后重新申请执行授权。Pioneers 只跟踪已观察或上报的动作，外部系统的真实状态需通过回执核对。外部操作仍须事先声明 `effect`。
 
+### 接续已合入 Git 的产物
+
+宿主模式下，普通实现任务还在待派发或待恢复时，可以登记已经合入当前项目分支的提交。先确认原执行端已停止，再在任务队列选「接续合入提交」，填写提交 SHA、接续原因、交付证据及待验证项。命令行入口如下。
+
+```bash
+python3 pioneers.py --host-adopt RUN_DIR --task integration --attempt 2 \
+  --commit COMMIT_SHA --artifact EVIDENCE.md --reason "已核对合入提交与旧执行端"
+```
+
+Pioneers 核对当前尝试、分支合入关系、已放行依赖和写入范围，并把提交送回原有产物判断。任务通过判断后，后续 QA 按该提交继续，仍需回报实际验收结果。涉及前置授权或外部操作的任务沿用原来的审批和恢复流程。
+
 ## 项目看板与迭代记录
 
 同一交付项目复用一个入口。先在可持续运行的终端启动项目看板，后续迭代沿用同一个项目目录。默认本地地址为 [http://127.0.0.1:8790/](http://127.0.0.1:8790/)。同时运行多个项目时，为每个项目固定一个 `--port`。云端按上面的私有预览方式映射此端口，需要在看板上审批时同时配置 `--dashboard-origin`。
