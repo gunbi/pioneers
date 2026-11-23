@@ -79,7 +79,7 @@ python3 pioneers.py --run-tool backend_api_check --role engineer --workspace /pa
 python3 pioneers.py examples/todo-sync.json
 ```
 
-[单模块缺陷修复](examples/small-fix.json) 演示小改动试跑，由一名工程师定位、修复并定向自测，再由 QA 独立验收。涉及共享契约、旧数据、并行写入、权限或回滚风险时，先做影响面预检，由 LD 确定验证范围。
+写入范围和验收条件明确、风险低且易于回滚时，Pioneers 的默认计划只有开发和独立 QA 两项。工程师完成实现、自测和必要集成，交付具体版本供 QA 复验。[单模块缺陷修复](examples/small-fix.json) 是可直接复用的两任务计划。涉及架构、共享契约、安全与权限或难以回滚的数据变更时，先评估影响并安排方案和审批，再派工实施。
 
 关键界面改动先明确用户动线和布局，再按需加载 `frontend-design` 定视觉方向。复杂动线可以由 PM 先交付设计，简单布局可由工程师在同一个任务内先设计再实现，交 QA 按场景复验。
 

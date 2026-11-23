@@ -12,7 +12,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from dashboard import collaboration_flow, dashboard_snapshot, flow_with_approvals
-from pioneers import control_run, create_run, load_workflow, project_workspace, run_workflow
+from pioneers import control_run, create_run, load_workflow, plan_workflow, project_workspace, run_workflow
 
 
 class DeliveryLoopTest(unittest.TestCase):
@@ -175,6 +175,45 @@ class DeliveryLoopTest(unittest.TestCase):
                     project_workspace(framework_worktree)
                 self.assertEqual(project_workspace(project_worktree), project_worktree)
 
+    def test_goal_planning_runs_low_risk_work_as_two_tasks(self):
+        draft = json.loads((ROOT / "examples/small-fix.json").read_text(encoding="utf-8"))
+        phases = []
+        case = self
+
+        class Runner:
+            def run(self, role, prompt, report, *, phase, **kwargs):
+                phases.append((role, phase))
+                if phase == "plan":
+                    case.assertIn("默认只安排一项 engineer 和一项独立 QA", prompt)
+                    case.assertIn("用 architecture 或 feature_design 标记方案并让实现依赖它", prompt)
+                    return json.dumps(draft)
+                if phase == "approval":
+                    return '{"needs_confirmation": false, "reason": "低风险且证据完整"}'
+                if phase == "review":
+                    case.assertIn("交付了定向测试和提交证据", prompt)
+                    return json.dumps({
+                        "outcome": "accepted", "summary": "空白与正常输入均通过",
+                        "checks": [{"criterion": item, "status": "pass", "evidence": "定向复验"}
+                                   for item in draft["tasks"][1]["acceptance"]],
+                    })
+                return "交付了定向测试和提交证据"
+
+        with TemporaryDirectory() as temp, redirect_stdout(StringIO()):
+            root = Path(temp)
+            runner = Runner()
+            runner.workspace = root / "project"
+            runner.workspace.mkdir()
+            goal = draft["goal"]
+            run_dir, progress = create_run(root / "runs", goal, {}, (), "live")
+            planned_goal, tasks, order = plan_workflow(goal, runner, run_dir, progress)
+            self.assertEqual(order, ("fix-title", "verify-title"))
+            self.assertEqual(run_workflow(planned_goal, tasks, order, runner, progress), 0)
+            self.assertEqual([(role, phase) for role, phase in phases if phase in ("task", "review")],
+                             [("engineer", "task"), ("qa", "review")])
+            snapshot = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["state"], "completed")
+            self.assertEqual({d["state"] for d in snapshot["decisions"].values()}, {"auto"})
+
     def test_live_executor_applies_operator_replan_before_completion(self):
         goal, tasks, _ = load_workflow(ROOT / "examples/todo.json")
         note = "同步进行安卓和 ios 的开发"
@@ -195,6 +234,7 @@ class DeliveryLoopTest(unittest.TestCase):
                     return '{"needs_confirmation": false, "reason": "证据完整"}'
                 if phase == "plan":
                     case.assertIn(note, prompt)
+                    case.assertIn("默认只安排一项 engineer 和一项独立 QA", prompt)
                     return json.dumps({"goal": goal, "tasks": planned})
                 if role == "pm":
                     control_run(run_dir, {"action": "pause", "reason": "调整任务"})

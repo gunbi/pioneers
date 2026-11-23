@@ -37,10 +37,21 @@
 
 新运行启动、CLI 用 `--continue RUN_DIR` 续跑，或宿主用 `--dashboard RUN_DIR` 重新打开已有运行时，Pioneers 会按能力清单刷新全部开源 Skill 来源。宿主重新启动后，等看板服务恢复再领取新任务。
 
-1. LD 按 [workflow.schema.json](workflow.schema.json) 拆出工作计划，或用 CLI 的 `--goal` 生成。以满足验收标准后的最短交付时间为目标。先安排会阻塞多个下游的决定与共享契约；`depends_on` 只列开工前必要的产物。让可独立修改、验证和交接的任务尽早并行。共享契约确定后，前端可用 Mock 开发，QA 可同时准备验收。交接成本高的轻量任务由一名工程师端到端完成。多人修改同一项目时明确各自范围、隔离方式和集成负责人。每项实现任务安排下游独立 QA，实际验收任务标记 `review: true`。
+### 选择迭代流程
+
+先确定本轮最小可交付范围。写入范围和验收条件明确、风险低且易于回滚时，默认只安排两项任务。已有任务和已完成的验收在重规划时继续复用。
+
+1. `engineer` 在同一任务中确认验收条件，完成实现、自测和必要的集成，交付具体版本和证据。
+2. `qa` 直接依赖实现任务，设置 `review: true`，在交付版本上独立核验主路径、相关回归和未覆盖项。
+
+涉及架构、共享契约、安全与权限、难以回滚的数据变更或重要用户动线时，先安排只读方案，说明影响、验证和回滚方式。按影响标记 `architecture` 或 `feature_design`，让实现依赖获确认的方案，再继续独立验收。高成本实施和对外操作分别使用原有的 `costly_change` 和 `effect` 审批。范围或风险还不清楚时，先核对影响和验收边界。
+
+### 登记和执行工作流
+
+1. LD 按 [workflow.schema.json](workflow.schema.json) 拆出工作计划，或用 CLI 的 `--goal` 生成。以满足验收标准后的最短交付时间为目标。先安排会阻塞多个下游的决定与共享契约；`depends_on` 只列开工前必要的产物。让可独立修改、验证和交接的任务尽早并行。共享契约确定后，前端可用 Mock 开发，QA 可同时准备验收。多人修改同一项目时明确各自范围、隔离方式和集成负责人。每项实现任务安排下游独立 QA，实际验收任务标记 `review: true`。
    - 给本轮迭代填写简短的单行 `title`，用于运行看板。将完整需求、范围与约束保留在 `goal`。
    - 涉及共享契约、默认值或灰度、旧数据或并行写入、共享资源、权限及跨模块合入的任务，选择 `change-impact-preflight`。需要绑定实际交付版本的实现与独立验收任务，选择 `verifiable-delivery-evidence`。可局部修复并定向复验的任务，可参照 [单模块缺陷修复示例](examples/small-fix.json)。
-   - 新页面、整页改版或关键动线变更先安排只读设计，并为设计角色选择 `product-experience-design`，QA 按需选择同一能力。交付可核对的设计图、页面布局、导航与图标、重点状态、交互和窄屏规则。实现任务用 `ui_design` 列出设计任务 ID，同时把它们列入 `depends_on`，按现有流程等待设计放行。独立 QA 直接依赖设计和实现。边界清楚的局部小修可由工程师先写预期表现，再实现和自测。
+   - 需要确定重要交互方案的新页面、整页改版或关键动线变更先安排只读设计，并为设计角色选择 `product-experience-design`，QA 按需选择同一能力。交付可核对的设计图、页面布局、导航与图标、重点状态、交互和窄屏规则。实现任务用 `ui_design` 列出设计任务 ID，同时把它们列入 `depends_on`，按现有流程等待设计放行。独立 QA 直接依赖设计和实现。边界清楚的局部小修可由工程师先写预期表现，再实现和自测。
    - 设计和开发可使用 [已有项目 UI 改版示例](examples/existing-project-redesign.json)。有访谈、反馈或行为数据需要归纳时，PM 按需选择 `customer-journey-mapping`。
 2. 有可用运行器时启动 `pioneers.py ... --live`，由 CLI 派工。使用宿主原生 Agent 时，优先复用项目看板，用 `--host-start WORKFLOW --workspace PROJECT --register-only` 登记新迭代。JSON 返回 `run_dir`、`project_dashboard_url` 和 `project_run_url`。项目看板不可用时，可用 `--dashboard RUN_DIR` 启动单轮看板。看板停止后，先恢复看板服务再领取任务。
 3. 宿主协调者用 `--host-ready RUN_DIR` 查询 `ready`、`active` 和 `waiting`。有成员容量时，同批领取独立的任务并优先较长的依赖链。领取用 `--host-claim RUN_DIR --task TASK_ID --member MEMBER_ID --member-name DISPLAY_NAME`。若领取因写入冲突被阻塞，等关联任务交接后重查队列。领取成功后交给执行端返回的提示、角色、工作目录、分支、复杂度和回报方式。每次产物放行、审批通过、恢复或退回后重查队列。没有并发能力的宿主按队列顺序执行。
