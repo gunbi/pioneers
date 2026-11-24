@@ -10,7 +10,8 @@ from unittest.mock import patch
 import model_worker
 from dashboard import dashboard_snapshot
 from model_plugins import ProviderError
-from pioneers import create_run, execute_host, handle_judgment, update_host, validate_workflow
+from model_policy import update_policy
+from pioneers import create_run, execute_host, handle_judgment, host_ready, project_registry, update_host, validate_workflow
 from progress import Progress
 
 
@@ -89,3 +90,33 @@ class ModelDispatchTest(unittest.TestCase):
         history = data["tasks"]["spec"]["executors"]
         self.assertEqual(history["1"]["error"], "SiliconFlow timed out")
         self.assertEqual(history["2"]["provider"], "host")
+
+    @patch("pioneers.check_available")
+    def test_ban_after_claim_blocks_started_call(self, _catalog):
+        self.claim()
+        registry = project_registry(self.project)
+        update_policy(registry, {"action": "ban", "revision": 0, "provider": "siliconflow", "model": "example/text"})
+        with redirect_stdout(StringIO()), patch("pioneers.supervise_host_executor") as supervise:
+            self.assertEqual(execute_host(self.run, "spec", 1, None), 1)
+        supervise.assert_not_called()
+        pending = host_ready(self.run)
+        self.assertEqual(pending["model_policy"]["banned"][0]["model"], "example/text")
+        self.assertEqual(pending["ready"][0]["attempt"], 2)
+        with self.assertRaisesRegex(ValueError, "禁用"):
+            self.claim("writer")
+
+    @patch("pioneers.check_available")
+    def test_video_receipt_shared_only_with_recovery(self, _catalog):
+        workflow = self.run / "workflow.json"
+        plan = json.loads(workflow.read_text())
+        plan["tasks"][0]["video_prompt"] = "A red sailboat on a lake"
+        workflow.write_text(json.dumps(plan))
+        update_policy(project_registry(self.project), {"action": "select", "revision": 0, "mode": "video",
+                      "provider": "siliconflow", "model": "example/video"})
+        self.assertEqual(self.claim()["executor"]["mode"], "video")
+        first = json.loads((self.run / ".model-spec-1.json").read_text())
+        self.assertEqual(first["video_prompt"], "A red sailboat on a lake")
+        update_host(self.run, "spec", "lost", "executor exited", None, 1)
+        self.assertEqual(self.claim()["executor"]["video_generation"], 1)
+        second = json.loads((self.run / ".model-spec-2.json").read_text())
+        self.assertEqual(first["video_receipt"], second["video_receipt"])
