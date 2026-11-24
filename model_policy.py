@@ -7,7 +7,12 @@ import re
 import sqlite3
 
 
-MODES = ("text", "patch", "video")
+MEDIA_MODES = ("image", "speech", "music", "sound_effect")
+MODE_KINDS = {
+    "text": "chat", "patch": "chat", "video": "text-to-video", "image": "text-to-image",
+    "speech": "text-to-speech", "music": "text-to-music", "sound_effect": "text-to-sound-effect",
+}
+MODES = tuple(MODE_KINDS)
 MODEL_ID = re.compile(r"~?[A-Za-z0-9][A-Za-z0-9_./:+-]{0,255}")
 PROVIDER_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 

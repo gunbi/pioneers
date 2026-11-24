@@ -12,6 +12,16 @@
           "role": {"enum": ["ld", "pm", "engineer", "qa"]},
           "prompt": {"type": "string"},
           "video_prompt": {"type": ["string", "null"], "minLength": 1, "maxLength": 10000},
+          "media": {
+            "type": ["object", "null"],
+            "properties": {
+              "type": {"enum": ["image", "speech", "music", "sound_effect"]},
+              "prompt": {"type": "string", "minLength": 1, "maxLength": 10000},
+              "voice": {"type": "string", "minLength": 1, "maxLength": 256}
+            },
+            "required": ["type", "prompt"],
+            "additionalProperties": false
+          },
           "depends_on": {"type": "array", "items": {"type": "string"}},
           "ui_design": {"type": ["array", "null"], "items": {"type": "string"}, "minItems": 1, "uniqueItems": true},
           "write_paths": {"type": "array", "items": {"type": "string"}},
