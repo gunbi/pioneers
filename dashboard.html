@@ -252,6 +252,7 @@
     <p class="brand">Pioneers</p>
     <a id="project-home" class="rail-back" href="../../" hidden><svg class="nav-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="m11 5-7 7 7 7M4 12h16"/></svg><span>返回项目看板</span></a>
     <nav id="run-nav" aria-label="运行看板导航">
+      <a id="project-models" hidden><svg class="nav-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 9h8M8 15h8"/><circle cx="10" cy="9" r="1.5"/><circle cx="14" cy="15" r="1.5"/></svg><span>模型管理</span></a>
       <a href="#run-overview" aria-current="location"><svg class="nav-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="2"/><path d="M9 3.5v17M9 10h11.5"/></svg><span>本轮概览</span></a>
       <a id="approval-jump" href="#human-title" hidden><svg class="nav-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3.1 7.8-7 10-3.9-2.2-7-5.4-7-10V6z"/><path d="m9 12 2 2 4-4"/></svg><span id="approval-nav-label">人工确认与介入</span></a>
       <a id="dispatch-jump" href="#dispatch-title" hidden><svg class="nav-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5zM3 12l9 5 9-5M3 16l9 5 9-5"/></svg><span>任务队列</span></a>
@@ -429,7 +430,7 @@
       approved:"已确认", superseded:"已作废"
     };
     const byId = id => document.getElementById(id);
-    const runLinks = [...byId("run-nav").querySelectorAll("a")];
+    const runLinks = [...byId("run-nav").querySelectorAll('a[href^="#"]')];
     const activityJump = byId("activity-jump");
     const activityDetail = byId("activity-detail");
     activityJump.addEventListener("click", event => {
@@ -523,7 +524,13 @@
         if (usage.completion_tokens != null) detail.push("输出 " + usage.completion_tokens + " tokens");
         if (usage.total_tokens != null && usage.prompt_tokens == null && usage.completion_tokens == null)
           detail.push("共 " + usage.total_tokens + " tokens");
+        if (usage.videos != null) detail.push("视频 " + usage.videos + " 个");
+        if (usage.video_seconds != null) detail.push("生成 " + usage.video_seconds + " 秒");
         node.append(element("p", detail.join(" · "), "stage-meta"));
+        if (executor.reason) node.append(element("p", "选型依据 · " + executor.reason, "stage-meta"));
+        if (executor.video?.state || executor.video?.request_id) {
+          node.append(element("p", ["视频请求", executor.video.state, executor.video.request_id].filter(Boolean).join(" · "), "stage-meta"));
+        }
       }
       const scope = tasks[stage.task]?.prompt;
       const waiting = stage.state === "pending" && tasks[stage.task]?.depends_on.filter(dep => tasks[dep].state !== "completed");
@@ -1264,6 +1271,9 @@
       const projectHome = byId("project-home");
       projectHome.hidden = !data.project_href;
       if (data.project_href) projectHome.href = data.project_href;
+      const modelLink = byId("project-models");
+      modelLink.hidden = !data.project_href;
+      if (data.project_href) modelLink.href = data.project_href + "models";
       renderGoal(data);
       byId("offline-mode").hidden = data.mode !== "offline";
       const state = byId("state");
