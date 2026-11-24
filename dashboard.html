@@ -514,6 +514,17 @@
       const meta = [stage.member?.name, roles[stage.role], stage.task,
         stage.attempt && ("第 " + stage.attempt + " 轮"), stage.at && clock(stage.at)];
       node.append(element("p", meta.filter(Boolean).join(" · "), "stage-meta"));
+      const executor = tasks[stage.task]?.executors?.[stage.attempt];
+      if (executor) {
+        const detail = executor.provider === "host" ? ["宿主 Agent"] : [executor.provider, executor.model];
+        if (executor.elapsed_seconds != null) detail.push(executor.elapsed_seconds + " 秒");
+        const usage = executor.usage || {};
+        if (usage.prompt_tokens != null) detail.push("输入 " + usage.prompt_tokens + " tokens");
+        if (usage.completion_tokens != null) detail.push("输出 " + usage.completion_tokens + " tokens");
+        if (usage.total_tokens != null && usage.prompt_tokens == null && usage.completion_tokens == null)
+          detail.push("共 " + usage.total_tokens + " tokens");
+        node.append(element("p", detail.join(" · "), "stage-meta"));
+      }
       const scope = tasks[stage.task]?.prompt;
       const waiting = stage.state === "pending" && tasks[stage.task]?.depends_on.filter(dep => tasks[dep].state !== "completed");
       const activity = waiting && waiting.length ? "等待 " + waiting.join("、") : stage.activity;

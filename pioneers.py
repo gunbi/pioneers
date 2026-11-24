@@ -30,6 +30,7 @@ from dispatch import (
 )
 from iterations import latest_delivery, project_snapshot, register_run
 from skill_sources import SNAPSHOT, read_json, refresh_run, write_json
+from model_plugins import PROVIDERS, check_available, resolve_route
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,8 @@ PROJECT_RULES = f"""{PROJECT_RULES_BEGIN}
 
 def project_environment():
     env = os.environ.copy()
+    for provider in PROVIDERS.values():
+        env.pop(provider.key_env, None)
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"):
         env.pop(name, None)
     return env
@@ -363,7 +366,7 @@ def validate_workflow(workflow, generated=False):
     return goal, tasks, order
 
 
-def task_prompt(goal, task, results, *, sources=None):
+def task_prompt(goal, task, results, *, sources=None, remote=False):
     role = ROLES[task["role"]]
     parts = [
         f"你是项目团队的{role.name}。你的职责是：{role.responsibility}",
@@ -376,7 +379,7 @@ def task_prompt(goal, task, results, *, sources=None):
     if task.get("acceptance"):
         criteria = "\n".join(f"- {item}" for item in task["acceptance"])
         parts.append(f"验收条件：\n{criteria}")
-    parts.extend(capability_prompt(task["role"], task.get("skills", []), task.get("tools"), sources=sources))
+    parts.extend(capability_prompt(task["role"], task.get("skills", []), task.get("tools"), sources=sources, remote=remote))
     for dependency in task.get("depends_on", []):
         parts.append(f"前置任务 {dependency} 的产物：\n{results[dependency]}")
     if task.get("review"):
@@ -385,6 +388,9 @@ def task_prompt(goal, task, results, *, sources=None):
             "所有条件通过才用 accepted。有实现缺陷用 changes_requested；"
             "需求有歧义用 needs_clarification；缺少环境、依赖或可核对的证据用 blocked。"
         )
+    elif remote:
+        parts.append("直接返回当前任务要求的产物。你只能使用本请求提供的内容；"
+                     "本机文件操作、执行测试和提交由本地执行器负责，只能由执行器记录实际结果。")
     else:
         parts.append("交付回报先概括实际完成的内容、已验证的结果和仍需处理的事项，便于后续迭代接手。")
     return "\n\n".join(parts)
@@ -695,13 +701,13 @@ def artifact_path(progress, task_id, extension="md"):
     return progress.path.with_name(artifact_name(task_id, attempt, extension))
 
 
-def assignment_prompt(goal, tasks, task_id, progress, workspace=None):
+def assignment_prompt(goal, tasks, task_id, progress, workspace=None, *, remote=False):
     task = tasks[task_id]
     results = {dep: artifact_path(progress, dep).read_text(encoding="utf-8")
                for dep in task.get("depends_on", [])}
     sources = read_json(progress.path.with_name(SNAPSHOT)) if task.get("skills") else None
-    prompt = task_prompt(goal, task, results, sources=sources)
-    if workspace := workspace or progress.data.get("workspace"):
+    prompt = task_prompt(goal, task, results, sources=sources, remote=remote)
+    if not remote and (workspace := workspace or progress.data.get("workspace")):
         prompt = f"项目工作区：{workspace}\n只在该目录内开发和验证。\n\n{prompt}"
     for dep in results:
         key = progress.data["tasks"][dep].get("decision")
@@ -1245,7 +1251,7 @@ def reported_commit(task, checkout):
     return head
 
 
-def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=None):
+def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=None, *, route=None):
     run_dir = progress.path.parent
     tasks = progress.data["tasks"]
     task = workflow_tasks[task_id]
@@ -1263,11 +1269,12 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
     assign_member(progress, job, member_id, member_name)
     review = task.get("review", False)
     workspace, checkout = task_worktree(progress, workflow_tasks, task_id)
-    prompt = assignment_prompt(progress.data["goal"], workflow_tasks, task_id, progress, workspace)
+    prompt = assignment_prompt(progress.data["goal"], workflow_tasks, task_id, progress, workspace, remote=bool(route))
     if checkout:
         tasks[task_id]["git"] = checkout
-        prompt += f"\n\n在分配的 Git 分支 {checkout['branch']} 中执行。"
-        if writes_workspace(task):
+        if not route:
+            prompt += f"\n\n在分配的 Git 分支 {checkout['branch']} 中执行。"
+        if writes_workspace(task) and not route:
             scopes = "、".join(task.get("write_paths") or ["."])
             prompt += f"\n本任务写入范围：{scopes}。提交改动后再回报完成。"
     assignment = {
@@ -1291,6 +1298,17 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
         assignment["continuation"] = continuation
         assignment["prompt"] += continuation_prompt(continuation)
     if progress.data["mode"] == "host":
+        execution = {"provider": "host"}
+        if route:
+            execution = {key: route[key] for key in ("profile", "provider", "model", "mode")}
+            request = {"route": route, "prompt": assignment["prompt"], "write_paths": task.get("write_paths", [])}
+            if route["mode"] == "patch":
+                from model_patch import patch_prompt
+                request["checkout"] = {key: checkout[key] for key in ("base", "branch")}
+                request["prompt"] += patch_prompt(Path(workspace), request["write_paths"])
+            write_json(run_dir / f".model-{task_id}-{assignment['attempt']}.json", request)
+        job.setdefault("executors", {})[str(assignment["attempt"])] = execution
+        assignment["executor"] = dict(execution)
         expires = time.time() + HOST_LEASE_SECONDS
         tasks[task_id]["lease_expires_at"] = expires
         assignment.update(lease_expires_at=expires, lease_seconds=HOST_LEASE_SECONDS)
@@ -1594,12 +1612,28 @@ def execute_live(tasks, order, executor, progress):
                 raise
 
 
-def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=None, member_name=None):
+def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=None, member_name=None, profile=None):
     run_dir = run_dir.resolve(strict=True)
     if state is None:
         data = Progress.open(run_dir).data
-        if data["mode"] == "host":
-            reap_host_assignments(run_dir, data)
+        if data["mode"] != "host":
+            raise ValueError("Host commands require a run created with --host-start")
+        data = reap_host_assignments(run_dir, data)
+        _, before, _ = load_workflow(workflow_path(run_dir, data))
+        if task_id not in before:
+            raise ValueError(f"Unknown workflow task: {task_id}")
+        before_attempt = data["tasks"][task_id].get("attempt", 1)
+        workspace = project_workspace(data.get("workspace"))
+        route = resolve_route(workspace, before[task_id], profile, isolated=bool(data.get("git_base")))
+        # A slow catalog call must never hold the state lock used for lease renewal.
+        if route:
+            blockers = claim_blockers(data, before, task_id)
+            if blockers:
+                raise ValueError(blockers[0]["message"])
+            if route["mode"] == "patch":
+                from model_patch import test_sandbox
+                test_sandbox()
+            check_available(route)
     # Serialize status read/modify/write across independent CLI invocations.
     with Progress.locked(run_dir) as progress:
         if progress.data["mode"] != "host":
@@ -1613,7 +1647,10 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
             if not (dashboard_is_running(run_dir, progress.data.get("dashboard_port"))
                     or active_project_port(project_registry(workspace), run_dir)):
                 raise ValueError("Start the run dashboard with --project-dashboard --workspace PROJECT or --dashboard RUN_DIR before claiming tasks")
-            return claim_task(progress, tasks, task_id, member_id, member_name)
+            if (tasks[task_id] != before[task_id] or progress.data["tasks"][task_id].get("attempt", 1) != before_attempt
+                    or route != resolve_route(workspace, tasks[task_id], profile, isolated=bool(progress.data.get("git_base")))):
+                raise ValueError("Task or model profile changed during preflight; claim again")
+            return claim_task(progress, tasks, task_id, member_id, member_name, route=route)
         result = artifact.read_text(encoding="utf-8") if artifact else None
         if state == "checkpoint":
             job = progress.data["tasks"][task_id]
@@ -1659,7 +1696,7 @@ def stop_host_executor(process):
     signal_group(signal.SIGKILL)
 
 
-def supervise_host_executor(command, workspace, renew):
+def supervise_host_executor(command, workspace, renew, *, deadline_seconds=None):
     active = False
     requested = None
 
@@ -1676,9 +1713,16 @@ def supervise_host_executor(command, workspace, renew):
                 active = True
                 if requested is not None:
                     raise SystemExit(128 + requested)
+                deadline = time.monotonic() + deadline_seconds if deadline_seconds is not None else None
                 while True:
+                    wait = HOST_LEASE_SECONDS / 3
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("模型执行器超过本轮执行时限")
+                        wait = min(wait, remaining)
                     try:
-                        code = process.wait(timeout=HOST_LEASE_SECONDS / 3)
+                        code = process.wait(timeout=wait)
                         return code if code >= 0 else 128 - code
                     except subprocess.TimeoutExpired:
                         if process.poll() is None:
@@ -1689,6 +1733,51 @@ def supervise_host_executor(command, workspace, renew):
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+
+
+def execute_model(run_dir, task_id, attempt, workspace, renew):
+    request = run_dir / f".model-{task_id}-{attempt}.json"
+    with Progress.locked(run_dir) as progress:
+        job = progress.data["tasks"][task_id]
+        active_assignment(job, task_id, attempt)
+        executor = job["executors"][str(attempt)]
+        if executor.get("started_at"):
+            raise ValueError("Model request already started; check its attempt before reassigning")
+        executor["started_at"] = timestamp()
+        progress.task(task_id, "running", f"正在调用 {executor['provider']} · {executor['model']}", announce=False)
+    start = time.monotonic()
+    result = {}
+    signal_exit = None
+    try:
+        with tempfile.TemporaryDirectory(dir=run_dir) as temporary:
+            output = Path(temporary) / "response.json"
+            command = [sys.executable, "-E", "-s", str(ROOT / "model_worker.py"), str(request), str(output)]
+            # Bound a slow HTTP stream as well as the subsequent local test.
+            code = supervise_host_executor(command, workspace, renew, deadline_seconds=360)
+            result = read_json(output)
+            if code or not result.get("content"):
+                result.setdefault("error", f"模型执行器未交付有效产物（退出码 {code}）")
+    except (KeyboardInterrupt, SystemExit) as error:
+        signal_exit = error
+        result["error"] = "模型执行器已中断"
+    except (OSError, ValueError, RuntimeError) as error:
+        result["error"] = str(error)
+    with Progress.locked(run_dir) as progress:
+        job = progress.data["tasks"][task_id]
+        active_assignment(job, task_id, attempt)
+        executor = job["executors"][str(attempt)]
+        executor.update(elapsed_seconds=round(time.monotonic() - start, 3), usage=result.get("usage", {}))
+        _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
+        if "error" in result:
+            executor["error"] = result["error"]
+            report = report_task(progress, tasks, task_id, "lost", result["error"], None, attempt)
+        else:
+            report = report_task(progress, tasks, task_id, "completed", "模型执行器已交付", result["content"], attempt)
+        report["executor"] = dict(executor)
+    print(json.dumps(report, ensure_ascii=False))
+    if signal_exit is not None:
+        raise signal_exit
+    return int("error" in result)
 
 
 def execute_host(run_dir, task_id, attempt, command):
@@ -1711,6 +1800,13 @@ def execute_host(run_dir, task_id, attempt, command):
                 raise ValueError(f"An executor is already active for task {task_id}, attempt {attempt}") from error
             raise
         renew()
+        provider = job.get("executors", {}).get(str(attempt), {}).get("provider", "host")
+        if provider != "host":
+            if command:
+                raise ValueError("This model assignment runs its claimed plugin; omit --exec-command")
+            return execute_model(run_dir, task_id, attempt, workspace, renew)
+        if not command:
+            raise ValueError("Native host assignments require --exec-command")
         return supervise_host_executor(command, workspace, renew)
 
 
@@ -2076,6 +2172,7 @@ def main():
     parser.add_argument("--dashboard-origin", metavar="HTTPS_ORIGIN", help="Enable credential-protected controls on this private HTTPS preview origin.")
     parser.add_argument("--live", action="store_true", help="Use the configured agent executor.")
     parser.add_argument("--model", help="Default model for a new team, or model for a workflow run.")
+    parser.add_argument("--profile", help="Project model profile for this host claim, or host for native execution.")
     parser.add_argument("--workspace", type=Path, help="Separate project directory for team setup or task execution.")
     parser.add_argument("--output-dir", type=Path, default=Path(".pioneers/runs"))
     args = parser.parse_args()
@@ -2132,8 +2229,10 @@ def main():
         parser.error("--host-adopt requires --task, a positive --attempt, --commit and --artifact")
     if args.commit is not None and not args.adopt:
         parser.error("--commit requires --host-adopt")
-    if args.host_exec and (not args.task or not args.attempt or args.attempt < 1 or not args.exec_command):
-        parser.error("--host-exec requires --task, a positive --attempt and --exec-command COMMAND")
+    if args.profile is not None and (not args.host_claim or not args.profile.strip()):
+        parser.error("--profile requires --host-claim and a profile name")
+    if args.host_exec and (not args.task or not args.attempt or args.attempt < 1):
+        parser.error("--host-exec requires --task and a positive --attempt")
     if args.exec_command is not None and not args.host_exec:
         parser.error("--exec-command requires --host-exec")
     if args.host_checkpoint and args.artifact is None:
@@ -2258,7 +2357,7 @@ def main():
             activity = None if args.host_heartbeat else (args.activity or "").strip()[:1000]
             result = update_host(args.host_claim or args.host_report or args.host_heartbeat or args.host_checkpoint, args.task, state,
                                  activity, args.artifact, args.attempt,
-                                 args.member, args.member_name)
+                                 args.member, args.member_name, args.profile)
             print(json.dumps(result, ensure_ascii=False))
             return 0
         if args.release is not None:

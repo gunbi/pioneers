@@ -235,6 +235,36 @@ python3 pioneers.py --judge RUN_DIR --decision D2 --task requirements --attempt 
 
 领取时会校验运行状态和任务依赖。完成时，pioneers 存档交付文件，并为下游生成含前置交付物的提示。开启独立验收的 QA 任务使用 JSON 报告作为交付物。返回 `returned` 时，继续领取返回的 `repair_task`，再领取复验任务。第二轮起，每次回报都需要传入领取时返回的 `--attempt N`。执行失败或环境阻塞时，登记原因并停止领取后续任务。宿主必须在派发后转发可见的动作和结果。
 
+### 按任务选用 SiliconFlow 模型
+
+宿主能在一次运行里混用本机 Agent 和不同模型。项目在自己的 `.pioneers/models.json` 登记允许使用的配置，模型 ID 从 [SiliconFlow 国内站](https://cloud.siliconflow.cn/me/models) 选择。下面的 `test_command` 是项目维护者指定的测试命令。
+
+```json
+{
+  "profiles": {
+    "writer": {"provider": "siliconflow", "model": "Qwen/Qwen3.5-35B-A3B", "mode": "text"},
+    "coder": {
+      "provider": "siliconflow", "model": "deepseek-ai/DeepSeek-V3.2",
+      "mode": "patch", "test_command": ["python3", "-m", "unittest"]
+    }
+  },
+  "defaults": {"roles": {"pm": "writer"}, "types": {"patch": "coder", "host": "host"}}
+}
+```
+
+让领取和执行模型任务的进程都能读取环境变量 `SILICONFLOW_API_KEY`。项目配置只填写模型信息。宿主显式指定的 `--profile` 优先，其次按任务类型（`text`、`patch`、`host`）、角色匹配默认配置，最后使用原生宿主。领取时会核对能力并查询账号可见的聊天模型目录。模型目录查询发生在状态锁外，其他执行端可以同时续约。用 `--profile host` 可直接选本机执行。
+
+```bash
+python3 pioneers.py --host-claim RUN_DIR --task requirements --profile writer
+python3 pioneers.py --host-exec RUN_DIR --task requirements --attempt 1
+```
+
+使用领取返回的实际轮次。第二条命令负责调用模型、独立续约和归档，返回原有的 `judgment` 供宿主判断。每轮看板记录实际配置的平台、模型、耗时及服务返回的 token 数。超时、限流或补丁验证失败时，框架保留原因并走原来的中断恢复流程。宿主根据就绪队列显式重派下一轮，可以换模型。
+
+- **文本产物**适合规格、验收样例和其他只读文本任务。请求包含任务说明、验收条件、所选 Skill 和前置产物；选择平台时应考虑这些材料能否发送给它。
+- **补丁任务**把 `write_paths` 中逐一指定的 UTF-8 普通文件交给模型。需要干净的独立 Git 工作区，最多 24 个文件、合计 192 KiB。模型可更新文件或创建新文件。本地执行器在临时副本中运行项目配置的测试，通过后才将改动提交到本轮分支。macOS 使用 `sandbox-exec`，Linux 需要可用的 `bwrap`。测试依赖应能在隔离环境使用；需要联网、桌面工具或其他宿主能力时选择 `host`。
+- **独立验收、有工具或外部操作的任务**交给宿主。项目未启用模型配置时沿用原有派工流程。首版内置的远端插件为 SiliconFlow；其他平台可实现模型目录检查和文本生成接口，注册到 `model_plugins.PROVIDERS`。
+
 ### 将发布纳入交付
 
 向阿里云 ECS 发布容器时，方案和验收任务可加载 `aliyun-ecs-container-deployment`。把实际部署安排成验收后的独立交付工程师任务，设置 `"skills": ["aliyun-ecs-container-deployment"]` 和 `"effect": "publish"`，并安排部署后的独立 QA 复验。审批通过后，由宿主提供所需工具和目标环境的授权。

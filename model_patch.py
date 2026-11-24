@@ -134,10 +134,18 @@ def _snapshot(workspace, target):
             blobs.stdin.close()
 
 
-def _test(workspace, scratch, command):
+def test_sandbox():
+    if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file():
+        return "sandbox-exec"
+    if sys.platform.startswith("linux") and shutil.which("bwrap", path=SYSTEM_PATH):
+        return "bwrap"
+    raise ValueError("No supported test sandbox available; assign this task to the host")
+
+
+def _test(workspace, scratch, command, *, supervised):
     if not isinstance(command, list) or not command or not all(isinstance(s, str) and s and "\0" not in s for s in command):
         raise ValueError("Patch mode needs a project-configured test command (argv)")
-    if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file():
+    if test_sandbox() == "sandbox-exec":
         # No network, IPC to host services, home directory or other working trees.
         runtime = ["/System/Library", "/usr/bin", "/usr/lib", "/usr/libexec", "/usr/sbin", "/usr/share", "/bin", "/sbin",
                    "/usr/local/bin", "/usr/local/lib", "/usr/local/Cellar", "/opt/homebrew/bin", "/opt/homebrew/lib",
@@ -155,7 +163,7 @@ def _test(workspace, scratch, command):
                    "(allow file-write* " + area + ' (literal "/dev/null"))')
         argv = ["/usr/bin/sandbox-exec", "-p", profile, *command]
         env_home = str(scratch / "tmp")
-    elif sys.platform.startswith("linux") and shutil.which("bwrap", path=SYSTEM_PATH):
+    else:
         argv = ["bwrap", "--unshare-all", "--die-with-parent", "--new-session"]
         for root in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/ld.so.cache"):
             if Path(root).exists():
@@ -163,20 +171,22 @@ def _test(workspace, scratch, command):
         argv += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--bind", str(workspace), "/work",
                  "--chdir", "/work", "--", *command]
         env_home = "/tmp"
-    else:
-        raise ValueError("No supported test sandbox available; assign this task to the host")
     path = SYSTEM_PATH
     if sys.platform == "darwin":
         path = "/Applications/Xcode.app/Contents/Developer/usr/bin:/Library/Developer/CommandLineTools/usr/bin:" + path
     env = {"PATH": path, "HOME": env_home, "TMPDIR": env_home, "LANG": "C", "LC_ALL": "C"}
     try:
         with subprocess.Popen(argv, cwd=workspace, env=env, stdin=subprocess.DEVNULL,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True) as process:
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=not supervised) as process:
             try:
                 status = process.wait(timeout=TEST_TIMEOUT)
             finally:
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    if supervised:
+                        # The host executor owns this whole group, including test descendants.
+                        process.kill()
+                    else:
+                        os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
     except subprocess.TimeoutExpired as error:
@@ -185,7 +195,13 @@ def _test(workspace, scratch, command):
         raise ValueError(f"Configured sandboxed test failed (exit {status}); check command and sandbox availability")
 
 
-def apply_patch_result(workspace, write_paths, content, test_command):
+def check_checkout(workspace, checkout):
+    if (_git(workspace, "rev-parse", "HEAD").decode().strip() != checkout["base"]
+            or _git(workspace, "branch", "--show-current").decode().strip() != checkout["branch"]):
+        raise ValueError("Assigned Git branch or base has changed; reassign the patch")
+
+
+def apply_patch_result(workspace, write_paths, content, test_command, *, supervised=False, checkout=None):
     workspace = Path(workspace)
     original = _contents(workspace, write_paths)
     fenced = re.fullmatch(r"```(?:json)?[ \t]*\n(.*)\n```", content.strip(), re.DOTALL | re.IGNORECASE)
@@ -203,6 +219,8 @@ def apply_patch_result(workspace, write_paths, content, test_command):
     if not changes:
         raise ValueError("Model response contains no changes")
     head = _git(workspace, "rev-parse", "HEAD")
+    if checkout:
+        check_checkout(workspace, checkout)
     if _git(workspace, "status", "--porcelain", "--untracked-files=normal"):
         raise ValueError("Patch mode requires a clean assigned worktree")
     with tempfile.TemporaryDirectory(prefix="pioneers-model-test-") as staging:
@@ -215,9 +233,11 @@ def apply_patch_result(workspace, write_paths, content, test_command):
             candidate = copy / name
             candidate.parent.mkdir(parents=True, exist_ok=True)
             candidate.write_bytes(value.encode("utf-8"))
-        _test(copy, scratch, test_command)
+        _test(copy, scratch, test_command, supervised=supervised)
 
     # Install only the tested input. Sandbox-generated files never enter the commit.
+    if checkout:
+        check_checkout(workspace, checkout)
     if (_git(workspace, "rev-parse", "HEAD") != head or _contents(workspace, write_paths) != original
             or _git(workspace, "status", "--porcelain")):
         raise ValueError("Assigned files changed while the tests ran")

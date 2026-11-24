@@ -60,9 +60,17 @@ class ModelPatchTests(unittest.TestCase):
         self.assertEqual((self.repo / "message.txt").read_text(), "before\n")
         self.assertFalse(git(self.repo, "status", "--porcelain"))
 
+    def test_branch_change_fences_patch_before_tests(self):
+        checkout = {"base": git(self.repo, "rev-parse", "HEAD"), "branch": git(self.repo, "branch", "--show-current")}
+        git(self.repo, "checkout", "-qb", "other-task")
+        with patch("model_patch._test") as test, self.assertRaisesRegex(ValueError, "branch or base"):
+            apply_patch_result(self.repo, ["message.txt"], self.reply, ["true"], checkout=checkout)
+        test.assert_not_called()
+        self.assertEqual((self.repo / "message.txt").read_text(), "before\n")
+
     def test_only_requested_content_committed(self):
         reply = json.dumps({"files":{"message.txt":"after\n", "new/utf8.txt":"中文\r\n"}})
-        def verify(snapshot, tmp, command):
+        def verify(snapshot, tmp, command, *, supervised):
             self.assertEqual(command, ["project-test"])
             self.assertEqual((snapshot / "message.txt").read_bytes(), b"after\n")
             self.assertEqual((snapshot / "new/utf8.txt").read_bytes(), "中文\r\n".encode())

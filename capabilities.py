@@ -64,7 +64,7 @@ def mcp_config(role, workspace, selected_tools=None):
     return servers
 
 
-def capability_prompt(role, selected_skills, selected_tools=None, *, sources=None):
+def capability_prompt(role, selected_skills, selected_tools=None, *, sources=None, remote=False):
     assigned = assigned_capabilities(role, selected_tools)
     parts = []
     if assigned["tools"]:
@@ -79,7 +79,7 @@ def capability_prompt(role, selected_skills, selected_tools=None, *, sources=Non
         parts.append("角色获配的 MCP 能力（使用执行端已连接的工具）：" + "；".join(
             f"{name}（{', '.join(spec['enabled_tools'])}）" for name, spec in assigned["mcp"].items()
         ))
-    if assigned["skills"]:
+    if assigned["skills"] and not remote:
         parts.append("可按需读取的 Skill：" + "；".join(
             f"{name}（{spec['description']}，正文：{ROOT / spec['path']}）"
             for name, spec in assigned["skills"].items()
