@@ -30,7 +30,8 @@ from dispatch import (
 )
 from iterations import latest_delivery, project_snapshot, register_run
 from skill_sources import SNAPSHOT, read_json, refresh_run, write_json
-from model_plugins import PROVIDERS, check_available, resolve_route
+from model_plugins import PROVIDERS, banned, check_available, public_profiles, resolve_route
+from model_policy import read_policy
 
 
 @dataclass(frozen=True)
@@ -286,6 +287,12 @@ def validate_workflow(workflow, generated=False):
             ):
                 raise ValueError(f"{task_id}: tools must be an array of tool IDs assigned to {role_id}")
         review = task.get("review", False)
+        video_prompt = task.get("video_prompt")
+        if video_prompt is not None:
+            if (not isinstance(video_prompt, str) or not video_prompt.strip() or len(video_prompt) > 10000
+                    or task.get("tools") or task.get("write_paths") or review or task.get("effect")
+                    or design_only(task)):
+                raise ValueError(f"{task_id}: video_prompt needs a plain creative brief and a task without tools, file writes, review or external effects")
         if task.get("effect") is not None and (not isinstance(task["effect"], str) or task["effect"] not in EFFECTS):
             raise ValueError(f"{task_id}: invalid effect")
         if task.get("impact") is not None and (not isinstance(task["impact"], str) or task["impact"] not in IMPACTS):
@@ -376,6 +383,8 @@ def task_prompt(goal, task, results, *, sources=None, remote=False):
     if "complexity" in task:
         complexity = task["complexity"]
         parts.append(f"任务复杂度：{complexity['level']}。依据：{complexity['reason']}")
+    if task.get("video_prompt"):
+        parts.append("视频创作提示：" + task["video_prompt"])
     if task.get("acceptance"):
         criteria = "\n".join(f"- {item}" for item in task["acceptance"])
         parts.append(f"验收条件：\n{criteria}")
@@ -581,6 +590,7 @@ def plan_workflow(goal, executor, run_dir, progress):
         "能独立修改、测试并交接的工作尽早并行。共享契约确定后，前端可用 Mock 开发，后端可实现接口，QA 可准备验收。"
         "多个工程师写同一项目时，明确各自修改范围、隔离方式和集成负责人。"
         "为写入任务在 write_paths 声明相对项目根目录的文件或目录。只读任务或范围尚不明确时填空数组。"
+        "明确要生成视频时，用 video_prompt 单列交给视频模型的创作提示，tools 和 write_paths 留空。"
         "同一根因合并修复，同一段实现需要连续修改时用 depends_on 传递已验收的提交。并行修复安排依赖它们的集成与回归验收。"
         "任务提示写清真正等待的产物和可独立交付的边界。实现任务要有下游独立 qa 验收任务，只有实际验收填写 review=true。"
         f"{PRODUCT_EXPERIENCE_PLANNING}"
@@ -848,6 +858,14 @@ def queue_recovery(progress, task_id, reason):
     progress.task(task_id, "pending", reason, announce=False)
 
 
+def video_generation(job):
+    return max(job.get("continuity_from", job.get("attempt", 1)), job.get("video_retry_from", 0))
+
+
+def video_receipt_path(run_dir, task_id, job):
+    return run_dir / f".video-{task_id}-{video_generation(job)}.json"
+
+
 def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True, executor_stopped=False):
     job = progress.data["tasks"][task_id]
     task = tasks[task_id]
@@ -857,6 +875,12 @@ def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True, 
     history = job.setdefault("recoveries", [])
     within_budget = sum(entry["automatic"] for entry in history) < MAX_AUTOMATIC_RECOVERIES
     kinds = mark_interruption(job)
+    if task.get("video_prompt"):
+        path = video_receipt_path(progress.path.parent, task_id, job)
+        if path.exists():
+            receipt = read_json(path)
+            if not receipt.get("request_id") or receipt.get("state") == "Failed":
+                automatic = False
     retry = (automatic and within_budget and not preapproval_required(task) and "external" not in kinds
              and (isolated or (not writes_workspace(task) and "workspace_write" not in kinds)))
     history.append({"attempt": attempt, "at": timestamp(), "reason": reason, "git": git,
@@ -901,11 +925,20 @@ def host_ready(run_dir, wait=0):
             current_workflow = path
         summary = dispatch_summary(data, tasks)
         if recovered or not wait or dispatch_can_continue(summary):
-            return summary
+            break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return {**summary, "timed_out": True}
+            summary["timed_out"] = True
+            break
         time.sleep(min(0.35, remaining))
+    workspace = Path(data["workspace"])
+    policy = read_policy(project_registry(workspace))
+    summary["model_policy"] = policy
+    try:
+        summary["model_profiles"] = public_profiles(workspace)
+    except ValueError as error:
+        summary["model_profiles_error"] = str(error)
+    return summary
 
 
 def reconcile(progress, tasks):
@@ -1115,7 +1148,7 @@ def run_dashboard_project(data):
     if data["mode"] not in ("host", "live") or data.get("plan_only") or not workspace:
         return None
     workspace = Path(workspace)
-    return (project_registry(workspace), workspace.name) if workspace.is_dir() else None
+    return (project_registry(workspace), workspace.name, workspace) if workspace.is_dir() else None
 
 
 def start_detached_project_dashboard(workspace, args):
@@ -1285,23 +1318,33 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
         "role": task["role"],
         "member": tasks[task_id].get("member"),
         "workspace": workspace,
-        "sandbox": "read-only" if design_only(task) else ROLES[task["role"]].sandbox,
+        "sandbox": "read-only" if design_only(task) or task.get("video_prompt") else ROLES[task["role"]].sandbox,
         "complexity": task["complexity"],
         "prompt": prompt,
         "output_schema": json.loads((ROOT / "review.schema.json").read_text(encoding="utf-8")) if review else None,
     }
     if checkout:
         assignment["git"] = checkout
+    if task.get("video_prompt"):
+        assignment["video_prompt"] = task["video_prompt"]
     if continuation := recovery_context(job, workspace, local_executor=progress.data["mode"] == "live"):
         if preapproval_required(task):
             continuation.pop("resume_session_id", None)
         assignment["continuation"] = continuation
         assignment["prompt"] += continuation_prompt(continuation)
+        if task.get("video_prompt") and video_receipt_path(run_dir, task_id, job).exists() and not route:
+            raise ValueError("视频已有供应商回执，请用原模型查询或人工核对交付物")
     if progress.data["mode"] == "host":
         execution = {"provider": "host"}
         if route:
             execution = {key: route[key] for key in ("profile", "provider", "model", "mode")}
+            if route.get("reason"):
+                execution["reason"] = route["reason"]
             request = {"route": route, "prompt": assignment["prompt"], "write_paths": task.get("write_paths", [])}
+            if route["mode"] == "video":
+                execution["video_generation"] = video_generation(job)
+                request["video_receipt"] = str(video_receipt_path(run_dir, task_id, job))
+                request["video_prompt"] = task["video_prompt"]
             if route["mode"] == "patch":
                 from model_patch import patch_prompt
                 request["checkout"] = {key: checkout[key] for key in ("base", "branch")}
@@ -1624,7 +1667,9 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
             raise ValueError(f"Unknown workflow task: {task_id}")
         before_attempt = data["tasks"][task_id].get("attempt", 1)
         workspace = project_workspace(data.get("workspace"))
-        route = resolve_route(workspace, before[task_id], profile, isolated=bool(data.get("git_base")))
+        registry = project_registry(workspace)
+        route = resolve_route(workspace, before[task_id], profile, isolated=bool(data.get("git_base")),
+                              policy=read_policy(registry))
         # A slow catalog call must never hold the state lock used for lease renewal.
         if route:
             blockers = claim_blockers(data, before, task_id)
@@ -1648,7 +1693,8 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
                     or active_project_port(project_registry(workspace), run_dir)):
                 raise ValueError("Start the run dashboard with --project-dashboard --workspace PROJECT or --dashboard RUN_DIR before claiming tasks")
             if (tasks[task_id] != before[task_id] or progress.data["tasks"][task_id].get("attempt", 1) != before_attempt
-                    or route != resolve_route(workspace, tasks[task_id], profile, isolated=bool(progress.data.get("git_base")))):
+                    or route != resolve_route(workspace, tasks[task_id], profile, isolated=bool(progress.data.get("git_base")),
+                                              policy=read_policy(registry))):
                 raise ValueError("Task or model profile changed during preflight; claim again")
             return claim_task(progress, tasks, task_id, member_id, member_name, route=route)
         result = artifact.read_text(encoding="utf-8") if artifact else None
@@ -1743,6 +1789,14 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
         executor = job["executors"][str(attempt)]
         if executor.get("started_at"):
             raise ValueError("Model request already started; check its attempt before reassigning")
+        project = Path(progress.data["workspace"])
+        if banned(read_policy(project_registry(project)), executor["provider"], executor["model"]):
+            message = "模型启动前已被项目禁用，请重新派工"
+            executor["error"] = message
+            _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
+            report = report_task(progress, tasks, task_id, "lost", message, None, attempt)
+            print(json.dumps({**report, "executor": executor}, ensure_ascii=False))
+            return 1
         executor["started_at"] = timestamp()
         progress.task(task_id, "running", f"正在调用 {executor['provider']} · {executor['model']}", announce=False)
     start = time.monotonic()
@@ -1753,7 +1807,8 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
             output = Path(temporary) / "response.json"
             command = [sys.executable, "-E", "-s", str(ROOT / "model_worker.py"), str(request), str(output)]
             # Bound a slow HTTP stream as well as the subsequent local test.
-            code = supervise_host_executor(command, workspace, renew, deadline_seconds=360)
+            limit = 900 if executor["mode"] == "video" else 360
+            code = supervise_host_executor(command, workspace, renew, deadline_seconds=limit)
             result = read_json(output)
             if code or not result.get("content"):
                 result.setdefault("error", f"模型执行器未交付有效产物（退出码 {code}）")
@@ -1767,6 +1822,8 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
         active_assignment(job, task_id, attempt)
         executor = job["executors"][str(attempt)]
         executor.update(elapsed_seconds=round(time.monotonic() - start, 3), usage=result.get("usage", {}))
+        if isinstance(result.get("video"), dict):
+            executor["video"] = {key: result["video"][key] for key in ("request_id", "state") if key in result["video"]}
         _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
         if "error" in result:
             executor["error"] = result["error"]
@@ -1911,6 +1968,15 @@ def resolve_recovery(progress, tasks, request, reason):
             record_assignment_loss(progress, tasks, task_id, "人工确认旧执行端已停止", automatic=False)
     if job["state"] != "recovery_required":
         raise ValueError("Choose a task waiting for recovery")
+    if not content and tasks[task_id].get("video_prompt"):
+        path = video_receipt_path(progress.path.parent, task_id, job)
+        if path.exists():
+            receipt = read_json(path)
+            if not receipt.get("request_id"):
+                raise ValueError("视频提交尚未确认，请先向供应商核对原请求，再接续已核实的交付物")
+            if receipt.get("state") == "Failed":
+                # Only an operator-approved retry after a confirmed terminal failure can submit again.
+                job["video_retry_from"] = attempt + 1
     verify_external_operations(job, request.get("checks", []), adopting=content is not None)
     job["recoveries"][-1]["executor_stopped"] = True
     audit(progress, "recover", reason, task=task_id, attempt=attempt, resolution="adopt" if content else "retry")
@@ -2289,7 +2355,7 @@ def main():
                     write_json(registry / "dashboard.json", {"port": urlsplit(url).port})
                     announce(url)
 
-                serve_dashboard(None, args.port, control=control_run, project=(registry, workspace.name),
+                serve_dashboard(None, args.port, control=control_run, project=(registry, workspace.name, workspace),
                                 on_ready=on_ready, open_browser=args.open_browser, cloud_origin=args.dashboard_origin)
             return 0
         if args.dashboard is not None:

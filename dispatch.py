@@ -10,7 +10,8 @@ def design_only(task):
 
 
 def writes_workspace(task):
-    return task["role"] in ("engineer", "backend", "frontend", "ios", "android") and not design_only(task)
+    return (task["role"] in ("engineer", "backend", "frontend", "ios", "android")
+            and not design_only(task) and not task.get("video_prompt"))
 
 
 def path_is_within(path, scope):

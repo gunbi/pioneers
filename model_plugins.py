@@ -9,6 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from dispatch import writes_workspace
+from model_policy import MODEL_ID, MODES
 
 
 class ProviderError(RuntimeError):
@@ -60,13 +61,19 @@ class SiliconFlow:
             raise ProviderError("SiliconFlow returned invalid JSON") from None
 
     @classmethod
-    def check_available(cls, model):
-        body = cls.request("/models?sub_type=chat", timeout=15)
+    def list_catalog(cls):
+        from siliconflow_media import list_catalog
+        return list_catalog(cls)
+
+    @classmethod
+    def check_available(cls, model, mode):
+        subtype = "text-to-video" if mode == "video" else "chat"
+        body = cls.request("/models?sub_type=" + subtype, timeout=15)
         models = body.get("data") if isinstance(body, dict) else None
         if not isinstance(models, list):
             raise ProviderError("SiliconFlow returned an invalid model catalog")
         if not any(isinstance(entry, dict) and entry.get("id") == model for entry in models):
-            raise ProviderError(f"Model {model} is unavailable in this SiliconFlow chat catalog")
+            raise ProviderError(f"Model {model} is unavailable in this SiliconFlow {subtype} catalog")
 
     @classmethod
     def complete(cls, model, prompt):
@@ -122,32 +129,99 @@ def _profiles_config(workspace):
     return profiles, defaults
 
 
-def resolve_route(workspace, task, profile=None, *, isolated):
+def _profile_info(name, spec):
+    allowed = {"provider", "model", "mode", "test_command", "tags", "duration", "resolution", "ratio"}
+    if not isinstance(spec, dict) or set(spec) - allowed:
+        raise ValueError("Invalid model profile fields")
+    provider, model, mode = spec.get("provider"), spec.get("model"), spec.get("mode")
+    if not isinstance(provider, str) or provider not in PROVIDERS:
+        raise ValueError("Model profile references an unsupported provider")
+    if not isinstance(model, str) or not MODEL_ID.fullmatch(model):
+        raise ValueError("Model profile needs a valid provider model ID")
+    if mode not in MODES:
+        raise ValueError("Unknown model profile mode")
+    tags = spec.get("tags", [])
+    if not isinstance(tags, list) or len(tags) > 32 or not all(isinstance(tag, str) and 0 < len(tag.strip()) <= 64 for tag in tags):
+        raise ValueError("Model profile tags must be a list of short strings")
+    return {"name": name, "provider": provider, "model": model, "mode": mode, "tags": tags}
+
+
+def public_profiles(workspace):
+    profiles, _ = _profiles_config(workspace)
+    return [_profile_info(name, spec) for name, spec in profiles.items()]
+
+
+def banned(policy, provider, model):
+    return {"provider": provider, "model": model} in policy.get("banned", [])
+
+
+def _preferred_profile(profiles, mode, policy, default):
+    preference = policy.get("preference", "").strip().casefold()
+    if not preference or re.search(r"不|避免|排除|慎用|禁|avoid|never|except|\bnot\b|don't", preference):
+        return None
+    matches = []
+    for name, spec in profiles.items():
+        entry = _profile_info(name, spec)
+        if entry["mode"] != mode or banned(policy, entry["provider"], entry["model"]):
+            continue
+        labels = [entry["model"], name, *entry["tags"]]
+        if any(label.casefold() in preference for label in labels):
+            matches.append(name)
+    if default in matches:
+        return default
+    return matches[0] if len(matches) == 1 else None
+
+
+def resolve_route(workspace, task, profile=None, *, isolated, policy=None):
     """Resolve against the original project at claim time. None selects the native host."""
     if profile == "host":
         return None
     profiles, defaults = _profiles_config(workspace)
+    policy = policy or {}
     requires_host = bool(task.get("tools") or task.get("review") or task.get("effect"))
-    task_type = "host" if requires_host else ("patch" if writes_workspace(task) else "text")
-    if profile is None:
-        profile = defaults.get("types", {}).get(task_type, defaults.get("roles", {}).get(task["role"]))
+    task_type = "video" if task.get("video_prompt") else ("patch" if writes_workspace(task) else "text")
+    if requires_host:
+        task_type = "host"
+    default = defaults.get("types", {}).get(task_type, defaults.get("roles", {}).get(task["role"]))
+    selected = policy.get("selected", {}).get(task_type)
+    reason = "宿主指定配置"
+    if selected:
+        # Copy execution options only from a compatible project-owned template.
+        compatible = [name for name, spec in profiles.items() if _profile_info(name, spec)["mode"] == task_type]
+        if profile is not None and profile not in compatible:
+            raise ValueError(f"Choose a compatible {task_type} profile for the project selection")
+        matching = [name for name in compatible if all(profiles[name].get(k) == v for k, v in selected.items())]
+        template = profile or (default if default in compatible else None)
+        if template is None and len(matching) == 1:
+            template = matching[0]
+        if template is None and len(compatible) == 1:
+            template = compatible[0]
+        if task_type == "patch" and not template:
+            raise ValueError("Project patch selection requires an unambiguous patch profile with test_command")
+        spec = {**profiles.get(template, {}), **selected, "mode": task_type}
+        profile = template or "dashboard"
+        reason = "项目已指定此模型"
+    else:
+        if profile is None:
+            preferred = _preferred_profile(profiles, task_type, policy, default)
+            profile = preferred or default
+            reason = "匹配项目倾向与模型名或标签" if preferred else "项目任务类型或角色默认配置"
+            if policy.get("preference") and not preferred:
+                reason += "（倾向未唯一匹配，已提供给宿主）"
+        spec = profiles.get(profile)
     if profile is None or profile == "host":
         return None
-    if not isinstance(profile, str) or profile not in profiles:
+    if not isinstance(profile, str) or spec is None:
         raise ValueError(f"Unknown model profile: {profile}")
-    spec = profiles[profile]
-    if not isinstance(spec, dict) or set(spec) - {"provider", "model", "mode", "test_command"}:
-        raise ValueError("Model profile must contain provider, model, mode and optional patch test_command")
-    provider, model, mode = spec.get("provider"), spec.get("model"), spec.get("mode")
-    if not isinstance(provider, str) or provider not in PROVIDERS:
-        raise ValueError("Model profile references an unsupported provider")
-    if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:+-]{0,255}", model):
-        raise ValueError("Model profile needs a valid provider model ID")
+    entry = _profile_info(profile, spec)
+    provider, model, mode = entry["provider"], entry["model"], entry["mode"]
+    if banned(policy, provider, model):
+        raise ValueError(f"项目已禁用模型 {provider} / {model}")
     if requires_host:
         raise ValueError("Use the host executor for tasks with tools, external effects or independent acceptance")
     if mode != task_type:
         raise ValueError(f"This task requires mode {task_type}; choose a compatible profile or host")
-    route = {"profile": profile, "provider": provider, "model": model, "mode": mode}
+    route = {"profile": profile, "provider": provider, "model": model, "mode": mode, "reason": reason}
     if mode == "patch":
         if not isolated:
             raise ValueError("Patch profiles require an isolated Git worktree")
@@ -160,6 +234,17 @@ def resolve_route(workspace, task, profile=None, *, isolated):
         route["test_command"] = list(command)
     elif "test_command" in spec:
         raise ValueError("Only patch profiles can run a test_command")
+    video_fields = {"duration", "resolution", "ratio"} & spec.keys()
+    if mode == "video":
+        duration = spec.get("duration", 5)
+        resolution = spec.get("resolution", "768p")
+        ratio = spec.get("ratio", "16:9")
+        if (type(duration) is not int or not 5 <= duration <= 15 or resolution not in ("480p", "768p")
+                or ratio not in ("1:1", "3:4", "4:3", "9:16", "16:9", "21:9")):
+            raise ValueError("Unsupported video duration, resolution or aspect ratio")
+        route.update(duration=duration, resolution=resolution, ratio=ratio)
+    elif video_fields:
+        raise ValueError("Video generation settings require a video profile")
     PROVIDERS[provider].api_key()
     return route
 
@@ -169,4 +254,4 @@ def complete(route, prompt):
 
 
 def check_available(route):
-    PROVIDERS[route["provider"]].check_available(route["model"])
+    PROVIDERS[route["provider"]].check_available(route["model"], route.get("mode", "text"))

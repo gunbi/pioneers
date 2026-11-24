@@ -150,6 +150,11 @@ class SiliconFlowAPI(unittest.TestCase):
         self.respond(self.choice())
         self.assertEqual(complete(self.route, "test")[1], {})
 
+    def test_only_video_preflight_filters_for_text_to_video(self):
+        self.respond({"data": [{"id": "org/video"}]})
+        check_available({"provider": "siliconflow", "model": "org/video", "mode": "video"})
+        self.assertTrue(self.open.call_args.args[0].full_url.endswith("/models?sub_type=text-to-video"))
+
     def test_incomplete_or_invalid_completions(self):
         for response, error in ((self.choice(reason="length"), "truncated"), (self.choice(content=""), "empty"),
                                 (self.choice(reason="content_filter"), "did not finish"),
