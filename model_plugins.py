@@ -9,7 +9,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from dispatch import writes_workspace
-from model_policy import MODEL_ID, MODES, read_policy
+from model_policy import MODEL_ID, MODES, banned, read_policy
+import openrouter_media
+import siliconflow_media
 
 
 class ProviderError(RuntimeError):
@@ -22,28 +24,30 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-class SiliconFlow:
-    key_env = "SILICONFLOW_API_KEY"
-    base_url = "https://api.siliconflow.cn/v1"
+class ChatProvider:
+    public_catalog = False
+    report_actual_model = False
 
     @classmethod
     def api_key(cls):
         key = os.environ.get(cls.key_env, "").strip()
         if not key or not key.isascii() or not key.isprintable() or any(c.isspace() for c in key):
-            raise ValueError(f"Set a valid {cls.key_env} for the SiliconFlow executor")
+            raise ValueError(f"Set a valid {cls.key_env} for the {cls.name} executor")
         return key
 
     @classmethod
-    def request(cls, path, *, payload=None, timeout):
+    def request(cls, path, *, payload=None, timeout, public=False):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
-        request = Request(cls.base_url + path, data=data,
-                          headers={"Authorization": f"Bearer {cls.api_key()}", "Content-Type": "application/json"})
+        headers = {"Content-Type": "application/json"}
+        if not public:
+            headers["Authorization"] = f"Bearer {cls.api_key()}"
+        request = Request(cls.base_url + path, data=data, headers=headers)
         try:
             with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
                 limit = 8 * 1024 * 1024
                 raw = response.read(limit + 1)
             if len(raw) > limit:
-                raise ProviderError("SiliconFlow response exceeds the 8 MiB limit")
+                raise ProviderError(f"{cls.name} response exceeds the 8 MiB limit")
             return json.loads(raw)
         except HTTPError as error:
             code = error.code
@@ -51,22 +55,51 @@ class SiliconFlow:
             hint = {401: "invalid credential", 402: "insufficient credits", 403: "access denied",
                     404: "model or endpoint unavailable", 408: "request timed out", 429: "rate limited",
                     504: "gateway timed out"}.get(code, "request rejected")
-            raise ProviderError(f"SiliconFlow HTTP {code}: {hint}") from None
+            raise ProviderError(f"{cls.name} HTTP {code}: {hint}") from None
         except (OSError, HTTPException) as error:
             timed_out = isinstance(error, TimeoutError) or (
                 isinstance(error, URLError) and isinstance(error.reason, TimeoutError))
             detail = "timed out" if timed_out else "connection failed"
-            raise ProviderError(f"SiliconFlow {detail}") from None
+            raise ProviderError(f"{cls.name} {detail}") from None
         except ValueError:
-            raise ProviderError("SiliconFlow returned invalid JSON") from None
+            raise ProviderError(f"{cls.name} returned invalid JSON") from None
+
+    @classmethod
+    def complete(cls, model, prompt):
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False}
+        body = cls.request("/chat/completions", payload=payload, timeout=120)
+        choices = body.get("choices") if isinstance(body, dict) else None
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ProviderError(f"{cls.name} returned no completion")
+        choice = choices[0]
+        if choice.get("finish_reason") == "length":
+            raise ProviderError(f"{cls.name} output was truncated at the token limit")
+        if choice.get("finish_reason") != "stop":
+            raise ProviderError(f"{cls.name} did not finish the requested text completion")
+        message = choice.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            raise ProviderError(f"{cls.name} returned an empty completion")
+        usage = body.get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+        counts = {key: usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                  if type(usage.get(key)) is int and usage[key] >= 0}
+        if cls.report_actual_model and isinstance(body.get("model"), str) and MODEL_ID.fullmatch(body["model"]):
+            counts["actual_model"] = body["model"]
+        return content, counts
+
+
+class SiliconFlow(ChatProvider):
+    name = "SiliconFlow"
+    key_env = "SILICONFLOW_API_KEY"
+    base_url = "https://api.siliconflow.cn/v1"
 
     @classmethod
     def list_catalog(cls):
-        from siliconflow_media import list_catalog
-        return list_catalog(cls)
+        return siliconflow_media.list_catalog(cls)
 
     @classmethod
-    def check_available(cls, model, mode):
+    def check_available(cls, model, mode, options):
         subtype = "text-to-video" if mode == "video" else "chat"
         body = cls.request("/models?sub_type=" + subtype, timeout=15)
         models = body.get("data") if isinstance(body, dict) else None
@@ -75,30 +108,28 @@ class SiliconFlow:
         if not any(isinstance(entry, dict) and entry.get("id") == model for entry in models):
             raise ProviderError(f"Model {model} is unavailable in this SiliconFlow {subtype} catalog")
 
+    video = siliconflow_media.Video
+
+
+class OpenRouter(ChatProvider):
+    name = "OpenRouter"
+    key_env = "OPENROUTER_API_KEY"
+    base_url = "https://openrouter.ai/api/v1"
+    public_catalog = True
+    report_actual_model = True
+
+    video = openrouter_media.Video
+
     @classmethod
-    def complete(cls, model, prompt):
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False}
-        body = cls.request("/chat/completions", payload=payload, timeout=120)
-        choices = body.get("choices") if isinstance(body, dict) else None
-        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise ProviderError("SiliconFlow returned no completion")
-        choice = choices[0]
-        if choice.get("finish_reason") == "length":
-            raise ProviderError("SiliconFlow output was truncated at the token limit")
-        if choice.get("finish_reason") != "stop":
-            raise ProviderError("SiliconFlow did not finish the requested text completion")
-        message = choice.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, str) or not content.strip():
-            raise ProviderError("SiliconFlow returned an empty completion")
-        usage = body.get("usage")
-        usage = usage if isinstance(usage, dict) else {}
-        counts = {key: usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
-                  if type(usage.get(key)) is int and usage[key] >= 0}
-        return content, counts
+    def list_catalog(cls):
+        return openrouter_media.catalog(cls)
+
+    @classmethod
+    def check_available(cls, model, mode, options):
+        openrouter_media.check_available(cls, model, mode, options)
 
 
-PROVIDERS = {"siliconflow": SiliconFlow}
+PROVIDERS = {"siliconflow": SiliconFlow, "openrouter": OpenRouter}
 
 
 def _profiles_config(workspace):
@@ -160,10 +191,6 @@ def dispatch_models(registry, workspace):
     return context
 
 
-def banned(policy, provider, model):
-    return {"provider": provider, "model": model} in policy.get("banned", [])
-
-
 def _preferred_profile(profiles, mode, policy, default):
     preference = policy.get("preference", "").strip().casefold()
     if not preference or re.search(r"不|避免|排除|慎用|禁|avoid|never|except|\bnot\b|don't", preference):
@@ -200,7 +227,11 @@ def resolve_route(workspace, task, profile=None, *, isolated, policy=None):
         if profile is not None and profile not in compatible:
             raise ValueError(f"Choose a compatible {task_type} profile for the project selection")
         matching = [name for name in compatible if all(profiles[name].get(k) == v for k, v in selected.items())]
-        template = profile or (default if default in compatible else None)
+        # Video parameter sets belong to the selected provider. Keep a trusted project
+        # test command when switching a patch profile across providers.
+        if task_type == "video":
+            compatible = [name for name in compatible if profiles[name]["provider"] == selected["provider"]]
+        template = (profile if profile in compatible else None) or (default if default in compatible else None)
         if template is None and len(matching) == 1:
             template = matching[0]
         if template is None and len(compatible) == 1:
@@ -245,13 +276,7 @@ def resolve_route(workspace, task, profile=None, *, isolated, policy=None):
         raise ValueError("Only patch profiles can run a test_command")
     video_fields = {"duration", "resolution", "ratio"} & spec.keys()
     if mode == "video":
-        duration = spec.get("duration", 5)
-        resolution = spec.get("resolution", "768p")
-        ratio = spec.get("ratio", "16:9")
-        if (type(duration) is not int or not 5 <= duration <= 15 or resolution not in ("480p", "768p")
-                or ratio not in ("1:1", "3:4", "4:3", "9:16", "16:9", "21:9")):
-            raise ValueError("Unsupported video duration, resolution or aspect ratio")
-        route.update(duration=duration, resolution=resolution, ratio=ratio)
+        route.update(PROVIDERS[provider].video.settings(spec))
     elif video_fields:
         raise ValueError("Video generation settings require a video profile")
     PROVIDERS[provider].api_key()
@@ -263,4 +288,4 @@ def complete(route, prompt):
 
 
 def check_available(route):
-    PROVIDERS[route["provider"]].check_available(route["model"], route.get("mode", "text"))
+    PROVIDERS[route["provider"]].check_available(route["model"], route.get("mode", "text"), route)

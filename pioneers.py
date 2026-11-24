@@ -1737,7 +1737,7 @@ def stop_host_executor(process):
     signal_group(signal.SIGKILL)
 
 
-def supervise_host_executor(command, workspace, renew, *, deadline_seconds=None):
+def supervise_host_executor(command, workspace, renew, *, deadline_seconds=None, env=None):
     active = False
     requested = None
 
@@ -1749,7 +1749,7 @@ def supervise_host_executor(command, workspace, renew, *, deadline_seconds=None)
 
     previous = {signum: signal.signal(signum, interrupt) for signum in (signal.SIGINT, signal.SIGTERM)}
     try:
-        with subprocess.Popen(command, cwd=workspace, start_new_session=os.name != "nt") as process:
+        with subprocess.Popen(command, cwd=workspace, env=env, start_new_session=os.name != "nt") as process:
             try:
                 active = True
                 if requested is not None:
@@ -1803,7 +1803,10 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
             command = [sys.executable, "-E", "-s", str(ROOT / "model_worker.py"), str(request), str(output)]
             # Bound a slow HTTP stream as well as the subsequent local test.
             limit = 900 if executor["mode"] == "video" else 360
-            code = supervise_host_executor(command, workspace, renew, deadline_seconds=limit)
+            env = project_environment()
+            provider = PROVIDERS[executor["provider"]]
+            env[provider.key_env] = provider.api_key()
+            code = supervise_host_executor(command, workspace, renew, deadline_seconds=limit, env=env)
             result = read_json(output)
             if code or not result.get("content"):
                 result.setdefault("error", f"模型执行器未交付有效产物（退出码 {code}）")
@@ -1817,6 +1820,8 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
         active_assignment(job, task_id, attempt)
         executor = job["executors"][str(attempt)]
         executor.update(elapsed_seconds=round(time.monotonic() - start, 3), usage=result.get("usage", {}))
+        if result.get("actual_model"):
+            executor["actual_model"] = result["actual_model"]
         if isinstance(result.get("video"), dict):
             executor["video"] = {key: result["video"][key] for key in ("request_id", "state") if key in result["video"]}
         _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
@@ -1859,7 +1864,7 @@ def execute_host(run_dir, task_id, attempt, command):
             return execute_model(run_dir, task_id, attempt, workspace, renew)
         if not command:
             raise ValueError("Native host assignments require --exec-command")
-        return supervise_host_executor(command, workspace, renew)
+        return supervise_host_executor(command, workspace, renew, env=project_environment())
 
 
 def handle_judgment(run_dir, key, task_id, attempt, artifact):

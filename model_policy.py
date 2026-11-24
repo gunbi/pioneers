@@ -8,12 +8,24 @@ import sqlite3
 
 
 MODES = ("text", "patch", "video")
-MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:+-]{0,255}")
+MODEL_ID = re.compile(r"~?[A-Za-z0-9][A-Za-z0-9_./:+-]{0,255}")
 PROVIDER_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 
 
 class PolicyConflict(ValueError):
     """The operator edited a stale dashboard snapshot."""
+
+
+def banned(policy, provider, model):
+    blocked = [entry["model"] for entry in policy.get("banned", []) if entry["provider"] == provider]
+    if provider != "openrouter":
+        return model in blocked
+    if not blocked:
+        return False
+    # Dynamic routers may choose any downstream model, including a banned one.
+    if model.startswith(("openrouter/", "~")):
+        return True
+    return any(model.partition(":")[0] == other.partition(":")[0] for other in blocked)
 
 
 def empty_policy():
@@ -72,7 +84,7 @@ def update_policy(registry, request):
         if revision != policy["revision"]:
             raise PolicyConflict("规则已被其他操作更新，请刷新后重试")
         if action == "select":
-            if ref in policy["banned"]:
+            if banned(policy, ref["provider"], ref["model"]):
                 raise ValueError("不能选择已禁用的模型")
             policy["selected"][mode] = ref
         elif action == "clear":
@@ -80,7 +92,7 @@ def update_policy(registry, request):
         elif action == "ban":
             if ref not in policy["banned"]:
                 policy["banned"].append(ref)
-            policy["selected"] = {k: v for k, v in policy["selected"].items() if v != ref}
+            policy["selected"] = {k: v for k, v in policy["selected"].items() if not banned(policy, v["provider"], v["model"])}
         elif action == "unban":
             policy["banned"] = [v for v in policy["banned"] if v != ref]
         else:

@@ -7,7 +7,7 @@ from time import monotonic
 
 from iterations import registered_run
 from model_plugins import PROVIDERS, public_profiles
-from model_policy import read_policy, update_policy
+from model_policy import banned, read_policy, update_policy
 from skill_sources import read_json, write_json
 
 
@@ -37,7 +37,7 @@ def run_usage(registry):
                 rows.append({
                     "run": entry.stem, "title": data.get("title") or data.get("goal") or entry.stem,
                     "task": task_id, "attempt": int(attempt), "provider": executor["provider"],
-                    "model": executor["model"], "mode": executor.get("mode"), "state": state,
+                    "model": executor.get("actual_model") or executor["model"], "requested_model": executor["model"], "mode": executor.get("mode"), "state": state,
                     "started_at": executor.get("started_at"), "elapsed_seconds": executor.get("elapsed_seconds"),
                     "input": usage.get("prompt_tokens"), "output": usage.get("completion_tokens"), "total": total,
                     "videos": usage.get("videos"), "video_seconds": usage.get("video_seconds"),
@@ -63,7 +63,6 @@ class ModelBoard:
     def _refresh(self, name):
         try:
             provider = PROVIDERS[name]
-            provider.api_key()
             models = provider.list_catalog()
             self.registry.mkdir(parents=True, exist_ok=True)
             write_json(self._cache(name), {"models": models, "updated_at": datetime.now(timezone.utc).isoformat()})
@@ -90,17 +89,23 @@ class ModelBoard:
             saved = read_json(self._cache(name))
             connected = bool(os.environ.get(provider.key_env, "").strip())
             with self.lock:
-                if (connected and name not in self.refreshing and
+                if ((connected or provider.public_catalog) and name not in self.refreshing and
                         (name not in self.last_check or monotonic() - self.last_check[name] >= 600)):
                     self.refreshing.add(name)
                     Thread(target=self._background_refresh, args=(name,), daemon=True).start()
-                rows.append({"id": name, "connected": connected, "models": saved.get("models", []),
+                rows.append({"id": name, "connected": connected, "public_catalog": provider.public_catalog, "models": saved.get("models", []),
                              "updated_at": saved.get("updated_at"), "error": self.errors.get(name),
                              "refreshing": name in self.refreshing})
         return rows
 
     def snapshot(self):
-        return {"project": self.name, "providers": self.providers(), "policy": read_policy(self.registry),
+        policy = read_policy(self.registry)
+        providers = self.providers()
+        for provider in providers:
+            for model in provider["models"]:
+                if banned(policy, provider["id"], model["id"]):
+                    model["blocked"] = True
+        return {"project": self.name, "providers": providers, "policy": policy,
                 "profiles": public_profiles(self.workspace) if self.workspace else [], "usage": run_usage(self.registry)}
 
     def apply(self, request):

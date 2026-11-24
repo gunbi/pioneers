@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import model_worker
 from dashboard import dashboard_snapshot
-from model_plugins import ProviderError
+from model_plugins import OpenRouter, ProviderError
 from model_policy import update_policy
 from pioneers import create_run, execute_host, handle_judgment, host_ready, project_registry, update_host, validate_workflow
 from progress import Progress
@@ -44,7 +44,7 @@ class ModelDispatchTest(unittest.TestCase):
     def claim(self, profile=None):
         return update_host(self.run, "spec", None, None, None, None, profile=profile)
 
-    def invoke_worker(self, command, workspace, renew, *, deadline_seconds):
+    def invoke_worker(self, command, workspace, renew, *, deadline_seconds, env):
         self.assertGreater(deadline_seconds, 0)
         renew()
         request, output = map(Path, command[-2:])
@@ -75,6 +75,32 @@ class ModelDispatchTest(unittest.TestCase):
         verdict = self.run / "verdict.json"
         verdict.write_text('{"needs_confirmation":false,"reason":"Verified examples"}')
         self.assertEqual(handle_judgment(self.run, job["decision"], "spec", 1, verdict)["run_state"], "completed")
+
+    def test_openrouter_project_selection_uses_its_own_key_and_persists_returned_model(self):
+        registry = project_registry(self.project)
+        update_policy(registry, {"action": "select", "revision": 0, "mode": "text",
+                                 "provider": "openrouter", "model": "openrouter/free"})
+        account = {"id": "openrouter/free", "architecture": {"input_modalities": ["text"],
+                                                            "output_modalities": ["text"]}}
+        response = {"model": "other/model", "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}}
+
+        def worker(command, workspace, renew, *, deadline_seconds, env):
+            self.assertNotIn("SILICONFLOW_API_KEY", env)
+            self.assertEqual(env["OPENROUTER_API_KEY"], "router-test")
+            return self.invoke_worker(command, workspace, renew, deadline_seconds=deadline_seconds, env=env)
+
+        with patch.dict(os.environ, OPENROUTER_API_KEY="router-test"), patch.object(
+                OpenRouter, "request", side_effect=[{"data": [account]}, response]), patch(
+                "pioneers.supervise_host_executor", worker), redirect_stdout(StringIO()):
+            assignment = self.claim()
+            self.assertEqual(assignment["executor"]["provider"], "openrouter")
+            self.assertEqual(execute_host(self.run, "spec", 1, None), 0)
+        data, _ = dashboard_snapshot(self.run / "status.json")
+        receipt = data["tasks"]["spec"]["executors"]["1"]
+        self.assertEqual(receipt["actual_model"], "other/model")
+        self.assertEqual(receipt["model"], "openrouter/free")
+        self.assertEqual(receipt["usage"]["total_tokens"], 4)
 
     @patch("pioneers.check_available")
     def test_timeout_allows_host_retry_and_fences_old_attempt(self, _catalog):

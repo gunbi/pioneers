@@ -235,14 +235,18 @@ python3 pioneers.py --judge RUN_DIR --decision D2 --task requirements --attempt 
 
 领取时会校验运行状态和任务依赖。完成时，pioneers 存档交付文件，并为下游生成含前置交付物的提示。开启独立验收的 QA 任务使用 JSON 报告作为交付物。返回 `returned` 时，继续领取返回的 `repair_task`，再领取复验任务。第二轮起，每次回报都需要传入领取时返回的 `--attempt N`。执行失败或环境阻塞时，登记原因并停止领取后续任务。宿主必须在派发后转发可见的动作和结果。
 
-### 按任务选用 SiliconFlow 模型
+<a id="按任务选用-siliconflow-模型"></a>
 
-宿主能在一次运行里混用本机 Agent 和不同模型。项目在自己的 `.pioneers/models.json` 登记允许使用的配置，模型 ID 从 [SiliconFlow 国内站](https://cloud.siliconflow.cn/me/models) 选择。下面的 `test_command` 是项目维护者指定的测试命令。
+### 按任务选用模型供应商
+
+宿主能在一次运行里混用本机 Agent 和不同模型。项目在自己的 `.pioneers/models.json` 登记允许使用的配置，供应商可填 `siliconflow` 或 `openrouter`，模型 ID 从项目看板的模型目录选择。下面的 `test_command` 是项目维护者指定的测试命令。
 
 ```json
 {
   "profiles": {
     "writer": {"provider": "siliconflow", "model": "Qwen/Qwen3.5-35B-A3B", "mode": "text", "tags": ["短文本"]},
+    "router-writer": {"provider": "openrouter", "model": "openrouter/free", "mode": "text"},
+    "router-film": {"provider": "openrouter", "model": "minimax/hailuo-3", "mode": "video", "duration": 5},
     "film": {"provider": "siliconflow", "model": "MiniMaxAI/MiniMax-H3", "mode": "video", "duration": 5, "resolution": "480p"},
     "coder": {
       "provider": "siliconflow", "model": "deepseek-ai/DeepSeek-V3.2",
@@ -253,9 +257,11 @@ python3 pioneers.py --judge RUN_DIR --decision D2 --task requirements --attempt 
 }
 ```
 
-看板服务、领取和执行远端任务的进程从环境读取 `SILICONFLOW_API_KEY`。在项目看板打开「模型管理」可搜索账号的完整目录、按能力筛选、指定模型、禁用或解禁、保存选型倾向。同一项目的迭代共享这些设置。单轮看板也提供项目模型页的只读入口。
+看板服务、领取和执行远端任务的进程按供应商从环境读取 `SILICONFLOW_API_KEY` 或 `OPENROUTER_API_KEY`。可将两个变量保存在同一份本机环境文件，在启动看板和派工进程前导出。模型配置只保存供应商和型号。在项目看板打开「模型管理」可搜索账号的完整目录、按能力筛选、指定模型、禁用或解禁、保存选型倾向。同一项目的迭代共享这些设置。单轮看板也提供项目模型页的只读入口。
 
-目录从不附加类型筛选的 `GET /v1/models` 获取，再用分类查询标注能力。派工时才检查要执行的具体能力，例如文本查 `sub_type=chat`，文生视频查 `sub_type=text-to-video`。目录刷新失败时仍显示上次成功的数据和时间。[官方模型目录 API](https://api-docs.siliconflow.cn/docs/api/models-get)
+SiliconFlow 目录从不附加类型筛选的 `GET /v1/models` 获取，再用分类查询标注能力。派工时才检查要执行的具体能力，例如文本查 `sub_type=chat`，文生视频查 `sub_type=text-to-video`。目录刷新失败时仍显示上次成功的数据和时间。[官方模型目录 API](https://api-docs.siliconflow.cn/docs/api/models-get)
+
+OpenRouter 目录无需凭证即可浏览。看板合并 `GET /models?output_modalities=all` 的完整目录和 `GET /videos/models` 的视频参数，按输入、输出与端点标记可派任务。目录中另有仅支持批处理、图像输入、视频编辑等用途的型号。文本与补丁调用 `POST /chat/completions`，派工前用 `GET /models/user` 核对账号目录。文生视频走 `POST /videos` 和 `GET /videos/{id}`，支持在配置中指定 `duration`、`resolution` 和 `ratio`。省略时沿用模型默认值，未获知的时长显示为未知。选择 OpenRouter 后，项目禁用清单覆盖同一型号的运行变体。存在 OpenRouter 禁用项时会同时限制动态路由（如 `openrouter/free`、`~` 别名）。用量按返回的实际模型统计，并在明细保留派工时选用的型号。[模型目录](https://openrouter.ai/docs/api/api-reference/models/get-models) · [视频生成](https://openrouter.ai/docs/guides/overview/multimodal/video-generation)
 
 对兼容的远端任务，项目指定模型优先，其次是宿主显式选择的配置、与倾向匹配的配置、任务类型与角色默认配置。项目禁用规则适用于所有指向该模型的别名，领取和启动前都会检查。已经发出的请求按原回执跟踪。补丁任务始终使用可信配置中的测试命令；`--profile host` 可选择宿主执行。倾向可以写「短文本优先」，框架会匹配配置名称、模型 ID 或项目自定义的 `tags`；无法据此判断的自然语言由宿主从 `--host-ready` 读取后选型。
 
@@ -267,7 +273,7 @@ python3 pioneers.py --host-exec RUN_DIR --task requirements --attempt 1
 使用领取返回的实际轮次。第二条命令负责调用模型、独立续约和归档，返回原有的 `judgment` 供宿主判断。每轮看板记录实际配置的平台、模型、耗时及服务返回的 token 数。超时、限流或补丁验证失败时，框架保留原因并走原来的中断恢复流程。宿主根据就绪队列显式重派下一轮，可以换模型。
 
 - **文本产物**适合规格、验收样例和其他只读文本任务。请求包含任务说明、验收条件、所选 Skill 和前置产物；选择平台时应考虑这些材料能否发送给它。
-- **文生视频**在工作流任务中填写 `video_prompt`，并把 `tools`、`write_paths` 留空。模型仅接收这段创作描述。框架走 `POST /video/submit` 和 `POST /video/status`，先保存提交标记，再保存供应商请求 ID。失联重派时按原 ID 查询；提交结果不明时需人工核对。供应商视频链接有效期约一小时，需保留的成片请及时另存。[视频 API 文档](https://api-docs.siliconflow.cn/docs/api/video-status-post)
+- **文生视频**在工作流任务中填写 `video_prompt`，并把 `tools`、`write_paths` 留空。模型仅接收这段创作描述。SiliconFlow 走 `POST /video/submit` 和 `POST /video/status`，先保存提交标记，再保存供应商请求 ID。失联重派时按原 ID 查询；提交结果不明时需人工核对。SiliconFlow 视频链接有效期约一小时。OpenRouter 会返回限时签名链接或需用本机密钥请求的官方视频内容地址，需保留的成片请及时另存。[视频 API 文档](https://api-docs.siliconflow.cn/docs/api/video-status-post)
 - **补丁任务**把 `write_paths` 中逐一指定的 UTF-8 普通文件交给模型。需要干净的独立 Git 工作区，最多 24 个文件、合计 192 KiB。模型可更新文件或创建新文件。本地执行器在临时副本中运行项目配置的测试，通过后才将改动提交到本轮分支。macOS 使用 `sandbox-exec`，Linux 需要可用的 `bwrap`。测试依赖应能在隔离环境使用；需要联网、桌面工具或其他宿主能力时选择 `host`。
 - **运行用量**按项目、模型和任务尝试展示。文本记输入、输出和总 token；视频记生成数和秒数，相同供应商请求 ID 仅计一次。无回执的数量显示未知。独立验收、工具和外部操作继续交给宿主。
 

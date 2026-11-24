@@ -6,7 +6,7 @@ import sys
 
 from model_patch import apply_patch_result, check_checkout
 from model_plugins import PROVIDERS, complete
-from siliconflow_media import video_job
+from model_video import video_job
 from skill_sources import write_json
 
 
@@ -20,6 +20,8 @@ def run(request, workspace, output):
             if route["mode"] == "patch":
                 check_checkout(workspace, request["checkout"])
             content, result["usage"] = complete(route, request["prompt"])
+            if "actual_model" in result["usage"]:
+                result["actual_model"] = result["usage"].pop("actual_model")
             if route["mode"] == "patch":
                 content = apply_patch_result(workspace, request["write_paths"], content, route["test_command"],
                                              supervised=True, checkout=request["checkout"])

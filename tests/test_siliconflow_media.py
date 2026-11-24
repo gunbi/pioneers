@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
+from model_plugins import SiliconFlow
 from model_worker import run
 from siliconflow_media import list_catalog
 
@@ -36,8 +37,8 @@ class SiliconFlowVideoTest(unittest.TestCase):
         self.request = {"route": {"provider": "siliconflow", "model": "video-model", "mode": "video", "duration": 7},
                         "video_prompt": "Clouds pass over a hill", "video_receipt": str(self.receipt)}
         self.output = self.root / "result.json"
-        self.provider = Mock()
-        registry = patch.dict("model_worker.PROVIDERS", {"siliconflow": self.provider})
+        self.provider = SiliconFlow
+        registry = patch.object(SiliconFlow, "request")
         registry.start()
         self.addCleanup(registry.stop)
         self.submission = {"requestId": "job-123"}
@@ -50,7 +51,7 @@ class SiliconFlowVideoTest(unittest.TestCase):
     def test_worker_submits_once_and_resumes_known_job(self):
         self.provider.request.side_effect = [self.submission, {"status": "InQueue"}, TimeoutError("timeout"),
                                              {"status": "InProgress"}, self.completed]
-        with patch("siliconflow_media.time.sleep"):
+        with patch("model_video.time.sleep"):
             failed = self.execute(1)
             self.assertEqual(failed["video"], {"request_id": "job-123", "state": "InQueue"})
             self.assertNotIn("usage", failed)
@@ -89,9 +90,9 @@ class SiliconFlowVideoTest(unittest.TestCase):
 
     def test_retry_after_link_expiry_queries_existing_job(self):
         self.provider.request.side_effect = [self.submission, self.completed, self.completed]
-        with patch("siliconflow_media.time.time", return_value=100):
+        with patch("model_video.time.time", return_value=100):
             self.execute(0)
-        with patch("siliconflow_media.time.time", return_value=3900):
+        with patch("model_video.time.time", return_value=3900):
             self.execute(0)
         self.assertEqual([c.args[0] for c in self.provider.request.call_args_list],
                          ["/video/submit", "/video/status", "/video/status"])

@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 from dashboard import dashboard_server
 from iterations import register_run
 from model_board import ModelBoard, run_usage
-from model_plugins import SiliconFlow
+from model_plugins import OpenRouter, SiliconFlow
 from skill_sources import write_json
 
 
@@ -19,6 +19,9 @@ class ModelBoardTest(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
+        public = patch.object(OpenRouter, "public_catalog", False)
+        public.start()
+        self.addCleanup(public.stop)
         self.root = Path(temp.name)
         self.registry = self.root / "registry"
         self.registry.mkdir()

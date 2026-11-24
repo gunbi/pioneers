@@ -95,7 +95,7 @@ dl.metrics { display:flex; flex-wrap:wrap; gap:1.2rem 2rem; padding:.65rem 0; ma
       <div class="section-heading"><h3>宿主如何选择</h3></div>
       <ol>
         <li>独立验收、工具操作与外部操作由宿主执行。宿主也可主动领取本机任务。</li>
-        <li>远端任务先核对模型能力和项目禁用清单。禁用覆盖同一提供商下该模型的所有别名，开始调用前会再检查一次。</li>
+        <li>远端任务先核对模型能力和项目禁用清单。禁用覆盖同一提供商下该模型的所有别名，开始调用前会再检查一次。项目有 OpenRouter 禁用项时，会同时限制可代选其他型号的动态路由。</li>
         <li>优先使用项目为此任务类型指定的模型，其次使用宿主显式选择的配置。</li>
         <li>自动选择时先匹配偏好中的模型名或项目配置标签，再查任务类型和角色的默认配置。其他自然语言倾向交给宿主判断。</li>
       </ol>
@@ -113,7 +113,7 @@ dl.metrics { display:flex; flex-wrap:wrap; gap:1.2rem 2rem; padding:.65rem 0; ma
 
 "use strict";
 const el = id => document.getElementById(id);
-const kinds = {chat:"对话",video:"视频","text-to-video":"文生视频",image:"图像",audio:"音频",embedding:"向量",rerank:"重排",other:"其他"};
+const kinds = {text:"文本输出",chat:"对话",video:"视频","text-to-video":"文生视频",image:"图像",audio:"音频",embedding:"向量",rerank:"重排",transcription:"语音转写",decisions:"决策",other:"其他"};
 const modes = {text:"文本",patch:"代码补丁",video:"文生视频"};
 const states = {running:"执行中",completed:"已完成",failed:"失败",interrupted:"已中断",blocked:"受阻",judging:"待判断",pending:"待执行",recovery_required:"待恢复",awaiting_confirmation:"待确认",returned:"需返工",accepted:"已验收",started:"已启动",succeeded:"成功",Succeed:"生成成功",InProgress:"生成中",InQueue:"排队中",Failed:"生成失败"};
 const fmt = new Intl.NumberFormat("zh-CN");
@@ -126,12 +126,12 @@ function node(tag, text, className) {
   if (className) result.className = className;
   return result;
 }
-function providerName(id) { return id === "siliconflow" ? "SiliconFlow" : id === "host" ? "宿主 Agent" : id; }
+function providerName(id) { return id === "siliconflow" ? "SiliconFlow" : id === "openrouter" ? "OpenRouter" : id === "host" ? "宿主 Agent" : id; }
 function identity(item) { return JSON.stringify([item.provider,item.model]); }
 function inventory() {
-  return data.providers.flatMap(provider => provider.models.map(item => ({provider:provider.id, model:item.id, kinds:item.kinds || []})));
+  return data.providers.flatMap(provider => provider.models.map(item => ({provider:provider.id, model:item.id, blocked:item.blocked, kinds:item.kinds || []})));
 }
-function forbidden(item) { return data.policy.banned.some(entry => identity(entry) === identity(item)); }
+function forbidden(item) { return !!item.blocked || data.policy.banned.some(entry => identity(entry) === identity(item)); }
 function capabilities(item) {
   const types = [];
   if (item.kinds.includes("chat")) types.push("text", "patch");
@@ -171,6 +171,7 @@ function modelCell(row, item) {
   const cell = textCell(row,null);
   cell.append(node("div",item.model || providerName(item.provider),"model"));
   if (item.model) cell.append(node("small",providerName(item.provider)));
+  return cell;
 }
 function emptyRow(count, text) {
   const row=node("tr"); const cell=textCell(row,text,"empty"); cell.colSpan=count; return row;
@@ -187,7 +188,7 @@ function drawProviders() {
     const info=node("div");
     info.append(node("h3",providerName(provider.id)));
     const sync = provider.refreshing ? "正在同步目录…" : provider.updated_at ? "上次同步 " + localTime(provider.updated_at) : "尚未同步目录";
-    info.append(node("p",(provider.connected ? "已配置凭证" : "未配置提供商凭证") + " · " + sync,"muted"));
+    info.append(node("p",(provider.connected ? "已配置凭证" : provider.public_catalog ? "公开目录 · 派工需配置凭证" : "未配置提供商凭证") + " · " + sync,"muted"));
     if (provider.error) info.append(node("p",provider.error,"reason"));
     const refresh=btn("刷新目录",()=>post({action:"refresh",provider:provider.id}),"刷新 "+providerName(provider.id)+" 目录");
     refresh.dataset.focus = provider.id;
@@ -213,7 +214,11 @@ function renderCatalog() {
     textCell(row,item.kinds.map(k=>kinds[k] || k).join("、") || "未知");
     textCell(row,capabilities(item).map(m=>modes[m]).join("、") || "仅目录展示");
     const cell = textCell(row,null);
-    const banned=forbidden(item);
+    const banned=data.policy.banned.some(entry=>identity(entry)===identity(item));
+    if (!banned && forbidden(item)) {
+      cell.append(node("span","受项目禁用规则限制","reason"));
+      return row;
+    }
     const label=banned ? "解禁" : "禁用";
     if (banned) cell.append(node("span","已禁用 ","reason"));
     const toggle=btn(label,()=>post({action:banned?"unban":"ban",provider:item.provider,model:item.model,revision:data.policy.revision}),label+" "+item.model);
@@ -321,7 +326,8 @@ function drawUsage() {
     link.href="runs/"+encodeURIComponent(item.run)+"/#stage-"+encodeURIComponent(item.task)+"."+encodeURIComponent(item.attempt);
     link.dataset.focus=JSON.stringify([item.run,item.task,item.attempt]);
     first.append(link,node("div",item.task+" · 第 "+item.attempt+" 轮","muted"));
-    modelCell(row,item);
+    const model = modelCell(row,item);
+    if (item.requested_model && item.model !== item.requested_model) model.append(node("small","派工选择："+item.requested_model));
     const status=textCell(row,states[item.state] || (item.state==="previous" ? "历史轮次" : item.state));
     if (item.video_state) status.append(node("div",states[item.video_state] || item.video_state,"muted"));
     if (item.error) status.append(node("div",item.error,"reason"));
