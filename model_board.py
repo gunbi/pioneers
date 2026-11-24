@@ -2,13 +2,35 @@
 
 from datetime import datetime, timezone
 import os
+import re
 from threading import Lock, Thread
 from time import monotonic
 
 from iterations import registered_run
 from model_plugins import PROVIDERS, public_profiles
-from model_policy import banned, read_policy, update_policy
+from model_policy import MEDIA_MODES, MODE_KINDS, banned, read_policy, update_policy
 from skill_sources import read_json, write_json
+
+
+MEDIA_FORMATS = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                 "webp": "image/webp", "mp3": "audio/mpeg", "wav": "audio/wav"}
+MEDIA_FILENAME = re.compile(r"([a-z0-9][a-z0-9_-]*)\.([1-9][0-9]*)\.([a-z0-9]+)")
+
+
+def media_reference(task_id, executor):
+    """Only advertise framework-produced files bound to this task's execution record."""
+    media = executor.get("media")
+    if not isinstance(media, dict) or not isinstance(media.get("filename"), str):
+        return None
+    match = MEDIA_FILENAME.fullmatch(media["filename"])
+    if not match or match[1] != task_id or match[3] not in MEDIA_FORMATS:
+        return None
+    mime = MEDIA_FORMATS[match[3]]
+    mode = executor.get("mode")
+    if (mode not in MEDIA_MODES or (mode == "image") != mime.startswith("image/") or media.get("mime") != mime or
+            type(media.get("bytes")) is not int or media["bytes"] <= 0):
+        return None
+    return {"filename": media["filename"], "mime": mime, "bytes": media["bytes"]}
 
 
 def run_usage(registry):
@@ -41,6 +63,8 @@ def run_usage(registry):
                     "started_at": executor.get("started_at"), "elapsed_seconds": executor.get("elapsed_seconds"),
                     "input": usage.get("prompt_tokens"), "output": usage.get("completion_tokens"), "total": total,
                     "videos": usage.get("videos"), "video_seconds": usage.get("video_seconds"),
+                    "images": usage.get("images"), "audio_files": usage.get("audio_files"),
+                    "media": media_reference(task_id, executor),
                     "request_id": video.get("request_id"), "video_state": video.get("state"),
                     "reason": executor.get("reason"), "error": executor.get("error"),
                 })
@@ -123,7 +147,7 @@ class ModelBoard:
             if action == "select":
                 models = read_json(self._cache(name)).get("models", [])
                 mode = request.get("mode")
-                kind = {"text": "chat", "patch": "chat", "video": "text-to-video"}.get(mode) if isinstance(mode, str) else None
+                kind = MODE_KINDS.get(mode) if isinstance(mode, str) else None
                 if not kind or not any(m["id"] == request.get("model") and kind in m["kinds"] for m in models):
                     raise ValueError("目录中未找到适用于此任务类型的模型，请先刷新目录")
             update_policy(self.registry, request)
