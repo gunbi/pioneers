@@ -65,10 +65,3 @@ python3 pioneers.py examples/todo-sync.json
 ### 云端看板操作
 
 宿主提供私有站点部署或端口预览时，可以在云端查看同一个看板。需要远程审批时，由操作者在私有入口配置控制凭证。[配置云端访问与审批](docs/usage.md#云端看板操作)
-
-<details>
-<summary>项目缘起</summary>
-
-我在学习一个 Agent 怎样循环调用工具时，想到了两个问题。多个角色能否并行交付同一个项目？处理简单文本和生成视频的任务，能否各用擅长这件事的模型？宿主掌握底层执行循环，于是这个仓库把重点放在角色间可以看见和验证的交接上。只有一个宿主模型时，同样可以沿用这套分工。[最初的学习材料《Agent Loop》](https://github.com/shareAI-lab/learn-claude-code/blob/main/docs/zh/s01-the-agent-loop.md)
-
-</details>
