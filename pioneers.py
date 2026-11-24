@@ -1,6 +1,7 @@
 import argparse
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from graphlib import CycleError, TopologicalSorter
 import json
 import os
@@ -30,7 +31,9 @@ from dispatch import (
 )
 from iterations import latest_delivery, project_snapshot, register_run
 from skill_sources import SNAPSHOT, read_json, refresh_run, write_json
-from model_plugins import PROVIDERS, banned, check_available, dispatch_models, resolve_route
+from model_plugins import (
+    PROVIDERS, banned, check_available, dispatch_models, models_config, project_default, public_profiles, resolve_route, shared_preflight, task_mode,
+)
 import generated_media
 from model_policy import MEDIA_MODES, read_policy
 
@@ -900,6 +903,9 @@ def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True, 
             # An interrupted synchronous POST has no pollable upstream job ID.
             record_execution(job, {"type": "operation", "id": "media-generation", "kind": "external",
                                    "status": "started", "summary": "媒体生成提交结果待向供应商核实"})
+    if missing_recorded_receipt(progress.path.parent, task, job):
+        automatic = False
+        reason = "原生成已登记提交，回执文件缺失，请人工核对"
     kinds = mark_interruption(job)
     if task.get("video_prompt"):
         path = video_receipt_path(progress.path.parent, task_id, job)
@@ -934,6 +940,167 @@ def reap_host_assignments(run_dir, data):
         return progress.data
 
 
+def generation_receipt(run_dir, task, job):
+    if task.get("media"):
+        return generated_media.receipt_path(run_dir, task["id"], generated_media.generation(job))
+    if task.get("video_prompt"):
+        return video_receipt_path(run_dir, task["id"], job)
+    return None
+
+
+def missing_recorded_receipt(run_dir, task, job):
+    path = generation_receipt(run_dir, task, job)
+    if not path or os.path.lexists(path):
+        return False
+    number = video_generation(job) if task.get("video_prompt") else generated_media.generation(job)
+    return any(key.isdigit() and int(key) >= number and (entry.get("video") or entry.get("media") or entry.get("reuse_only"))
+               for key, entry in job.get("executors", {}).items())
+
+
+def retained_executor(run_dir, task, job, receipt):
+    """Recover the exact old generation parameters or the worker that owns a checkpoint."""
+    start = job.get("continuity_from", job.get("attempt", 1))
+    number = video_generation(job) if task.get("video_prompt") else generated_media.generation(job)
+    history = job.get("executors", {})
+    if not receipt and missing_recorded_receipt(run_dir, task, job):
+        raise ValueError("原生成已登记提交，回执文件缺失，请人工核对后接续")
+    for attempt in range(job.get("attempt", 1) - 1, start - 1, -1):
+        executor = history.get(str(attempt), {})
+        if receipt:
+            if attempt < number:
+                continue
+            previous = run_dir / f".model-{task['id']}-{attempt}.json"
+            request = read_json(previous) if not previous.is_symlink() else {}
+            route = request.get("route") or {}
+            if (not isinstance(route, dict) or route.get("mode") != task_mode(task)
+                    or route.get("provider") not in PROVIDERS):
+                continue
+            if any(k in executor and route.get(k) != executor[k] for k in ("mode", "provider", "model")):
+                raise ValueError("已有生成回执，原执行请求不匹配，请人工核对")
+            return route
+        if job.get("execution", {}).get(str(attempt), {}).get("checkpoint"):
+            if executor.get("provider", "host") == "host":
+                return {"provider": "host"}
+            return executor
+    if receipt:
+        raise ValueError("已有生成回执，找不到原执行记录，请人工核对")
+    return None
+
+
+def free_in_catalog(catalogs, route):
+    from model_selection import confirmed_free
+    provider = route["provider"]
+    return any(isinstance(row, dict) and row.get("id") == route["model"] and confirmed_free(provider, row, route["mode"])
+               for row in catalogs.get(provider, ()))
+
+
+def cached_catalogs(registry):
+    from model_selection import load_catalogs
+
+    @lru_cache(maxsize=1)
+    def load():
+        try:
+            return load_catalogs(registry)
+        except (OSError, ValueError, RuntimeError):
+            return {}
+    return load
+
+
+def routing_options(run_dir, data, task, workspace, config, policy, profile, load):
+    """Return feasible local routes, whether the selection is fixed, and the native fallback reason."""
+    from model_selection import rank_candidates, requires_free
+
+    job = data["tasks"][task["id"]]
+    path = generation_receipt(run_dir, task, job)
+    receipt = bool(path and os.path.lexists(path))
+    previous = retained_executor(run_dir, task, job, receipt)
+    mode = task_mode(task)
+    fixed = profile or project_default(config, task)
+    pinned = policy.get("selected", {}).get(mode)
+    if previous:
+        if previous["provider"] == "host":
+            if profile not in (None, "host"):
+                raise ValueError("请用原宿主接续检查点")
+            return [], True, "沿原宿主接续检查点"
+        if profile == "host" or (profile and profile != previous.get("profile")):
+            raise ValueError("已有模型回执或检查点，请沿原模型接续")
+    elif profile == "host" or (mode == "host" and not profile):
+        return [], True, "宿主原生执行"
+    elif fixed == "host" and not pinned:
+        return [], True, "项目默认由宿主执行"
+
+    isolated = bool(data.get("git_base"))
+    options = {"isolated": isolated, "config": config, "policy": {**policy, "preference": ""}}
+    restricted = requires_free(policy.get("preference", ""))
+    if previous or fixed or pinned:
+        if previous and receipt:
+            route = {**previous, "reuse_only": True, "reason": "复用原生成回执及执行参数"}
+            if banned(policy, route["provider"], route["model"]):
+                raise ValueError("原模型已被项目禁用，请人工核对交付物")
+            if mode == "video":
+                PROVIDERS[route["provider"]].api_key()
+        elif previous:
+            selected = {**previous, "reason": "沿原模型接续检查点"}
+            route = resolve_route(workspace, task, candidate=selected, **options)
+        else:
+            route = resolve_route(workspace, task, profile, **options)
+        if route is None:
+            return [], True, "项目默认由宿主执行"
+        if not receipt and restricted and not free_in_catalog(load(), route):
+            raise ValueError("项目要求仅免费，指定模型的免费价格未获目录确认")
+        if mode == "patch":
+            from model_patch import test_sandbox
+            test_sandbox()
+        item = {key: route[key] for key in ("provider", "model", "reason")}
+        return [(item, route)], True, ""
+
+    if mode == "patch":
+        if not isolated or not any(spec.get("mode") == "patch" for spec in config[0].values()):
+            return [], False, "代码任务缺少隔离工作区或可信补丁测试配置，由宿主执行"
+        from model_patch import test_sandbox
+        try:
+            test_sandbox()
+        except ValueError:
+            return [], False, "本机缺少补丁测试沙箱，由宿主执行"
+
+    candidates = rank_candidates(load(), task, mode, policy, profiles=public_profiles(workspace, config), limit=None)
+    options_list = []
+    for item in candidates:
+        if restricted and item.get("free") is not True:
+            continue
+        try:
+            route = resolve_route(workspace, task, candidate=item, **options)
+        except (ValueError, OSError):
+            continue
+        options_list.append((item, route))
+    return options_list, False, "没有符合任务能力、项目限制与凭据的可用模型，由宿主执行"
+
+
+def select_claim(options, fixed, fallback, model_choice, receipt):
+    if model_choice:
+        options = [(item, route) for item, route in options[:8] if f"{item['provider']}/{item['model']}" == model_choice]
+        if not options:
+            raise ValueError("--model-choice 必须匹配当前任务的可用候选或已指定模型")
+    failed = 0
+    for item, route in options:
+        try:
+            if not receipt:
+                check_available(route)
+        except (ValueError, RuntimeError, OSError):
+            if fixed or model_choice:
+                raise
+            failed += 1
+            continue
+        if model_choice and not fixed:
+            route = {**route, "reason": "宿主从候选中选择：" + route["reason"]}
+        if failed:
+            route = {**route, "reason": f"前 {failed} 个候选预检失败，改用 {item['model']}。 " + route["reason"]}
+        return route, ""
+    if failed:
+        fallback = f"{failed} 个候选模型预检全部失败，由宿主执行"
+    return None, "" if fixed else fallback
+
+
 def host_ready(run_dir, wait=0):
     run_dir = run_dir.resolve(strict=True)
     deadline = time.monotonic() + wait
@@ -958,7 +1125,24 @@ def host_ready(run_dir, wait=0):
             break
         time.sleep(min(0.35, remaining))
     workspace = Path(data["workspace"])
-    summary.update(dispatch_models(project_registry(workspace), workspace))
+    registry = project_registry(workspace)
+    summary.update(dispatch_models(registry, workspace))
+    if summary["ready"]:
+        load = cached_catalogs(registry)
+        config = models_config(workspace) if "model_profiles_error" not in summary else None
+        for item in summary["ready"]:
+            task = tasks[item["task"]]
+            item.update(complexity=task.get("complexity", {}), model_candidates=[])
+            if config is None:
+                item["model_routing_reason"] = summary["model_profiles_error"]
+                continue
+            try:
+                options, _, reason = routing_options(run_dir, data, task, workspace, config, summary["model_policy"], None, load)
+                item["model_candidates"] = [candidate for candidate, _ in options[:8]]
+                if not options:
+                    item["model_routing_reason"] = reason
+            except (ValueError, OSError, RuntimeError) as error:
+                item["model_routing_reason"] = str(error)
     return summary
 
 
@@ -1305,7 +1489,7 @@ def reported_commit(task, checkout):
     return head
 
 
-def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=None, *, route=None):
+def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=None, *, route=None, fallback_reason=""):
     run_dir = progress.path.parent
     tasks = progress.data["tasks"]
     task = workflow_tasks[task_id]
@@ -1362,10 +1546,14 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
             raise ValueError("视频已有供应商回执，请用原模型查询或人工核对交付物")
     if progress.data["mode"] == "host":
         execution = {"provider": "host"}
+        if fallback_reason:
+            execution["reason"] = fallback_reason
         if route:
             execution = {key: route[key] for key in ("profile", "provider", "model", "mode")}
             if route.get("reason"):
                 execution["reason"] = route["reason"]
+            if route.get("reuse_only"):
+                execution["reuse_only"] = True
             request = {"route": route, "prompt": assignment["prompt"], "write_paths": task.get("write_paths", [])}
             if route["mode"] in MEDIA_MODES:
                 number = generated_media.generation(job)
@@ -1692,7 +1880,7 @@ def execute_live(tasks, order, executor, progress):
                 raise
 
 
-def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=None, member_name=None, profile=None):
+def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=None, member_name=None, profile=None, model_choice=None):
     run_dir = run_dir.resolve(strict=True)
     if state is None:
         data = Progress.open(run_dir).data
@@ -1706,21 +1894,21 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
         workspace = project_workspace(data.get("workspace"))
         registry = project_registry(workspace)
         job = data["tasks"][task_id]
-        receipt = (generated_media.receipt_path(run_dir, task_id, generated_media.generation(job))
-                   if before[task_id].get("media") else None)
+        task = before[task_id]
+        blockers = claim_blockers(data, before, task_id)
+        if blockers:
+            raise ValueError(blockers[0]["message"])
+        receipt = generation_receipt(run_dir, task, job)
         reuse_only = bool(receipt and os.path.lexists(receipt))
-        route = resolve_route(workspace, before[task_id], profile, isolated=bool(data.get("git_base")),
-                              policy=read_policy(registry), require_key=not reuse_only)
-        # A slow catalog call must never hold the state lock used for lease renewal.
-        if route:
-            blockers = claim_blockers(data, before, task_id)
-            if blockers:
-                raise ValueError(blockers[0]["message"])
-            if route["mode"] == "patch":
-                from model_patch import test_sandbox
-                test_sandbox()
-            if not reuse_only:
-                check_available(route)
+        config = ({}, {}) if profile == "host" else models_config(workspace)
+        policy = read_policy(registry)
+        # All catalog reads and provider preflight happen outside the heartbeat lock.
+        options, fixed, fallback = routing_options(run_dir, data, task, workspace, config, policy, profile,
+                                                  cached_catalogs(registry))
+        with shared_preflight():
+            route, reason = select_claim(options, fixed, fallback, model_choice, reuse_only)
+        if not (dashboard_is_running(run_dir, data.get("dashboard_port")) or active_project_port(registry, run_dir)):
+            raise ValueError("Start the run dashboard with --project-dashboard --workspace PROJECT or --dashboard RUN_DIR before claiming tasks")
     # Serialize status read/modify/write across independent CLI invocations.
     with Progress.locked(run_dir) as progress:
         if progress.data["mode"] != "host":
@@ -1731,15 +1919,12 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
         if state is None:
             workspace = project_workspace(progress.data.get("workspace"))
             progress.data["workspace"] = str(workspace)
-            if not (dashboard_is_running(run_dir, progress.data.get("dashboard_port"))
-                    or active_project_port(project_registry(workspace), run_dir)):
-                raise ValueError("Start the run dashboard with --project-dashboard --workspace PROJECT or --dashboard RUN_DIR before claiming tasks")
             if (tasks[task_id] != before[task_id] or progress.data["tasks"][task_id].get("attempt", 1) != before_attempt
                     or (receipt and reuse_only != os.path.lexists(receipt))
-                    or route != resolve_route(workspace, tasks[task_id], profile, isolated=bool(progress.data.get("git_base")),
-                                              policy=read_policy(registry), require_key=not reuse_only)):
+                    or data.get("git_base") != progress.data.get("git_base") or policy != read_policy(registry)
+                    or (profile != "host" and models_config(workspace) != config)):
                 raise ValueError("Task or model profile changed during preflight; claim again")
-            return claim_task(progress, tasks, task_id, member_id, member_name, route=route)
+            return claim_task(progress, tasks, task_id, member_id, member_name, route=route, fallback_reason=reason)
         result = artifact.read_text(encoding="utf-8") if artifact else None
         if state == "checkpoint":
             job = progress.data["tasks"][task_id]
@@ -1826,15 +2011,30 @@ def supervise_host_executor(command, workspace, renew, *, deadline_seconds=None,
 
 def execute_model(run_dir, task_id, attempt, workspace, renew):
     request = run_dir / f".model-{task_id}-{attempt}.json"
+    from model_selection import requires_free
+    snapshot = Progress.open(run_dir).data
+    registry = project_registry(Path(snapshot["workspace"]))
+    current = snapshot["tasks"][task_id]
+    active_assignment(current, task_id, attempt)
+    planned = current["executors"][str(attempt)]
+    policy = read_policy(registry)
+    confirmed = False
+    if (not planned.get("reuse_only") and not banned(policy, planned["provider"], planned["model"])
+            and requires_free(policy.get("preference", ""))):
+        confirmed = free_in_catalog(cached_catalogs(registry)(), planned)
     with Progress.locked(run_dir) as progress:
         job = progress.data["tasks"][task_id]
         active_assignment(job, task_id, attempt)
         executor = job["executors"][str(attempt)]
         if executor.get("started_at"):
             raise ValueError("Model request already started; check its attempt before reassigning")
-        project = Path(progress.data["workspace"])
-        if banned(read_policy(project_registry(project)), executor["provider"], executor["model"]):
+        policy = read_policy(registry)
+        message = None
+        if banned(policy, executor["provider"], executor["model"]):
             message = "模型启动前已被项目禁用，请重新派工"
+        elif not executor.get("reuse_only") and requires_free(policy.get("preference", "")) and not confirmed:
+            message = "项目要求仅免费，启动前未能确认模型免费，请重新派工"
+        if message:
             executor["error"] = message
             _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
             report = report_task(progress, tasks, task_id, "lost", message, None, attempt)
@@ -1853,7 +2053,7 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
             limit = 900 if executor["mode"] in ("video", *MEDIA_MODES) else 360
             env = project_environment()
             provider = PROVIDERS[executor["provider"]]
-            if not executor.get("reuse_only"):
+            if executor["mode"] == "video" or not executor.get("reuse_only"):
                 env[provider.key_env] = provider.api_key()
             code = supervise_host_executor(command, workspace, renew, deadline_seconds=limit, env=env)
             result = read_json(output)
@@ -2017,8 +2217,12 @@ def resolve_recovery(progress, tasks, request, reason):
     if progress.data["mode"] == "host" and job["state"] == "running":
         if job.get("lease_expires_at") is None or expired_assignment(job, time.time()):
             record_assignment_loss(progress, tasks, task_id, "人工确认旧执行端已停止", automatic=False)
-    if job["state"] != "recovery_required":
+    missing_receipt = missing_recorded_receipt(progress.path.parent, tasks[task_id], job)
+    legacy_pending = job["state"] == "pending" and job.get("continuity_from") and missing_receipt
+    if job["state"] != "recovery_required" and not legacy_pending:
         raise ValueError("Choose a task waiting for recovery")
+    if missing_receipt and not content:
+        raise ValueError("原生成回执文件缺失，请接续已核实的交付物")
     if not content and tasks[task_id].get("video_prompt"):
         path = video_receipt_path(progress.path.parent, task_id, job)
         if path.exists():
@@ -2295,6 +2499,7 @@ def main():
     parser.add_argument("--live", action="store_true", help="Use the configured agent executor.")
     parser.add_argument("--model", help="Default model for a new team, or model for a workflow run.")
     parser.add_argument("--profile", help="Project model profile for this host claim, or host for native execution.")
+    parser.add_argument("--model-choice", metavar="PROVIDER/MODEL_ID", help="Choose a model from this ready task's candidates.")
     parser.add_argument("--workspace", type=Path, help="Separate project directory for team setup or task execution.")
     parser.add_argument("--output-dir", type=Path, default=Path(".pioneers/runs"))
     args = parser.parse_args()
@@ -2353,6 +2558,9 @@ def main():
         parser.error("--commit requires --host-adopt")
     if args.profile is not None and (not args.host_claim or not args.profile.strip()):
         parser.error("--profile requires --host-claim and a profile name")
+    if args.model_choice is not None and (not args.host_claim or args.profile is not None or
+            not all(args.model_choice.partition("/"))):
+        parser.error("--model-choice requires --host-claim and PROVIDER/MODEL_ID, and cannot be combined with --profile")
     if args.host_exec and (not args.task or not args.attempt or args.attempt < 1):
         parser.error("--host-exec requires --task and a positive --attempt")
     if args.exec_command is not None and not args.host_exec:
@@ -2479,7 +2687,7 @@ def main():
             activity = None if args.host_heartbeat else (args.activity or "").strip()[:1000]
             result = update_host(args.host_claim or args.host_report or args.host_heartbeat or args.host_checkpoint, args.task, state,
                                  activity, args.artifact, args.attempt,
-                                 args.member, args.member_name, args.profile)
+                                 args.member, args.member_name, args.profile, args.model_choice)
             print(json.dumps(result, ensure_ascii=False))
             return 0
         if args.release is not None:
