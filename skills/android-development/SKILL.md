@@ -5,6 +5,8 @@ description: 在 Android 功能实现、UI 审查和设备验收时使用。沿�
 
 # Android 开发
 
+[English edition](SKILL.en.md)
+
 1. 先检查模块、Gradle Wrapper、构建变体、项目的 SDK 版本和 Compose 或 Views 约定。按项目已有的 ViewModel、流和生命周期管理方式交接状态。
 2. 根据用户路径核对加载、空数据、失败与恢复。涉及界面时，按本次要求检查窗口尺寸、旋转与状态恢复、系统栏内边距和可访问性。复杂改动区分纯逻辑、界面和设备验证。
 3. 优先执行仓库现有的 Gradle 构建和测试任务。宿主已有 Android CLI 或设备工具时，用现有模拟器或已授权设备走主路径。根据改动选择 UI 或截图测试。

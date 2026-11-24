@@ -3,6 +3,8 @@ name: winui-code-review
 description: "Review WinUI 3 code or changes for quality: MVVM, x:Bind correctness, accessibility, theming, security, performance, and WinUI analyzer findings. Use when asked to review or audit a WinUI app or its pending changes, or before committing. Catches issues the compiler and UI tests miss."
 ---
 
+> [English edition](SKILL.en.md)
+>
 > Pioneers 接入说明。正文及随附资料来自 [上游 Skill](https://github.com/microsoft/winappCli/blob/e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e/plugins/winui/agent-plugin/skills/winui-code-review/SKILL.md)，许可证见 [LICENSE.txt](../LICENSE.txt)。
 > 相对引用以本文件所在目录为准。按目标项目约定、任务角色和目标平台选择构建或验证步骤。安装工具、变更系统设置、签名和发布沿用当前工作流和宿主授权。
 

@@ -3,6 +3,8 @@ name: macos-spm-app-packaging
 description: Scaffold, build, and package SwiftPM-based macOS apps without an Xcode project. Use when you need a from-scratch macOS app layout, SwiftPM targets/resources, a custom .app bundle assembly script, or signing/notarization/appcast steps outside Xcode.
 ---
 
+> [English edition](SKILL.en.md)
+>
 > Pioneers 接入说明。正文及随附资料来自 [上游 Skill](https://github.com/Dimillian/Skills/blob/05ba982bfeb0d77d3c97d4542b0ee15034d05f84/macos-spm-app-packaging/SKILL.md)，许可证见 [LICENSE.txt](LICENSE.txt)。
 > 相对引用以本文件所在目录为准。按目标项目约定、任务角色和目标平台选择构建或验证步骤。安装工具、变更系统设置、签名和发布沿用当前工作流和宿主授权。
 
