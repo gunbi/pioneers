@@ -1124,11 +1124,14 @@ def host_ready(run_dir, wait=0):
             summary["timed_out"] = True
             break
         time.sleep(min(0.35, remaining))
+    return host_routing_summary(run_dir, data, tasks, summary, project_registry(Path(data["workspace"])))
+
+
+def host_routing_summary(run_dir, data, tasks, summary, registry, load=None):
     workspace = Path(data["workspace"])
-    registry = project_registry(workspace)
     summary.update(dispatch_models(registry, workspace))
     if summary["ready"]:
-        load = cached_catalogs(registry)
+        load = load or cached_catalogs(registry)
         config = models_config(workspace) if "model_profiles_error" not in summary else None
         for item in summary["ready"]:
             task = tasks[item["task"]]

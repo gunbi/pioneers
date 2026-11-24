@@ -32,10 +32,14 @@ def video_job(provider, route, prompt, receipt_path, result):
     if "duration" in payload:
         usage["video_seconds"] = payload["duration"]
     receipt = {"fingerprint": fingerprint, "state": "submitting"}
-    try:
-        # Reserve the job before the paid POST. Even simultaneous workers cannot both submit.
-        fd = os.open(receipt_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
+    fd = None
+    if not route.get("reuse_only"):
+        # Reserve before submitting. A recovering worker may only read an existing receipt.
+        try:
+            fd = os.open(receipt_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+    if fd is None:
         try:
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

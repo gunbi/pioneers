@@ -79,7 +79,7 @@ def _load_provider(registry, name, provider):
                            (retry_at, name, owner))
 
 
-def load_catalogs(registry):
+def load_catalogs(registry, *, cached_only=False):
     from model_plugins import PROVIDERS  # The dispatch module also consumes this shortlist.
 
     connected = {}
@@ -91,6 +91,8 @@ def load_catalogs(registry):
         connected[name] = provider
     if not connected:
         return {}
+    if cached_only:
+        return {name: _fresh(Path(registry) / ("model-catalog-" + name + ".json")) or [] for name in connected}
     catalogs = {}
     with ThreadPoolExecutor(max_workers=len(connected)) as pool:
         pending = {name: pool.submit(_load_provider, Path(registry), name, provider)
