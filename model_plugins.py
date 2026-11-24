@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from dispatch import writes_workspace
-from model_policy import MODEL_ID, MODES, banned, read_policy
+from model_policy import MEDIA_MODES, MODEL_ID, MODES, banned, read_policy
 import openrouter_media
 import siliconflow_media
 
@@ -36,7 +36,8 @@ class ChatProvider:
         return key
 
     @classmethod
-    def request(cls, path, *, payload=None, timeout, public=False):
+    def request(cls, path, *, payload=None, timeout, public=False, raw=False, max_bytes=8 * 1024 * 1024,
+                with_content_type=False):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"}
         if not public:
@@ -44,11 +45,14 @@ class ChatProvider:
         request = Request(cls.base_url + path, data=data, headers=headers)
         try:
             with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
-                limit = 8 * 1024 * 1024
-                raw = response.read(limit + 1)
-            if len(raw) > limit:
-                raise ProviderError(f"{cls.name} response exceeds the 8 MiB limit")
-            return json.loads(raw)
+                body = response.read(max_bytes + 1)
+                if raw and with_content_type:
+                    content_type = response.headers.get("Content-Type", "")
+            if len(body) > max_bytes:
+                raise ProviderError(f"{cls.name} response exceeds the {max_bytes / (1024 * 1024):g} MiB limit")
+            if raw:
+                return (body, content_type) if with_content_type else body
+            return json.loads(body)
         except HTTPError as error:
             code = error.code
             error.close()
@@ -208,7 +212,7 @@ def _preferred_profile(profiles, mode, policy, default):
     return matches[0] if len(matches) == 1 else None
 
 
-def resolve_route(workspace, task, profile=None, *, isolated, policy=None):
+def resolve_route(workspace, task, profile=None, *, isolated, policy=None, require_key=True):
     """Resolve against the original project at claim time. None selects the native host."""
     if profile == "host":
         return None
@@ -216,9 +220,14 @@ def resolve_route(workspace, task, profile=None, *, isolated, policy=None):
     policy = policy or {}
     requires_host = bool(task.get("tools") or task.get("review") or task.get("effect"))
     task_type = "video" if task.get("video_prompt") else ("patch" if writes_workspace(task) else "text")
+    if task.get("media"):
+        task_type = task["media"]["type"]
     if requires_host:
         task_type = "host"
     default = defaults.get("types", {}).get(task_type, defaults.get("roles", {}).get(task["role"]))
+    if (task_type in MEDIA_MODES and task_type not in defaults.get("types", {}) and default in profiles
+            and _profile_info(default, profiles[default])["mode"] != task_type):
+        default = None
     selected = policy.get("selected", {}).get(task_type)
     reason = "宿主指定配置"
     if selected:
@@ -262,6 +271,8 @@ def resolve_route(workspace, task, profile=None, *, isolated, policy=None):
     if mode != task_type:
         raise ValueError(f"This task requires mode {task_type}; choose a compatible profile or host")
     route = {"profile": profile, "provider": provider, "model": model, "mode": mode, "reason": reason}
+    if mode == "speech" and "voice" in task["media"]:
+        route["voice"] = task["media"]["voice"]
     if mode == "patch":
         if not isolated:
             raise ValueError("Patch profiles require an isolated Git worktree")
@@ -279,7 +290,8 @@ def resolve_route(workspace, task, profile=None, *, isolated, policy=None):
         route.update(PROVIDERS[provider].video.settings(spec))
     elif video_fields:
         raise ValueError("Video generation settings require a video profile")
-    PROVIDERS[provider].api_key()
+    if require_key:
+        PROVIDERS[provider].api_key()
     return route
 
 
@@ -288,4 +300,10 @@ def complete(route, prompt):
 
 
 def check_available(route):
-    PROVIDERS[route["provider"]].check_available(route["model"], route.get("mode", "text"), route)
+    provider = PROVIDERS[route["provider"]]
+    mode = route.get("mode", "text")
+    if mode in MEDIA_MODES:
+        import media_adapters
+        media_adapters.check_available(provider, route["model"], mode, route)
+    else:
+        provider.check_available(route["model"], mode, route)

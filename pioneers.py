@@ -31,7 +31,8 @@ from dispatch import (
 from iterations import latest_delivery, project_snapshot, register_run
 from skill_sources import SNAPSHOT, read_json, refresh_run, write_json
 from model_plugins import PROVIDERS, banned, check_available, dispatch_models, resolve_route
-from model_policy import read_policy
+import generated_media
+from model_policy import MEDIA_MODES, read_policy
 
 
 @dataclass(frozen=True)
@@ -288,6 +289,18 @@ def validate_workflow(workflow, generated=False):
                 raise ValueError(f"{task_id}: tools must be an array of tool IDs assigned to {role_id}")
         review = task.get("review", False)
         video_prompt = task.get("video_prompt")
+        if task.get("media") is not None:
+            media = task["media"]
+            if (not isinstance(media, dict) or set(media) - {"type", "prompt", "voice"}
+                    or media.get("type") not in MEDIA_MODES or not isinstance(media.get("prompt"), str)
+                    or not media["prompt"].strip() or len(media["prompt"]) > 10000):
+                raise ValueError(f"{task_id}: media needs a supported type and a creative prompt of 1–10000 characters")
+            if "voice" in media and (media["type"] != "speech" or not isinstance(media["voice"], str)
+                                     or not media["voice"].strip() or not media["voice"].isprintable()
+                                     or len(media["voice"]) > 256):
+                raise ValueError(f"{task_id}: only speech media accepts a voice of 1–256 printable characters")
+            if video_prompt is not None or task.get("tools") or task.get("write_paths") or review or task.get("effect") or design_only(task):
+                raise ValueError(f"{task_id}: media needs a dedicated task without video_prompt, tools, writes, review or external effects")
         if video_prompt is not None:
             if (not isinstance(video_prompt, str) or not video_prompt.strip() or len(video_prompt) > 10000
                     or task.get("tools") or task.get("write_paths") or review or task.get("effect")
@@ -383,6 +396,11 @@ def task_prompt(goal, task, results, *, sources=None, remote=False):
     if "complexity" in task:
         complexity = task["complexity"]
         parts.append(f"任务复杂度：{complexity['level']}。依据：{complexity['reason']}")
+    if task.get("media"):
+        media = task["media"]
+        parts.append(f"{generated_media.LABELS[media['type']]}创作提示：{media['prompt']}")
+        if "voice" in media:
+            parts.append("旁白音色：" + media["voice"])
     if task.get("video_prompt"):
         parts.append("视频创作提示：" + task["video_prompt"])
     if task.get("acceptance"):
@@ -590,6 +608,8 @@ def plan_workflow(goal, executor, run_dir, progress):
         "能独立修改、测试并交接的工作尽早并行。共享契约确定后，前端可用 Mock 开发，后端可实现接口，QA 可准备验收。"
         "多个工程师写同一项目时，明确各自修改范围、隔离方式和集成负责人。"
         "为写入任务在 write_paths 声明相对项目根目录的文件或目录。只读任务或范围尚不明确时填空数组。"
+        "生成图片、旁白、配乐、音效时分别单列 media 任务，type 为 image、speech、music、sound_effect，"
+        "prompt 仅写交给供应商的创作说明；speech 可选 voice。tools 和 write_paths 留空，独立 QA 另派。"
         "明确要生成视频时，用 video_prompt 单列交给视频模型的创作提示，tools 和 write_paths 留空。"
         "同一根因合并修复，同一段实现需要连续修改时用 depends_on 传递已验收的提交。并行修复安排依赖它们的集成与回归验收。"
         "任务提示写清真正等待的产物和可独立交付的边界。实现任务要有下游独立 qa 验收任务，只有实际验收填写 review=true。"
@@ -874,6 +894,12 @@ def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True, 
     isolated = git and git["attempt"] == attempt
     history = job.setdefault("recoveries", [])
     within_budget = sum(entry["automatic"] for entry in history) < MAX_AUTOMATIC_RECOVERIES
+    if task.get("media"):
+        path = generated_media.receipt_path(progress.path.parent, task_id, generated_media.generation(job))
+        if os.path.lexists(path) and generated_media.read_receipt(path).get("state") != "ready":
+            # An interrupted synchronous POST has no pollable upstream job ID.
+            record_execution(job, {"type": "operation", "id": "media-generation", "kind": "external",
+                                   "status": "started", "summary": "媒体生成提交结果待向供应商核实"})
     kinds = mark_interruption(job)
     if task.get("video_prompt"):
         path = video_receipt_path(progress.path.parent, task_id, job)
@@ -1313,13 +1339,15 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
         "role": task["role"],
         "member": tasks[task_id].get("member"),
         "workspace": workspace,
-        "sandbox": "read-only" if design_only(task) or task.get("video_prompt") else ROLES[task["role"]].sandbox,
+        "sandbox": "read-only" if design_only(task) or task.get("video_prompt") or task.get("media") else ROLES[task["role"]].sandbox,
         "complexity": task["complexity"],
         "prompt": prompt,
         "output_schema": json.loads((ROOT / "review.schema.json").read_text(encoding="utf-8")) if review else None,
     }
     if checkout:
         assignment["git"] = checkout
+    if task.get("media"):
+        assignment["media"] = task["media"]
     if task.get("video_prompt"):
         assignment["video_prompt"] = task["video_prompt"]
     if continuation := recovery_context(job, workspace, local_executor=progress.data["mode"] == "live"):
@@ -1327,6 +1355,9 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
             continuation.pop("resume_session_id", None)
         assignment["continuation"] = continuation
         assignment["prompt"] += continuation_prompt(continuation)
+        if task.get("media") and not route and os.path.lexists(
+                generated_media.receipt_path(run_dir, task_id, generated_media.generation(job))):
+            raise ValueError("媒体已有生成回执，请用原模型接续或人工核对交付物")
         if task.get("video_prompt") and video_receipt_path(run_dir, task_id, job).exists() and not route:
             raise ValueError("视频已有供应商回执，请用原模型查询或人工核对交付物")
     if progress.data["mode"] == "host":
@@ -1336,6 +1367,17 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
             if route.get("reason"):
                 execution["reason"] = route["reason"]
             request = {"route": route, "prompt": assignment["prompt"], "write_paths": task.get("write_paths", [])}
+            if route["mode"] in MEDIA_MODES:
+                number = generated_media.generation(job)
+                execution["media_generation"] = number
+                request = {"route": route, "run_dir": str(run_dir), "task": task_id,
+                           "media_generation": number, "media_prompt": task["media"]["prompt"]}
+                path = generated_media.receipt_path(run_dir, task_id, number)
+                if os.path.lexists(path):
+                    receipt = generated_media.read_receipt(path)
+                    if receipt.get("fingerprint") != generated_media.fingerprint(route, request["media_prompt"]):
+                        raise ValueError("媒体回执与任务或模型不一致，请核对原请求")
+                    request["reuse_only"] = execution["reuse_only"] = True
             if route["mode"] == "video":
                 execution["video_generation"] = video_generation(job)
                 request["video_receipt"] = str(video_receipt_path(run_dir, task_id, job))
@@ -1663,8 +1705,12 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
         before_attempt = data["tasks"][task_id].get("attempt", 1)
         workspace = project_workspace(data.get("workspace"))
         registry = project_registry(workspace)
+        job = data["tasks"][task_id]
+        receipt = (generated_media.receipt_path(run_dir, task_id, generated_media.generation(job))
+                   if before[task_id].get("media") else None)
+        reuse_only = bool(receipt and os.path.lexists(receipt))
         route = resolve_route(workspace, before[task_id], profile, isolated=bool(data.get("git_base")),
-                              policy=read_policy(registry))
+                              policy=read_policy(registry), require_key=not reuse_only)
         # A slow catalog call must never hold the state lock used for lease renewal.
         if route:
             blockers = claim_blockers(data, before, task_id)
@@ -1673,7 +1719,8 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
             if route["mode"] == "patch":
                 from model_patch import test_sandbox
                 test_sandbox()
-            check_available(route)
+            if not reuse_only:
+                check_available(route)
     # Serialize status read/modify/write across independent CLI invocations.
     with Progress.locked(run_dir) as progress:
         if progress.data["mode"] != "host":
@@ -1688,8 +1735,9 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
                     or active_project_port(project_registry(workspace), run_dir)):
                 raise ValueError("Start the run dashboard with --project-dashboard --workspace PROJECT or --dashboard RUN_DIR before claiming tasks")
             if (tasks[task_id] != before[task_id] or progress.data["tasks"][task_id].get("attempt", 1) != before_attempt
+                    or (receipt and reuse_only != os.path.lexists(receipt))
                     or route != resolve_route(workspace, tasks[task_id], profile, isolated=bool(progress.data.get("git_base")),
-                                              policy=read_policy(registry))):
+                                              policy=read_policy(registry), require_key=not reuse_only)):
                 raise ValueError("Task or model profile changed during preflight; claim again")
             return claim_task(progress, tasks, task_id, member_id, member_name, route=route)
         result = artifact.read_text(encoding="utf-8") if artifact else None
@@ -1802,10 +1850,11 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
             output = Path(temporary) / "response.json"
             command = [sys.executable, "-E", "-s", str(ROOT / "model_worker.py"), str(request), str(output)]
             # Bound a slow HTTP stream as well as the subsequent local test.
-            limit = 900 if executor["mode"] == "video" else 360
+            limit = 900 if executor["mode"] in ("video", *MEDIA_MODES) else 360
             env = project_environment()
             provider = PROVIDERS[executor["provider"]]
-            env[provider.key_env] = provider.api_key()
+            if not executor.get("reuse_only"):
+                env[provider.key_env] = provider.api_key()
             code = supervise_host_executor(command, workspace, renew, deadline_seconds=limit, env=env)
             result = read_json(output)
             if code or not result.get("content"):
@@ -1822,6 +1871,8 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
         executor.update(elapsed_seconds=round(time.monotonic() - start, 3), usage=result.get("usage", {}))
         if result.get("actual_model"):
             executor["actual_model"] = result["actual_model"]
+        if executor["mode"] in MEDIA_MODES and "error" not in result and isinstance(result.get("media"), dict):
+            executor["media"] = result["media"]
         if isinstance(result.get("video"), dict):
             executor["video"] = {key: result["video"][key] for key in ("request_id", "state") if key in result["video"]}
         _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
@@ -1978,6 +2029,11 @@ def resolve_recovery(progress, tasks, request, reason):
                 # Only an operator-approved retry after a confirmed terminal failure can submit again.
                 job["video_retry_from"] = attempt + 1
     verify_external_operations(job, request.get("checks", []), adopting=content is not None)
+    if tasks[task_id].get("media") and not content:
+        op = attempt_operations(job).get("media-generation", {})
+        if op.get("verification", {}).get("outcome") == "not_executed":
+            # The operator verified the previous request never ran and stopped the old worker.
+            job["media_retry_from"] = attempt + 1
     job["recoveries"][-1]["executor_stopped"] = True
     audit(progress, "recover", reason, task=task_id, attempt=attempt, resolution="adopt" if content else "retry")
     if content:

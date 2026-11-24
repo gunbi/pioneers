@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import sys
 
+from generated_media import media_job
+from model_policy import MEDIA_MODES
 from model_patch import apply_patch_result, check_checkout
 from model_plugins import PROVIDERS, complete
 from model_video import video_job
@@ -14,7 +16,11 @@ def run(request, workspace, output):
     result = {}
     try:
         route = request["route"]
-        if route["mode"] == "video":
+        if route["mode"] in MEDIA_MODES:
+            result = media_job(PROVIDERS[route["provider"]], route, request["media_prompt"],
+                               Path(request["run_dir"]), request["task"], request["media_generation"],
+                               reuse_only=request.get("reuse_only", False))
+        elif route["mode"] == "video":
             video_job(PROVIDERS[route["provider"]], route, request["video_prompt"], request["video_receipt"], result)
         else:
             if route["mode"] == "patch":
