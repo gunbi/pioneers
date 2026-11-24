@@ -1,5 +1,7 @@
 # pioneers 团队协作说明
 
+[English](agent.en.md)
+
 当用户把这个仓库交给你执行项目任务时，由 pioneers 登记工作流并管理任务状态。宿主平台负责执行 pioneers 已分派的任务。涉及跨团队交接时，共享工作流、交付物路径和验收证据。
 
 目标项目接入后，后续会话和同一会话里的新需求均沿用 Pioneers。上一轮已完成时登记新的运行。首次真实运行会在目标项目的 `AGENTS.md` 保留这项规则。为旧项目补登记时可运行 `python3 pioneers.py --bind-project --workspace PROJECT`。

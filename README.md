@@ -1,5 +1,7 @@
 # Pioneers
 
+[English](README.en.md) · [English documentation index](docs/english.md)
+
 Pioneers 让你在现有的 AI 编程助手里带一支研发团队。你给出目标，团队约定怎样算做成，工程师按依赖分头实现，独立 QA 在交付版本上逐项验证。你可以在项目看板上看到哪项决定需要你拍板、谁在等谁，以及这个版本凭什么能交付。
 
 小改动默认只走**开发 → 独立 QA**。例如修复「待办标题全是空格也能提交」，一个工程师修复并自测，另一位 QA 在同一版本上验证空白标题被拒绝、正常标题仍能添加，就可以结项。[查看两步修复示例](examples/small-fix.json)
