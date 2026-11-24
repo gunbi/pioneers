@@ -15,6 +15,8 @@ description: >
 
 # Chrome Extensions
 
+> [English edition](SKILL.en.md)
+>
 > Pioneers 接入说明。下方正文及 `references/` 来自 [Google Chrome 官方 Skill](https://github.com/GoogleChrome/modern-web-guidance/blob/64a6d708f5a43f2cd3fde5d4d7db3905ba1bdf65/skills/chrome-extensions/SKILL.md)，许可证见 [Apache-2.0](LICENSE.txt)。
 > 相对引用以本文件所在目录为准。开发按任务实现扩展，QA 使用参考资料独立验证扩展行为。需要发布到 Chrome Web Store 时，按当前工作流的发布授权执行。
 

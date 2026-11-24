@@ -5,6 +5,8 @@ description: 在 iOS 功能实现、UI 审查和设备验收时使用。沿用�
 
 # iOS 开发
 
+[English edition](SKILL.en.md)
+
 1. 先检查项目说明、workspace 或 project、scheme、deployment target、已有 SwiftUI 或 UIKit 结构和测试方式。使用当前目标系统支持的 API，沿用现有依赖和界面约定。
 2. 明确状态归属、导航、副作用和异步任务的取消时机。按改动覆盖加载、空数据、错误恢复和可访问性。QA 按相同用户路径核查实现和证据。
 3. 使用项目现有构建与测试命令。有 Xcode 和模拟器时，确认 scheme 与设备，构建并启动应用，再执行关键路径。可用宿主提供的 XcodeBuildMCP 查界面、日志和截图。

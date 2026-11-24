@@ -1,5 +1,7 @@
 # 性能、存储与可用性
 
+[English edition](performance-storage-reliability.en.md)
+
 按当前设计问题查阅相关章节，并把结论写进设计记录。将测得的数据、待验证的假设和取舍分别标明。
 
 ## 性能
