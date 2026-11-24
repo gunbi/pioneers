@@ -4,6 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 import re
 import time
 
+from model_policy import MODEL_ID
+
 
 CATALOG_FILTERS = {
     "chat": "sub_type=chat", "image": "type=image", "video": "type=video", "text-to-video": "sub_type=text-to-video",
@@ -29,21 +31,32 @@ def check_media_available(provider, model, mode, options):
 
 def list_catalog(provider):
     """Fetch the full account catalog. Filtered views only supply capability labels."""
-    def ids(path):
+    def rows(path):
         body = provider.request(path, timeout=15)
         if not isinstance(body, dict) or not isinstance(body.get("data"), list):
             raise ValueError("SiliconFlow returned an invalid model catalog")
-        return {row["id"] for row in body["data"] if isinstance(row, dict)
-                and isinstance(row.get("id"), str) and row["id"]}
+        return {row["id"]: row for row in body["data"] if isinstance(row, dict)
+                and isinstance(row.get("id"), str) and MODEL_ID.fullmatch(row["id"])}
 
-    catalog = {model: [] for model in ids("/models")}
+    source = rows("/models")
+    catalog = {model: [] for model in source}
     with ThreadPoolExecutor(max_workers=3) as pool:
-        subsets = {kind: pool.submit(ids, "/models?" + query) for kind, query in CATALOG_FILTERS.items()}
+        subsets = {kind: pool.submit(rows, "/models?" + query) for kind, query in CATALOG_FILTERS.items()}
         for kind, subset in subsets.items():
             for model in subset.result():
                 if model in catalog and supports_text_prompt(model, kind):
                     catalog[model].append(kind)
-    return [{"id": model, "kinds": catalog[model] or ["other"]} for model in sorted(catalog)]
+    result = []
+    for model in sorted(catalog):
+        item = {"id": model, "kinds": catalog[model] or ["other"]}
+        row = source[model]
+        description = row.get("description")
+        if isinstance(description, str) and description.strip():
+            item["description"] = " ".join(description.split())[:400]
+        if type(row.get("context_length")) is int and row["context_length"] > 0:
+            item["context_length"] = row["context_length"]
+        result.append(item)
+    return result
 
 
 class Video:

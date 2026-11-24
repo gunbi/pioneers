@@ -138,7 +138,20 @@ def catalog(provider):
     for model in sorted(models.keys() | videos.keys() | images.keys() | speeches.keys()):
         row = models.get(model, {"id": model})
         speech = speech_metadata(model, speeches, models)
-        result.append({"id": model, "kinds": kinds(row, videos.get(model), images.get(model), speech)})
+        video = videos.get(model) or {}
+        item = {"id": model, "kinds": kinds(row, video, images.get(model), speech)}
+        description = row.get("description") or video.get("description")
+        if isinstance(description, str) and description.strip():
+            item["description"] = " ".join(description.split())[:400]
+        if type(row.get("context_length")) is int and row["context_length"] > 0:
+            item["context_length"] = row["context_length"]
+        if isinstance(row.get("pricing"), dict) and row["pricing"]:
+            item["pricing"] = row["pricing"]
+        if isinstance(video.get("pricing_skus"), dict) and video["pricing_skus"]:
+            item["pricing_skus"] = video["pricing_skus"]
+        if "reasoning" in (row.get("supported_parameters") or []):
+            item["tags"] = ["reasoning"]
+        result.append(item)
     return result
 
 
