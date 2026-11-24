@@ -239,7 +239,37 @@ python3 pioneers.py --judge RUN_DIR --decision D2 --task requirements --attempt 
 
 ### 按任务选用模型供应商
 
-宿主能在一次运行里混用本机 Agent 和不同模型。项目在自己的 `.pioneers/models.json` 登记允许使用的配置，供应商可填 `siliconflow` 或 `openrouter`，模型 ID 从项目看板的模型目录选择。下面的 `test_command` 是项目维护者指定的测试命令。
+宿主模式下，配置 SiliconFlow 或 OpenRouter 的凭据后，就可以从该提供商的目录自动选型。多数任务只需照常查队列和领取任务。
+
+```bash
+python3 pioneers.py --host-ready RUN_DIR
+python3 pioneers.py --host-claim RUN_DIR --task requirements
+```
+
+每个可自动选型的就绪项在 `model_candidates` 列出候选的 `provider`、`model` 和 `reason`。宿主可以结合任务说明、复杂度和项目的 `model_policy.preference` 决定用哪个。例如需求是提炼短文，且下列型号出现在该任务的候选里，领取时可用 `--model-choice siliconflow/Qwen/Qwen3.5-35B-A3B`。第一个斜杠前是提供商，其余部分是完整模型 ID。这只决定本次领取，项目策略保持原值。用 `--profile host` 可明确交给本机成员。
+
+#### 选型顺序
+
+1. 独立 QA、浏览器或 MCP 等工具调用、外部操作由宿主执行。代码补丁只有在隔离 Git 工作区中、写入范围明确且项目提供沙箱测试命令时才能派往远端。
+2. 项目已为该任务类型指定型号时，按该型号派工。其次使用宿主通过 `--profile NAME` 选定的命名配置，再考虑与偏好匹配的配置、任务类型默认值和角色默认值。固定选型与本次 `--model-choice` 冲突时，领取会提示冲突。
+3. 没有固定选型时，只在已配置凭据、能力适配且符合项目限制的供应商和型号中推荐。排序会参考任务复杂度、项目倾向、目录描述和已知元数据。例如，写短文可优先速度，复杂设计可优先推理能力。宿主也能依据任务语义从候选中主动挑选。
+4. 默认允许免费与收费型号。要限制费用，在看板的「派工策略 → 用户偏好」写「仅免费」。只有可确认免费的型号才符合条件，收费、价格未知或无法确认免费的动态路由均被排除。明确指定的型号与限制冲突时，领取会报告原因。项目禁用在领取和开始调用前均会检查。
+
+#### 执行与回退
+
+自动选型时，普通领取会依次预检候选。首选不可用时尝试后续候选，全部不可用或没有凭据时交给宿主。显式指定的型号若预检失败，这次领取会返回错误，任务仍可领取。选型和预检只读取目录、核对可用性。真正调用模型发生在执行步骤，按供应商规则计费。
+
+查看领取结果中的 `executor.provider`。值为 `host` 时将任务交给宿主成员。远端模型按返回的 `attempt` 执行。以下示例使用首轮领取结果。
+
+```bash
+python3 pioneers.py --host-exec RUN_DIR --task requirements --attempt 1
+```
+
+执行器负责心跳续约和产物归档。项目看板的「运行用量」展示实际模型、选型依据、耗时与回执用量。请求已发出后，失败或超时进入原任务的恢复流程。已受理的媒体请求用原提供商和型号接续，按已有回执查询或复用产物。受理结果不明时先核对，避免重复生成和扣费。
+
+#### 命名配置和目录
+
+需要固定某类任务的默认模型、指定视频参数，或提供可信补丁测试命令时，可在项目的 `.pioneers/models.json` 编写命名配置。供应商用 `siliconflow` 或 `openrouter`，模型 ID 可从项目看板复制。
 
 ```json
 {
@@ -267,14 +297,7 @@ SiliconFlow 目录从不附加类型筛选的 `GET /v1/models` 获取，再用�
 
 OpenRouter 目录无需凭证即可浏览。看板合并 `GET /models?output_modalities=all` 的完整目录和 `GET /videos/models` 的视频参数，按输入、输出与端点标记可派任务。目录中另有仅支持批处理、图像输入、视频编辑等用途的型号。文本与补丁调用 `POST /chat/completions`，派工前用 `GET /models/user` 核对账号目录。文生视频走 `POST /videos` 和 `GET /videos/{id}`，支持在配置中指定 `duration`、`resolution` 和 `ratio`。省略时沿用模型默认值，未获知的时长显示为未知。选择 OpenRouter 后，项目禁用清单覆盖同一型号的运行变体。存在 OpenRouter 禁用项时会同时限制动态路由（如 `openrouter/free`、`~` 别名）。用量按返回的实际模型统计，并在明细保留派工时选用的型号。[模型目录](https://openrouter.ai/docs/api/api-reference/models/get-models) · [视频生成](https://openrouter.ai/docs/guides/overview/multimodal/video-generation)
 
-对兼容的远端任务，项目指定模型优先，其次是宿主显式选择的配置、与倾向匹配的配置、任务类型与角色默认配置。项目禁用规则适用于所有指向该模型的别名，领取和启动前都会检查。已经发出的请求按原回执跟踪。补丁任务始终使用可信配置中的测试命令；`--profile host` 可选择宿主执行。倾向可以写「短文本优先」，框架会匹配配置名称、模型 ID 或项目自定义的 `tags`；无法据此判断的自然语言由宿主从 `--host-ready` 读取后选型。
-
-```bash
-python3 pioneers.py --host-claim RUN_DIR --task requirements --profile writer
-python3 pioneers.py --host-exec RUN_DIR --task requirements --attempt 1
-```
-
-使用领取返回的实际轮次。第二条命令负责调用模型、独立续约和归档，返回原有的 `judgment` 供宿主判断。每轮看板记录实际配置的平台、模型、耗时及服务返回的 token 数。超时、限流或补丁验证失败时，框架保留原因并走原来的中断恢复流程。宿主根据就绪队列显式重派下一轮，可以换模型。
+#### 各类任务的执行要求
 
 - **文本产物**适合规格、验收样例和其他只读文本任务。请求包含任务说明、验收条件、所选 Skill 和前置产物；选择平台时应考虑这些材料能否发送给它。
 - **文生视频**在工作流任务中填写 `video_prompt`，并把 `tools`、`write_paths` 留空。模型仅接收这段创作描述。SiliconFlow 走 `POST /video/submit` 和 `POST /video/status`，先保存提交标记，再保存供应商请求 ID。失联重派时按原 ID 查询；提交结果不明时需人工核对。SiliconFlow 视频链接有效期约一小时。OpenRouter 会返回限时签名链接或需用本机密钥请求的官方视频内容地址，需保留的成片请及时另存。[视频 API 文档](https://api-docs.siliconflow.cn/docs/api/video-status-post)
