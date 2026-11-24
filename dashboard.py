@@ -3,10 +3,12 @@ from html import escape
 from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import re
 import secrets
 import sqlite3
+import stat
 import sys
 from threading import Thread
 from time import monotonic
@@ -17,6 +19,7 @@ from iterations import iteration_summary, project_snapshot, registered_run
 from progress import STATUS_LABELS, artifact_name
 from dispatch import dispatch_summary, workflow_path
 from model_plugins import dispatch_models
+from model_board import MEDIA_FILENAME, ModelBoard, media_reference
 
 
 ARTIFACT_PATH = re.compile(r"/evidence/([a-z0-9][a-z0-9_-]*(?:\.[0-9]+)?\.(?:md|json))")
@@ -138,7 +141,10 @@ def flow_with_approvals(flow, decisions):
 
 def read_dashboard_status(status):
     data = json.loads(status.read_bytes())
-    for task in data["tasks"].values():
+    for task_id, task in data["tasks"].items():
+        for executor in task.get("executors", {}).values():
+            if "media" in executor:
+                executor["media"] = media_reference(task_id, executor)
         for attempt in task.get("execution", {}).values():
             if "checkpoint" in attempt:
                 attempt["checkpoint"].pop("session_id", None)
@@ -238,7 +244,6 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
     project_page = Path(__file__).with_name("project-dashboard.html").read_bytes() if project else None
     model_board = None
     if project:
-        from model_board import ModelBoard
         workspace = project[2] if len(project) > 2 else None
         project = project[:2]
         model_board = ModelBoard(*project, workspace)
@@ -313,6 +318,83 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
         def respond_json(self, payload, code):
             self.respond(json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json", code)
 
+        def serve_media(self, target_run, filename):
+            match = MEDIA_FILENAME.fullmatch(filename)
+            if not match or target_run.is_symlink() or (target_run / "status.json").is_symlink():
+                self.send_error(404)
+                return
+            status = read_dashboard_status(target_run / "status.json")
+            executors = status["tasks"].get(match[1], {}).get("executors", {})
+            media = next((item["media"] for item in executors.values()
+                          if item.get("media") and item["media"]["filename"] == filename), None)
+            root = target_run.resolve()
+            path = root / "media" / filename
+            try:
+                if not media or path.resolve(strict=True) != path:
+                    raise FileNotFoundError
+                if os.open in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW"):
+                    parent = os.open(path.parent, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+                    try:
+                        fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                    finally:
+                        os.close(parent)
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        os.close(fd)
+                        raise FileNotFoundError
+                    stream = os.fdopen(fd, "rb")
+                else:
+                    expected = path.lstat()
+                    if not stat.S_ISREG(expected.st_mode):
+                        raise FileNotFoundError
+                    stream = path.open("rb")
+                    if not os.path.samestat(expected, os.fstat(stream.fileno())):
+                        stream.close()
+                        raise FileNotFoundError
+            except (OSError, RuntimeError):
+                self.send_error(404)
+                return
+            with stream:
+                opened = os.fstat(stream.fileno())
+                if opened.st_size != media["bytes"]:
+                    self.send_error(404)
+                    return
+                size = media["bytes"]
+                start, end = 0, size - 1
+                requested = self.headers.get("Range")
+                if requested is not None:
+                    bounds = re.fullmatch(r"bytes=([0-9]{0,19})-([0-9]{0,19})", requested)
+                    if bounds and bounds[1]:
+                        start = int(bounds[1])
+                        if bounds[2]:
+                            end = min(end, int(bounds[2]))
+                    elif bounds and bounds[2]:
+                        start = max(0, size - int(bounds[2]))
+                    else:
+                        start = size
+                    if start > end:
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.end_headers()
+                        return
+                self.send_response(206 if requested is not None else 200)
+                self.send_header("Content-Type", media["mime"])
+                self.send_header("Content-Length", str(end - start + 1))
+                self.send_header("Accept-Ranges", "bytes")
+                if requested is not None:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+                self.end_headers()
+                stream.seek(start)
+                remaining = end - start + 1
+                while remaining:
+                    chunk = stream.read(min(128 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+
         def do_GET(self):
             path = urlsplit(self.path).path
             if model_board and path == project_prefix + "/models":
@@ -341,6 +423,9 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
                 self.send_error(404)
                 return
             status = target_run / "status.json"
+            if route.startswith("/media/"):
+                self.serve_media(target_run, route[len("/media/"):])
+                return
             if route == "/":
                 content, kind = page, "text/html"
             elif route == f"/health/{quote(target_run.name, safe='')}":

@@ -527,10 +527,23 @@
           detail.push("共 " + usage.total_tokens + " tokens");
         if (usage.videos != null) detail.push("视频 " + usage.videos + " 个");
         if (usage.video_seconds != null) detail.push("生成 " + usage.video_seconds + " 秒");
+        if (usage.images != null) detail.push("图片 " + usage.images + " 张");
+        if (usage.audio_files != null) detail.push("音频 " + usage.audio_files + " 个");
         node.append(element("p", detail.join(" · "), "stage-meta"));
         if (executor.reason) node.append(element("p", "选型依据 · " + executor.reason, "stage-meta"));
         if (executor.video?.state || executor.video?.request_id) {
           node.append(element("p", ["视频请求", executor.video.state, executor.video.request_id].filter(Boolean).join(" · "), "stage-meta"));
+        }
+        if (executor.media) {
+          const labels = {image:"图片",speech:"旁白",music:"音乐",sound_effect:"音效"};
+          const open = element("a", "打开"+labels[executor.mode]+" ↗", "evidence");
+          open.href = "media/" + encodeURIComponent(executor.media.filename);
+          open.target = "_blank"; open.rel = "noopener noreferrer";
+          const save = element("a", "保存文件", "evidence");
+          save.href = open.href; save.download = executor.media.filename;
+          const links = element("p", "", "stage-meta");
+          links.append(open, " · ", save);
+          node.append(links);
         }
       }
       const scope = tasks[stage.task]?.prompt;
