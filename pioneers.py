@@ -1489,16 +1489,20 @@ def reported_commit(task, checkout):
     return head
 
 
-def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=None, *, route=None, fallback_reason=""):
-    run_dir = progress.path.parent
-    tasks = progress.data["tasks"]
-    task = workflow_tasks[task_id]
-    blockers = claim_blockers(progress.data, workflow_tasks, task_id)
+def ensure_claimable(data, workflow_tasks, task_id):
+    blockers = claim_blockers(data, workflow_tasks, task_id)
     if blockers:
         waiting = [item["task"] for item in blockers if item["code"] == "dependency"]
         if waiting:
             raise ValueError(f"Task {task_id} is waiting for: {', '.join(waiting)}")
         raise ValueError(blockers[0]["message"])
+
+
+def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=None, *, route=None, fallback_reason=""):
+    run_dir = progress.path.parent
+    tasks = progress.data["tasks"]
+    task = workflow_tasks[task_id]
+    ensure_claimable(progress.data, workflow_tasks, task_id)
     job = tasks[task_id]
     if job.get("continuity_from") and member_id is None:
         previous = job["recoveries"][-1].get("member")
@@ -1895,9 +1899,7 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
         registry = project_registry(workspace)
         job = data["tasks"][task_id]
         task = before[task_id]
-        blockers = claim_blockers(data, before, task_id)
-        if blockers:
-            raise ValueError(blockers[0]["message"])
+        ensure_claimable(data, before, task_id)
         receipt = generation_receipt(run_dir, task, job)
         reuse_only = bool(receipt and os.path.lexists(receipt))
         config = ({}, {}) if profile == "host" else models_config(workspace)
