@@ -180,7 +180,8 @@ def music_result(provider, model, prompt):
                "modalities": ["text", "audio"], "audio": {"format": "mp3", "voice": "alloy"},
                "stream": True, "stream_options": {"include_usage": True}}
     data = provider.request("/chat/completions", payload=payload, timeout=300, raw=True, max_bytes=MAX_JSON_BYTES)
-    pieces = []
+    audio_bytes = bytearray()
+    remainder = ""
     counts = {}
     done = False
     for line in io.BytesIO(data):
@@ -204,10 +205,19 @@ def music_result(provider, model, prompt):
             if isinstance(audio, dict) and "data" in audio:
                 if not isinstance(audio["data"], str):
                     raise ValueError("Invalid OpenRouter music fragment")
-                pieces.append(audio["data"])
+                # A delta may split a base64 quartet, or carry a separately padded block.
+                encoded = remainder + audio["data"]
+                boundary = len(encoded) - len(encoded) % 4
+                if boundary:
+                    audio_bytes.extend(decode_media(encoded[:boundary]))
+                    if len(audio_bytes) > MAX_MEDIA_BYTES:
+                        raise ValueError("Decoded media exceeds size limit")
+                remainder = encoded[boundary:]
     if not done:
         raise ValueError("OpenRouter music stream ended before completion")
-    return decode_media("".join(pieces)), {"audio_files": 1, **counts}
+    if remainder or not audio_bytes:
+        raise ValueError("Invalid or incomplete OpenRouter music audio")
+    return bytes(audio_bytes), {"audio_files": 1, **counts}
 
 
 def generate(provider, route, prompt):

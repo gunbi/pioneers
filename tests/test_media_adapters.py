@@ -130,6 +130,10 @@ class MediaAdaptersTest(unittest.TestCase):
         provider = fixture("OpenRouter", {"/models?output_modalities=all": [MUSIC]}, replies)
         self.assertEqual(execute(provider, "music", MUSIC["id"]), (MP3, "audio/mpeg", {"audio_files": 1, "total_tokens": 40}))
         self.assertTrue(provider.request.call_args.kwargs["payload"]["stream"])
+        independent = [base64.b64encode(block).decode() for block in (MP3[:5], MP3[5:])]
+        replies[api] = b"".join(b"data: " + json.dumps({"choices": [{"delta": {"audio": {"data": part}}}]}).encode()
+                                + b"\n\n" for part in independent) + b"data: [DONE]\n\n"
+        self.assertEqual(execute(provider, "music", MUSIC["id"])[0], MP3)
         for ending in [b"", b'data: {"error":{"message":"injected details"}}\n\ndata: [DONE]\n']:
             replies[api] = chunks + ending
             with self.assertRaisesRegex(ValueError, "ended|failed"):
