@@ -174,8 +174,13 @@ def dashboard_snapshot(status):
     return data, artifacts
 
 
-def evidence_page(name, text):
+def evidence_page(name, text, *, video=False):
     title = escape(name)
+    video_link = ""
+    if video:
+        url = next((line for line in text.splitlines() if re.fullmatch(r"https://[^\s<>\"']+", line)), None)
+        if url:
+            video_link = f'<p><a href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">打开生成的视频</a></p>'
     return f"""<!doctype html>
 <html lang="zh-CN">
 <meta charset="utf-8">
@@ -192,6 +197,7 @@ pre {{ white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 1rem;
 <main>
   <a href="../">返回运行看板</a>
   <h1>{title}</h1>
+  {video_link}
   <pre>{escape(text)}</pre>
 </main>
 </html>
@@ -229,6 +235,12 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
             raise ValueError(f"Run status does not exist: {run_dir}")
     page = Path(__file__).with_name("dashboard.html").read_bytes()
     project_page = Path(__file__).with_name("project-dashboard.html").read_bytes() if project else None
+    model_board = None
+    if project:
+        from model_board import ModelBoard
+        workspace = project[2] if len(project) > 2 else None
+        project = project[:2]
+        model_board = ModelBoard(*project, workspace)
     project_prefix = "/project" if run_dir is not None else ""
     control_key = secrets.token_urlsafe(32) if cloud_origin else None
     key_deadline = monotonic() + CLOUD_CONTROL_SECONDS
@@ -246,11 +258,13 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
             return control is not None and (run_dir is None or run_dir == target_run)
 
         def do_POST(self):
-            target_run, path = self.run_route(urlsplit(self.path).path)
-            if target_run is None or path != "/human-action":
+            url_path = urlsplit(self.path).path
+            model_action = model_board is not None and url_path == project_prefix + "/model-action"
+            target_run, path = self.run_route(url_path)
+            if not model_action and (target_run is None or path != "/human-action"):
                 self.send_error(404)
                 return
-            if not self.can_control(target_run):
+            if (not self.can_control(target_run) or (model_action and run_dir is not None)):
                 self.respond_json({"error": "当前入口仅供查看此轮。请使用该轮的独立看板或运行环境的命令行。"}, 404)
                 return
             if not self.authorize_action():
@@ -263,9 +277,10 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
                 request = json.loads(self.rfile.read(size))
                 if not isinstance(request, dict):
                     raise ValueError("Request must be a JSON object")
-                result = control(target_run, request)
-            except (ValueError, OSError, sqlite3.Error) as error:
-                code = 400
+                result = model_board.apply(request) if model_action else control(target_run, request)
+            except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
+                from model_policy import PolicyConflict
+                code = 409 if isinstance(error, PolicyConflict) else 400
                 result = {"error": str(error)}
             self.respond_json(result, code)
 
@@ -299,6 +314,17 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
 
         def do_GET(self):
             path = urlsplit(self.path).path
+            if model_board and path == project_prefix + "/models":
+                self.respond(Path(__file__).with_name("model-dashboard.html").read_bytes(), "text/html")
+                return
+            if model_board and path == project_prefix + "/model-data.json":
+                try:
+                    snapshot = model_board.snapshot()
+                    snapshot.update(read_only=run_dir is not None or control is None, cloud_control=bool(cloud_origin))
+                    self.respond_json(snapshot, 200)
+                except (ValueError, OSError, RuntimeError, sqlite3.Error) as error:
+                    self.respond_json({"error": str(error)}, 400)
+                return
             if project and path == project_prefix + "/":
                 self.respond(project_page, "text/html")
                 return
@@ -361,13 +387,16 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
                     self.send_error(404)
                     return
                 name = match[1]
-                _, artifacts = dashboard_snapshot(status)
+                snapshot, artifacts = dashboard_snapshot(status)
                 path = target_run / name
                 if name not in artifacts or path.is_symlink() or not path.is_file():
                     self.send_error(404)
                     return
                 try:
-                    content, kind = evidence_page(name, path.read_text(encoding="utf-8", errors="replace")), "text/html"
+                    video = any(executor.get("mode") == "video" and name == artifact_name(task_id, int(attempt), "md")
+                                for task_id, task in snapshot["tasks"].items()
+                                for attempt, executor in task.get("executors", {}).items() if str(attempt).isdigit())
+                    content, kind = evidence_page(name, path.read_text(encoding="utf-8", errors="replace"), video=video), "text/html"
                 except FileNotFoundError:
                     self.send_error(404)
                     return
