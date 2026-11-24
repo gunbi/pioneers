@@ -1,5 +1,7 @@
 """Project opt-in and provider adapters for host-dispatched model tasks."""
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import os
 import re
@@ -24,6 +26,18 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+_preflight_reads = ContextVar("preflight_reads", default=None)
+
+
+@contextmanager
+def shared_preflight():
+    token = _preflight_reads.set({})
+    try:
+        yield
+    finally:
+        _preflight_reads.reset(token)
+
+
 class ChatProvider:
     public_catalog = False
     report_actual_model = False
@@ -38,6 +52,25 @@ class ChatProvider:
     @classmethod
     def request(cls, path, *, payload=None, timeout, public=False, raw=False, max_bytes=8 * 1024 * 1024,
                 with_content_type=False):
+        cache = _preflight_reads.get() if payload is None and not raw else None
+        key = (cls, path, public, timeout, max_bytes)
+        if cache is not None and key in cache:
+            result = cache[key]
+            if isinstance(result, ProviderError):
+                raise ProviderError(str(result))
+            return result
+        try:
+            result = cls._request(path, payload, timeout, public, raw, max_bytes, with_content_type)
+        except ProviderError as error:
+            if cache is not None:
+                cache[key] = error
+            raise
+        if cache is not None:
+            cache[key] = result
+        return result
+
+    @classmethod
+    def _request(cls, path, payload, timeout, public, raw, max_bytes, with_content_type):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"}
         if not public:
@@ -136,7 +169,7 @@ class OpenRouter(ChatProvider):
 PROVIDERS = {"siliconflow": SiliconFlow, "openrouter": OpenRouter}
 
 
-def _profiles_config(workspace):
+def models_config(workspace):
     path = Path(workspace) / ".pioneers" / "models.json"
     if path.is_symlink() or path.parent.is_symlink():
         raise ValueError("Model configuration must be local to the project")
@@ -181,8 +214,8 @@ def _profile_info(name, spec):
     return {"name": name, "provider": provider, "model": model, "mode": mode, "tags": tags}
 
 
-def public_profiles(workspace):
-    profiles, _ = _profiles_config(workspace)
+def public_profiles(workspace, config=None):
+    profiles, _ = config if config is not None else models_config(workspace)
     return [_profile_info(name, spec) for name, spec in profiles.items()]
 
 
@@ -212,23 +245,39 @@ def _preferred_profile(profiles, mode, policy, default):
     return matches[0] if len(matches) == 1 else None
 
 
-def resolve_route(workspace, task, profile=None, *, isolated, policy=None, require_key=True):
+def task_mode(task):
+    if task.get("tools") or task.get("review") or task.get("effect"):
+        return "host"
+    if task.get("media"):
+        return task["media"]["type"]
+    if task.get("video_prompt"):
+        return "video"
+    return "patch" if writes_workspace(task) else "text"
+
+
+def project_default(config, task):
+    profiles, defaults = config
+    mode = task_mode(task)
+    if mode in defaults.get("types", {}):
+        return defaults["types"][mode]
+    role_default = defaults.get("roles", {}).get(task["role"])
+    if role_default in profiles and _profile_info(role_default, profiles[role_default])["mode"] != mode:
+        return None
+    return role_default
+
+
+def resolve_route(workspace, task, profile=None, *, isolated, policy=None, require_key=True, candidate=None, config=None):
     """Resolve against the original project at claim time. None selects the native host."""
     if profile == "host":
         return None
-    profiles, defaults = _profiles_config(workspace)
+    config = config if config is not None else models_config(workspace)
+    profiles, _ = config
     policy = policy or {}
-    requires_host = bool(task.get("tools") or task.get("review") or task.get("effect"))
-    task_type = "video" if task.get("video_prompt") else ("patch" if writes_workspace(task) else "text")
-    if task.get("media"):
-        task_type = task["media"]["type"]
-    if requires_host:
-        task_type = "host"
-    default = defaults.get("types", {}).get(task_type, defaults.get("roles", {}).get(task["role"]))
-    if (task_type in MEDIA_MODES and task_type not in defaults.get("types", {}) and default in profiles
-            and _profile_info(default, profiles[default])["mode"] != task_type):
-        default = None
+    task_type = task_mode(task)
+    default = project_default(config, task)
     selected = policy.get("selected", {}).get(task_type)
+    if candidate:
+        selected = {key: candidate[key] for key in ("provider", "model")}
     reason = "宿主指定配置"
     if selected:
         # Copy execution options only from a compatible project-owned template.
@@ -248,8 +297,8 @@ def resolve_route(workspace, task, profile=None, *, isolated, policy=None, requi
         if task_type == "patch" and not template:
             raise ValueError("Project patch selection requires an unambiguous patch profile with test_command")
         spec = {**profiles.get(template, {}), **selected, "mode": task_type}
-        profile = template or "dashboard"
-        reason = "项目已指定此模型"
+        profile = template or ("auto" if candidate else "dashboard")
+        reason = candidate["reason"] if candidate else "项目已指定此模型"
     else:
         if profile is None:
             preferred = _preferred_profile(profiles, task_type, policy, default)
@@ -266,7 +315,7 @@ def resolve_route(workspace, task, profile=None, *, isolated, policy=None, requi
     provider, model, mode = entry["provider"], entry["model"], entry["mode"]
     if banned(policy, provider, model):
         raise ValueError(f"项目已禁用模型 {provider} / {model}")
-    if requires_host:
+    if task_type == "host":
         raise ValueError("Use the host executor for tasks with tools, external effects or independent acceptance")
     if mode != task_type:
         raise ValueError(f"This task requires mode {task_type}; choose a compatible profile or host")
