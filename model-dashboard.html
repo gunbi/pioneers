@@ -75,10 +75,12 @@ dl.metrics { display:flex; flex-wrap:wrap; gap:1.2rem 2rem; padding:.65rem 0; ma
     <p id="readonly" class="warning" hidden>此入口只读。请在独立运行的项目看板修改模型策略。</p>
     <label id="credential" hidden>看板控制凭证<input id="control-key" type="password" autocomplete="off" placeholder="看板启动终端提供的凭证"></label>
     <p id="feedback" role="status" aria-live="polite"></p>
-    <section id="catalog"><div class="section-heading"><h2>模型目录</h2></div><p class="hint">目录来自提供商 API。文本、代码补丁和文生视频可通过 Pioneers 派工。</p>
+    <section id="catalog"><div class="section-heading"><h2>模型目录</h2></div><p class="hint">默认显示 Pioneers 已接入的文本、代码补丁和文生视频模型。将「框架支持」切换为「全部」可查看供应商的完整目录。</p>
       <div class="providers" id="providers"></div>
       <div class="controls">
         <label>查找模型<input id="search" type="search" placeholder="输入模型或提供商名称"></label>
+        <label>API 提供商<select id="provider"><option value="">全部提供商</option></select></label>
+        <label>框架支持<select id="support"><option value="supported">已接入</option><option value="">全部</option><option value="unsupported">暂未接入</option></select></label>
         <label>模型类型<select id="kind"><option value="">全部类型</option></select></label>
         <label>项目状态<select id="availability"><option value="">全部状态</option><option value="active">允许使用</option><option value="banned">已禁用</option></select></label>
       </div>
@@ -118,8 +120,9 @@ const modes = {text:"文本",patch:"代码补丁",video:"文生视频"};
 const states = {running:"执行中",completed:"已完成",failed:"失败",interrupted:"已中断",blocked:"受阻",judging:"待判断",pending:"待执行",recovery_required:"待恢复",awaiting_confirmation:"待确认",returned:"需返工",accepted:"已验收",started:"已启动",succeeded:"成功",Succeed:"生成成功",InProgress:"生成中",InQueue:"排队中",Failed:"生成失败"};
 const fmt = new Intl.NumberFormat("zh-CN");
 const pageSize = 15;
-let data, page = 0, busy = false, polling = false, key = "", catalogStamp, rulesStamp, usageStamp, prefRevision;
+let data, page = 0, busy = false, polling = false, key = "", catalogStamp, providerStamp, rulesStamp, usageStamp, prefRevision;
 const drafts = new Map();
+const expandedGroups = new Set();
 function node(tag, text, className) {
   const result = document.createElement(tag);
   if (text != null) result.textContent = text;
@@ -132,10 +135,10 @@ function inventory() {
   return data.providers.flatMap(provider => provider.models.map(item => ({provider:provider.id, model:item.id, blocked:item.blocked, kinds:item.kinds || []})));
 }
 function forbidden(item) { return !!item.blocked || data.policy.banned.some(entry => identity(entry) === identity(item)); }
-function capabilities(item) {
+function capabilities(item, kind = "") {
   const types = [];
-  if (item.kinds.includes("chat")) types.push("text", "patch");
-  if (item.kinds.includes("text-to-video")) types.push("video");
+  if ((!kind || kind === "chat") && item.kinds.includes("chat")) types.push("text", "patch");
+  if ((!kind || kind === "video" || kind === "text-to-video") && item.kinds.includes("text-to-video")) types.push("video");
   return types;
 }
 function btn(text, action, label) {
@@ -183,6 +186,15 @@ function preserved(container, render) {
   if (focus) Array.from(container.querySelectorAll("[data-focus]")).find(item => item.dataset.focus === focus)?.focus({preventScroll:true});
 }
 function drawProviders() {
+  const ids = data.providers.map(provider => provider.id);
+  const stamp = JSON.stringify(ids);
+  if (stamp !== providerStamp) {
+    const select = el("provider"), previous = select.value;
+    select.replaceChildren(new Option("全部提供商", ""), ...ids.map(id => new Option(providerName(id), id)));
+    if (ids.includes(previous)) select.value = previous;
+    else if (previous) page = 0;
+    providerStamp = stamp;
+  }
   preserved(el("providers"), () => el("providers").replaceChildren(...data.providers.map(provider => {
     const card=node("div",null,"provider");
     const info=node("div");
@@ -200,19 +212,11 @@ function localTime(raw) {
   const date=new Date(raw);
   return isNaN(date.getTime()) ? raw : date.toLocaleString("zh-CN",{hour12:false});
 }
-function renderCatalog() {
-  if (!data) return;
-  const term = el("search").value.trim().toLowerCase();
-  const filtered = inventory().filter(item =>
-    (item.model.toLowerCase().includes(term) || item.provider.toLowerCase().includes(term)) &&
-    (!el("kind").value || item.kinds.includes(el("kind").value)) &&
-    (!el("availability").value || forbidden(item) === (el("availability").value === "banned")));
-  page = Math.min(page,Math.max(0,Math.ceil(filtered.length/pageSize)-1));
-  const rows = filtered.slice(page*pageSize,(page+1)*pageSize).map(item => {
+function modelRow(item, kind) {
     const row=node("tr");
     modelCell(row,item);
     textCell(row,item.kinds.map(k=>kinds[k] || k).join("、") || "未知");
-    textCell(row,capabilities(item).map(m=>modes[m]).join("、") || "仅目录展示");
+    textCell(row,capabilities(item, kind).map(m=>modes[m]).join("、") || "暂无可派任务");
     const cell = textCell(row,null);
     const banned=data.policy.banned.some(entry=>identity(entry)===identity(item));
     if (!banned && forbidden(item)) {
@@ -225,14 +229,57 @@ function renderCatalog() {
     toggle.dataset.focus=identity(item);
     cell.append(toggle);
     return row;
-  });
+}
+function renderCatalog() {
+  if (!data) return;
+  const term = el("search").value.trim().toLowerCase();
+  const provider = el("provider").value;
+  const kind = el("kind").value, support = el("support").value;
+  const availability = el("availability").value;
+  const filtered = inventory().filter(item =>
+    (!provider || item.provider === provider) &&
+    (item.model.toLowerCase().includes(term) || item.provider.toLowerCase().includes(term)) &&
+    (!kind || item.kinds.includes(kind)) &&
+    (!support || (capabilities(item, kind).length > 0) === (support === "supported")) &&
+    (!availability || forbidden(item) === (availability === "banned")));
+  const groups = new Map();
+  for (const item of filtered) {
+    const slash = item.model.lastIndexOf("/");
+    const directory = slash > 0 ? item.model.slice(0,slash) : "";
+    const key = JSON.stringify([item.provider,directory,directory ? "" : item.model]);
+    if (!groups.has(key)) groups.set(key,{key,directory,items:[]});
+    groups.get(key).items.push(item);
+  }
+  const entries = Array.from(groups.values());
+  page = Math.min(page,Math.max(0,Math.ceil(entries.length/pageSize)-1));
+  const rows = [];
+  for (const {key,directory,items} of entries.slice(page*pageSize,(page+1)*pageSize)) {
+    if (items.length > 1) {
+      const row = node("tr"), cell = textCell(row,null);
+      cell.colSpan = 4;
+      const open = expandedGroups.has(key);
+      const toggle = node("button",(open ? "▾ " : "▸ ")+directory+" · "+items.length+" 个模型");
+      toggle.type = "button";
+      toggle.dataset.focus = key;
+      toggle.setAttribute("aria-expanded",String(open));
+      toggle.onclick = () => {
+        if (open) expandedGroups.delete(key);
+        else expandedGroups.add(key);
+        renderCatalog();
+      };
+      cell.append(toggle,node("small",providerName(items[0].provider)));
+      rows.push(row);
+      if (!open) continue;
+    }
+    for (const item of items) rows.push(modelRow(item,kind));
+  }
   preserved(el("catalog-body"),()=>el("catalog-body").replaceChildren(...(rows.length?rows:[emptyRow(4,inventory().length?"没有匹配的模型":"暂无模型。可刷新提供商目录。")])));
-  el("range").textContent = filtered.length ? (page*pageSize+1)+"–"+Math.min(filtered.length,(page+1)*pageSize)+" / "+filtered.length+" 个模型" : "0 个模型";
+  el("range").textContent = filtered.length ? "第 "+(page+1)+" / "+Math.ceil(entries.length/pageSize)+" 页 · "+filtered.length+" 个模型" : "0 个模型";
   el("prev").disabled=page===0;
-  el("next").disabled=(page+1)*pageSize>=filtered.length;
+  el("next").disabled=(page+1)*pageSize>=entries.length;
 }
 for (const [id,title] of Object.entries(kinds)) el("kind").add(new Option(title,id));
-for (const id of ["search","kind","availability"]) el(id).addEventListener("input",()=>{page=0;renderCatalog();});
+for (const id of ["search","provider","support","kind","availability"]) el(id).addEventListener("input",()=>{page=0;renderCatalog();});
 el("prev").onclick=()=>{page--;renderCatalog();};
 el("next").onclick=()=>{page++;renderCatalog();};
 
