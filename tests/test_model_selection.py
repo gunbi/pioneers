@@ -77,7 +77,7 @@ class ModelRankingTest(unittest.TestCase):
                     pricing={**token_zeros, key: ".034"}), mode))
                 self.assertFalse(confirmed_free("siliconflow", dict(row, id="provider/model:free"), mode))
         video = {"id": "scene/video", "kinds": ["text-to-video"], "pricing": token_zeros}
-        self.assertTrue(confirmed_free("openrouter", dict(video, pricing_skus={"duration_seconds_1080p": "0"}), "video"))
+        self.assertTrue(confirmed_free("openrouter", dict(video, pricing_skus={"duration_seconds": "0"}), "video"))
         for skus in [{"unrelated": "0"}, {"video_tokens": 0, "other": "0.02"}, {"video_tokens": {"tier": 0}},
                      {"duration_seconds_4K": "1E-999"}, {"duration_seconds": "NaN"}]:
             self.assertFalse(confirmed_free("openrouter", dict(video, pricing_skus=skus), "video"))
@@ -87,6 +87,17 @@ class ModelRankingTest(unittest.TestCase):
             self.assertFalse(confirmed_free("openrouter", chat(model, pricing=token_zeros), "text"))
         for bad in (None, -1, True, "NaN", "Infinity", {}, []):
             self.assertFalse(confirmed_free("openrouter", chat("x/a", pricing={"prompt": bad, "completion": 0}), "text"))
+
+    def test_video_resolution_price_is_not_a_model_wide_free_rate(self):
+        from pioneers import free_in_catalog
+
+        row = {"id": "scene/video", "kinds": ["text-to-video"], "supported_resolutions": ["720p", "1080p"],
+               "pricing_skus": {"duration_seconds_1080p": "0"}}
+        catalogs = {"openrouter": [row]}
+        route = {"provider": "openrouter", "model": row["id"], "mode": "video", "resolution": "720p"}
+        self.assertFalse(free_in_catalog(catalogs, route))
+        self.assertEqual(rank_candidates(catalogs, task(), "video", {"preference": "仅免费"}), [])
+        self.assertFalse(rank_candidates(catalogs, task(), "video", {})[0]["free"])
 
     def test_strict_free_language_is_separate_from_preferences(self):
         for text in ["仅免费", "只用免费模型", "不使用付费模型", "free models only", "no paid models", "only use a free model",

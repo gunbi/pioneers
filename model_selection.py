@@ -150,7 +150,9 @@ def confirmed_free(provider, row, mode):
         if any(kind in row["kinds"] for kind in ("image", "audio", "video")):
             return False
         return "prompt" in pricing and "completion" in pricing
-    if mode == "video" and any(key.startswith(("duration_seconds", "video_tokens")) for key in skus):
+    # Automatic routing may leave the resolution to the provider's default.
+    # A zero price published for one resolution cannot establish that all are free.
+    if mode == "video" and ("duration_seconds" in skus or "video_tokens" in skus):
         return True
     output_rates = {"image": ("image_output",), "speech": ("audio_output",), "music": ("audio_output",),
                     "sound_effect": ("audio_output",), "video": ("video_output",)}
