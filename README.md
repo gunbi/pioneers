@@ -242,17 +242,22 @@ python3 pioneers.py --judge RUN_DIR --decision D2 --task requirements --attempt 
 ```json
 {
   "profiles": {
-    "writer": {"provider": "siliconflow", "model": "Qwen/Qwen3.5-35B-A3B", "mode": "text"},
+    "writer": {"provider": "siliconflow", "model": "Qwen/Qwen3.5-35B-A3B", "mode": "text", "tags": ["短文本"]},
+    "film": {"provider": "siliconflow", "model": "MiniMaxAI/MiniMax-H3", "mode": "video", "duration": 5, "resolution": "480p"},
     "coder": {
       "provider": "siliconflow", "model": "deepseek-ai/DeepSeek-V3.2",
       "mode": "patch", "test_command": ["python3", "-m", "unittest"]
     }
   },
-  "defaults": {"roles": {"pm": "writer"}, "types": {"patch": "coder", "host": "host"}}
+  "defaults": {"roles": {"pm": "writer"}, "types": {"patch": "coder", "video": "film", "host": "host"}}
 }
 ```
 
-让领取和执行模型任务的进程都能读取环境变量 `SILICONFLOW_API_KEY`。项目配置只填写模型信息。宿主显式指定的 `--profile` 优先，其次按任务类型（`text`、`patch`、`host`）、角色匹配默认配置，最后使用原生宿主。领取时会核对能力并查询账号可见的聊天模型目录。模型目录查询发生在状态锁外，其他执行端可以同时续约。用 `--profile host` 可直接选本机执行。
+看板服务、领取和执行远端任务的进程从环境读取 `SILICONFLOW_API_KEY`。在项目看板打开「模型管理」可搜索账号的完整目录、按能力筛选、指定模型、禁用或解禁、保存选型倾向。同一项目的迭代共享这些设置。单轮看板也提供项目模型页的只读入口。
+
+目录从不附加类型筛选的 `GET /v1/models` 获取，再用分类查询标注能力。派工时才检查要执行的具体能力，例如文本查 `sub_type=chat`，文生视频查 `sub_type=text-to-video`。目录刷新失败时仍显示上次成功的数据和时间。[官方模型目录 API](https://api-docs.siliconflow.cn/docs/api/models-get)
+
+对兼容的远端任务，项目指定模型优先，其次是宿主显式选择的配置、与倾向匹配的配置、任务类型与角色默认配置。项目禁用规则适用于所有指向该模型的别名，领取和启动前都会检查。已经发出的请求按原回执跟踪。补丁任务始终使用可信配置中的测试命令；`--profile host` 可选择宿主执行。倾向可以写「短文本优先」，框架会匹配配置名称、模型 ID 或项目自定义的 `tags`；无法据此判断的自然语言由宿主从 `--host-ready` 读取后选型。
 
 ```bash
 python3 pioneers.py --host-claim RUN_DIR --task requirements --profile writer
@@ -262,8 +267,9 @@ python3 pioneers.py --host-exec RUN_DIR --task requirements --attempt 1
 使用领取返回的实际轮次。第二条命令负责调用模型、独立续约和归档，返回原有的 `judgment` 供宿主判断。每轮看板记录实际配置的平台、模型、耗时及服务返回的 token 数。超时、限流或补丁验证失败时，框架保留原因并走原来的中断恢复流程。宿主根据就绪队列显式重派下一轮，可以换模型。
 
 - **文本产物**适合规格、验收样例和其他只读文本任务。请求包含任务说明、验收条件、所选 Skill 和前置产物；选择平台时应考虑这些材料能否发送给它。
+- **文生视频**在工作流任务中填写 `video_prompt`，并把 `tools`、`write_paths` 留空。模型仅接收这段创作描述。框架走 `POST /video/submit` 和 `POST /video/status`，先保存提交标记，再保存供应商请求 ID。失联重派时按原 ID 查询；提交结果不明时需人工核对。供应商视频链接有效期约一小时，需保留的成片请及时另存。[视频 API 文档](https://api-docs.siliconflow.cn/docs/api/video-status-post)
 - **补丁任务**把 `write_paths` 中逐一指定的 UTF-8 普通文件交给模型。需要干净的独立 Git 工作区，最多 24 个文件、合计 192 KiB。模型可更新文件或创建新文件。本地执行器在临时副本中运行项目配置的测试，通过后才将改动提交到本轮分支。macOS 使用 `sandbox-exec`，Linux 需要可用的 `bwrap`。测试依赖应能在隔离环境使用；需要联网、桌面工具或其他宿主能力时选择 `host`。
-- **独立验收、有工具或外部操作的任务**交给宿主。项目未启用模型配置时沿用原有派工流程。首版内置的远端插件为 SiliconFlow；其他平台可实现模型目录检查和文本生成接口，注册到 `model_plugins.PROVIDERS`。
+- **运行用量**按项目、模型和任务尝试展示。文本记输入、输出和总 token；视频记生成数和秒数，相同供应商请求 ID 仅计一次。无回执的数量显示未知。独立验收、工具和外部操作继续交给宿主。
 
 ### 将发布纳入交付
 

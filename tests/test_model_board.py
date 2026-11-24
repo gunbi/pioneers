@@ -25,13 +25,16 @@ class ModelBoardTest(unittest.TestCase):
         self.board = ModelBoard(self.registry, "sample", self.root)
 
     def test_cache_keeps_last_good_models_and_select_validates_modality(self):
-        models = [{"id": "sample/video", "kinds": ["video"]}]
+        models = [{"id": "sample/video", "kinds": ["video", "text-to-video"]},
+                  {"id": "sample/image-to-video", "kinds": ["video"]}]
         with patch.dict(os.environ, SILICONFLOW_API_KEY="test-key"), patch.object(SiliconFlow, "list_catalog", return_value=models):
             self.board.apply({"action": "refresh", "provider": "siliconflow"})
         select = {"action": "select", "mode": "video", "provider": "siliconflow", "model": "sample/video", "revision": 0}
         self.board.apply(select)
         with self.assertRaises(ValueError):
             self.board.apply({**select, "revision": 1, "mode": "text"})
+        with self.assertRaises(ValueError):
+            self.board.apply({**select, "revision": 1, "model": "sample/image-to-video"})
         with patch.dict(os.environ, SILICONFLOW_API_KEY="test-key"), patch.object(
                 SiliconFlow, "list_catalog", side_effect=RuntimeError("directory unavailable")):
             with self.assertRaisesRegex(RuntimeError, "unavailable"):

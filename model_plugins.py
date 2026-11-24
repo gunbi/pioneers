@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from dispatch import writes_workspace
-from model_policy import MODEL_ID, MODES
+from model_policy import MODEL_ID, MODES, read_policy
 
 
 class ProviderError(RuntimeError):
@@ -149,6 +149,15 @@ def _profile_info(name, spec):
 def public_profiles(workspace):
     profiles, _ = _profiles_config(workspace)
     return [_profile_info(name, spec) for name, spec in profiles.items()]
+
+
+def dispatch_models(registry, workspace):
+    context = {"model_policy": read_policy(registry)}
+    try:
+        context["model_profiles"] = public_profiles(workspace)
+    except (ValueError, OSError) as error:
+        context["model_profiles_error"] = str(error)
+    return context
 
 
 def banned(policy, provider, model):

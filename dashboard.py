@@ -16,6 +16,7 @@ import webbrowser
 from iterations import iteration_summary, project_snapshot, registered_run
 from progress import STATUS_LABELS, artifact_name
 from dispatch import dispatch_summary, workflow_path
+from model_plugins import dispatch_models
 
 
 ARTIFACT_PATH = re.compile(r"/evidence/([a-z0-9][a-z0-9_-]*(?:\.[0-9]+)?\.(?:md|json))")
@@ -380,6 +381,8 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
                     tasks = {key: task for key, task in planned.items() if key in snapshot["tasks"]}
                     tasks.update({key: job for key, job in snapshot["tasks"].items() if key not in tasks})
                     snapshot["dispatch"] = dispatch_summary(snapshot, tasks)
+                    if project and snapshot["mode"] == "host" and snapshot.get("workspace"):
+                        snapshot["dispatch"].update(dispatch_models(project[0], Path(snapshot["workspace"])))
                 content, kind = json.dumps(snapshot, ensure_ascii=False).encode("utf-8"), "application/json"
             else:
                 match = ARTIFACT_PATH.fullmatch(route)

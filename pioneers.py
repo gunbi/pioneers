@@ -30,7 +30,7 @@ from dispatch import (
 )
 from iterations import latest_delivery, project_snapshot, register_run
 from skill_sources import SNAPSHOT, read_json, refresh_run, write_json
-from model_plugins import PROVIDERS, banned, check_available, public_profiles, resolve_route
+from model_plugins import PROVIDERS, banned, check_available, dispatch_models, resolve_route
 from model_policy import read_policy
 
 
@@ -932,12 +932,7 @@ def host_ready(run_dir, wait=0):
             break
         time.sleep(min(0.35, remaining))
     workspace = Path(data["workspace"])
-    policy = read_policy(project_registry(workspace))
-    summary["model_policy"] = policy
-    try:
-        summary["model_profiles"] = public_profiles(workspace)
-    except ValueError as error:
-        summary["model_profiles_error"] = str(error)
+    summary.update(dispatch_models(project_registry(workspace), workspace))
     return summary
 
 

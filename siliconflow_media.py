@@ -13,7 +13,7 @@ from skill_sources import write_json
 
 
 CATALOG_FILTERS = {
-    "chat": "sub_type=chat", "image": "type=image", "video": "type=video",
+    "chat": "sub_type=chat", "image": "type=image", "video": "type=video", "text-to-video": "sub_type=text-to-video",
     "audio": "type=audio", "embedding": "sub_type=embedding", "rerank": "sub_type=reranker",
 }
 VIDEO_STATES = ("InQueue", "InProgress", "Succeed", "Failed")
@@ -33,7 +33,8 @@ def list_catalog(provider):
         subsets = {kind: pool.submit(ids, "/models?" + query) for kind, query in CATALOG_FILTERS.items()}
         for kind, subset in subsets.items():
             for model in subset.result():
-                catalog.setdefault(model, []).append(kind)
+                if model in catalog:
+                    catalog[model].append(kind)
     return [{"id": model, "kinds": catalog[model] or ["other"]} for model in sorted(catalog)]
 
 
@@ -70,7 +71,7 @@ def video_job(provider, route, prompt, receipt_path, result):
         if not receipt.get("request_id"):
             result["video"] = {"state": "submitting"}
             raise ValueError("视频提交结果尚未确认，请人工核对原请求。")
-        if receipt.get("state") not in ("submitted", "Succeed", "Failed"):
+        if receipt.get("state") not in ("submitted", *VIDEO_STATES):
             raise ValueError("视频回执状态无效，请核对原请求。")
         if receipt["state"] == "Succeed" and time.time() - receipt.get("url_checked_at", 0) >= 3600:
             # A recovery may happen after the delivery link's lifetime; re-query the same request.
@@ -97,6 +98,9 @@ def video_job(provider, route, prompt, receipt_path, result):
             raise ValueError("SiliconFlow returned an invalid video job status")
         result["video"]["state"] = state
         if state in ("InQueue", "InProgress"):
+            if state != receipt["state"]:
+                receipt["state"] = state
+                write_json(receipt_path, receipt)
             time.sleep(5)
             continue
         if state == "Succeed":

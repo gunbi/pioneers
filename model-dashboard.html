@@ -113,7 +113,7 @@ dl.metrics { display:flex; flex-wrap:wrap; gap:1.2rem 2rem; padding:.65rem 0; ma
 
 "use strict";
 const el = id => document.getElementById(id);
-const kinds = {chat:"对话",video:"视频",image:"图像",audio:"音频",embedding:"向量",rerank:"重排",other:"其他"};
+const kinds = {chat:"对话",video:"视频","text-to-video":"文生视频",image:"图像",audio:"音频",embedding:"向量",rerank:"重排",other:"其他"};
 const modes = {text:"文本",patch:"代码补丁",video:"文生视频"};
 const states = {running:"执行中",completed:"已完成",failed:"失败",interrupted:"已中断",blocked:"受阻",judging:"待判断",pending:"待执行",recovery_required:"待恢复",awaiting_confirmation:"待确认",returned:"需返工",accepted:"已验收",started:"已启动",succeeded:"成功",Succeed:"生成成功",InProgress:"生成中",InQueue:"排队中",Failed:"生成失败"};
 const fmt = new Intl.NumberFormat("zh-CN");
@@ -135,7 +135,7 @@ function forbidden(item) { return data.policy.banned.some(entry => identity(entr
 function capabilities(item) {
   const types = [];
   if (item.kinds.includes("chat")) types.push("text", "patch");
-  if (item.kinds.includes("video")) types.push("video");
+  if (item.kinds.includes("text-to-video")) types.push("video");
   return types;
 }
 function btn(text, action, label) {

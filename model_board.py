@@ -118,7 +118,7 @@ class ModelBoard:
             if action == "select":
                 models = read_json(self._cache(name)).get("models", [])
                 mode = request.get("mode")
-                kind = {"text": "chat", "patch": "chat", "video": "video"}.get(mode) if isinstance(mode, str) else None
+                kind = {"text": "chat", "patch": "chat", "video": "text-to-video"}.get(mode) if isinstance(mode, str) else None
                 if not kind or not any(m["id"] == request.get("model") and kind in m["kinds"] for m in models):
                     raise ValueError("目录中未找到适用于此任务类型的模型，请先刷新目录")
             update_policy(self.registry, request)
