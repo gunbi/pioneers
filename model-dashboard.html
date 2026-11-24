@@ -47,6 +47,37 @@ table { width:100%; border-collapse:collapse; text-align:left; font-size:.86rem;
 th,td { border-bottom:1px solid var(--line); padding:.56rem .48rem; vertical-align:middle; }
 th { background:#f5f7fa; color:#43556e; font-weight:650; white-space:nowrap; }
 .model { font-weight:610; overflow-wrap:anywhere; }
+#catalog table { table-layout:fixed; }
+#catalog th:nth-child(1) { width:40%; }
+#catalog th:nth-child(2) { width:23%; }
+#catalog th:nth-child(3) { width:24%; }
+.directory-row td { padding:0; }
+.directory-toggle {
+  display:flex; align-items:center; gap:.65rem; width:100%; min-height:2.65rem; padding:.48rem .65rem;
+  border:0; border-radius:0; background:transparent; font:inherit; text-align:start;
+}
+.directory-toggle:hover:enabled { background:#f5f7fa; color:var(--ink); }
+.directory-toggle:focus-visible { outline:0; }
+.directory-toggle:focus-visible .directory-name { color:var(--accent); text-decoration:underline 2px; text-underline-offset:.22em; }
+.directory-toggle::before {
+  content:""; flex:none; width:.42rem; height:.42rem; border:solid var(--muted); border-width:0 1.5px 1.5px 0;
+  transform:rotate(-45deg);
+}
+.directory-toggle[aria-expanded=true]::before { transform:rotate(45deg); }
+.directory-name { font-weight:650; overflow-wrap:anywhere; }
+.directory-count { margin-inline-start:auto; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.model-child { position:relative; padding-inline-start:2.65rem; font-weight:500; overflow-wrap:anywhere; }
+.model-child::before {
+  content:""; position:absolute; inset-inline-start:.84rem; top:0; height:100%; border-inline-start:1px solid var(--line);
+}
+.model-child::after {
+  content:""; position:absolute; inset-inline-start:.84rem; top:50%; width:.72rem; border-top:1px solid var(--line);
+}
+.model-child.last-child::before { height:50%; }
+@media(max-width:640px) {
+  #catalog th:first-child { width:38%; } #catalog th:nth-child(3) { width:20%; }
+  .directory-toggle { gap:.45rem; } td.model-child { padding-inline-start:1.85rem; }
+}
 .num { font-variant-numeric:tabular-nums; white-space:nowrap; }
 .empty { padding:.9rem .3rem; color:var(--muted); }
 .pager { display:flex; flex-wrap:wrap; align-items:center; gap:.6rem; justify-content:flex-end; margin-top:.7rem; }
@@ -220,9 +251,15 @@ function localTime(raw) {
   const date=new Date(raw);
   return isNaN(date.getTime()) ? raw : date.toLocaleString("zh-CN",{hour12:false});
 }
-function modelRow(item, kind) {
+function modelRow(item, kind, directory, lastChild) {
     const row=node("tr");
-    modelCell(row,item);
+    if (directory) {
+      const cell = textCell(row,item.model.slice(directory.length+1),"model-child");
+      cell.classList.toggle("last-child", lastChild);
+      cell.title = item.model;
+    } else {
+      modelCell(row,item);
+    }
     textCell(row,item.kinds.map(k=>kinds[k] || k).join("、") || "未知");
     textCell(row,capabilities(item, kind).map(m=>modes[m]).join("、") || "暂无可派任务");
     const cell = textCell(row,null);
@@ -262,11 +299,14 @@ function renderCatalog() {
   page = Math.min(page,Math.max(0,Math.ceil(entries.length/pageSize)-1));
   const rows = [];
   for (const {key,directory,items} of entries.slice(page*pageSize,(page+1)*pageSize)) {
-    if (items.length > 1) {
-      const row = node("tr"), cell = textCell(row,null);
+    const grouped = items.length > 1;
+    if (grouped) {
+      const row = node("tr",null,"directory-row"), cell = textCell(row,null);
       cell.colSpan = 4;
       const open = expandedGroups.has(key);
-      const toggle = node("button",(open ? "▾ " : "▸ ")+directory+" · "+items.length+" 个模型");
+      const toggle = node("button",null,"directory-toggle");
+      toggle.append(node("span",directory,"directory-name"),node("small",providerName(items[0].provider)),
+                    node("small",items.length+" 个模型","directory-count"));
       toggle.type = "button";
       toggle.dataset.focus = key;
       toggle.setAttribute("aria-expanded",String(open));
@@ -275,11 +315,13 @@ function renderCatalog() {
         else expandedGroups.add(key);
         renderCatalog();
       };
-      cell.append(toggle,node("small",providerName(items[0].provider)));
+      cell.append(toggle);
       rows.push(row);
       if (!open) continue;
     }
-    for (const item of items) rows.push(modelRow(item,kind));
+    for (const [index,item] of items.entries()) {
+      rows.push(modelRow(item,kind,grouped ? directory : "",index===items.length-1));
+    }
   }
   preserved(el("catalog-body"),()=>el("catalog-body").replaceChildren(...(rows.length?rows:[emptyRow(4,inventory().length?"没有匹配的模型":"暂无模型。可刷新提供商目录。")])));
   el("range").textContent = filtered.length ? "第 "+(page+1)+" / "+Math.ceil(entries.length/pageSize)+" 页 · "+filtered.length+" 个模型" : "0 个模型";
