@@ -26,7 +26,68 @@ def video_from_text(model, video):
         description, re.IGNORECASE))
 
 
-def kinds(row, video):
+MUSIC_MODELS = {"google/lyria-3-clip-preview", "google/lyria-3-pro-preview"}
+SOUND_EFFECT_MODEL = "bytedance-seed/seed-audio-1-0"
+
+
+def raster_options(image):
+    if not image:
+        return None
+    arch = image.get("architecture") or {}
+    if "text" not in arch.get("input_modalities", []) or "image" not in arch.get("output_modalities", []):
+        return None
+    params = image.get("supported_parameters")
+    if not isinstance(params, dict) or params.get("input_references", {}).get("min", 0) > 0:
+        return None
+    if "output_format" not in params:
+        return {}
+    formats = params["output_format"].get("values", [])
+    return next(({"output_format": fmt} for fmt in ("png", "jpeg", "webp") if fmt in formats), None)
+
+
+def speech_options(row, voice=None):
+    for endpoint in (row or {}).get("endpoints", []):
+        inputs = endpoint.get("input_modalities", [])
+        if not any(item.get("type") == "text" and item.get("turns") != "required" for item in inputs):
+            continue
+        for output in endpoint.get("output_modalities", []):
+            if output.get("type") != "speech":
+                continue
+            params = output.get("supported_parameters", {})
+            voices = params.get("voice", {})
+            formats = params.get("response_format", {}).get("values", [])
+            fmt = next((value for value in ("mp3", "wav", "pcm") if value in formats), None)
+            choices = voices.get("values", [])
+            if not fmt or voices.get("references") == "required" or (choices and voice and voice not in choices):
+                continue
+            if voice and not voices:
+                continue
+            slug = endpoint.get("provider_slug")
+            if not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9_-]+(?:/[a-z0-9_-]+)*", slug):
+                continue
+            options = {"response_format": fmt, "provider": {"only": [slug]}}
+            selected = voice or next(iter(choices), None)
+            if selected:
+                options["voice"] = selected
+            return options
+    return None
+
+
+def speech_metadata(model, speeches, general):
+    if model in speeches:
+        return speeches[model]
+    # Some free endpoints share the documented voices/formats of the same canonical model.
+    if model.endswith(":free"):
+        base = model[:-5]
+        alias = general.get(model, {})
+        canonical = alias.get("canonical_slug")
+        if (canonical and canonical == general.get(base, {}).get("canonical_slug")
+                and "/api/v1/audio/speech" in (alias.get("endpoints") or [])):
+            return speeches.get(base)
+    return None
+
+
+def kinds(row, video, image=None, speech=None):
     arch = row.get("architecture")
     if not isinstance(arch, dict):
         arch = {}
@@ -46,6 +107,15 @@ def kinds(row, video):
                          ("rerank", "rerank"), ("decisions", "decisions")):
         if output in outs and kind not in types:
             types.append(kind)
+    if raster_options(image) is not None:
+        types.append("text-to-image")
+    if speech_options(speech) is not None:
+        types.append("text-to-speech")
+        if row.get("id") == SOUND_EFFECT_MODEL:
+            types.append("text-to-sound-effect")
+    if (row.get("id") in MUSIC_MODELS and "text" in ins and "audio" in outs
+            and "/api/v1/chat/completions" in (endpoints or [])):
+        types.append("text-to-music")
     if "video" in outs or video:
         types.append("video")
         if "text" in ins and video_from_text(row, video):
@@ -58,14 +128,42 @@ def catalog(provider):
         all_models = pool.submit(rows, provider, "/models?output_modalities=all", public=True)
         videos = rows(provider, "/videos/models", public=True)
         models = all_models.result()
+        advertised = {path for row in models.values() for path in (row.get("endpoints") or [])}
+        images = (pool.submit(rows, provider, "/images/models", public=True)
+                  if "/api/v1/images" in advertised else None)
+        speeches = (rows(provider, "/audio/speech/models", public=True)
+                    if "/api/v1/audio/speech" in advertised else {})
+        images = images.result() if images else {}
     result = []
-    for model in sorted(models.keys() | videos.keys()):
+    for model in sorted(models.keys() | videos.keys() | images.keys() | speeches.keys()):
         row = models.get(model, {"id": model})
-        result.append({"id": model, "kinds": kinds(row, videos.get(model))})
+        speech = speech_metadata(model, speeches, models)
+        result.append({"id": model, "kinds": kinds(row, videos.get(model), images.get(model), speech)})
     return result
 
 
+def generation_options(provider, model, mode, options):
+    settings = None
+    if mode == "image":
+        settings = raster_options(rows(provider, "/images/models", public=True).get(model))
+    elif mode in ("speech", "sound_effect") and (mode == "speech" or model == SOUND_EFFECT_MODEL):
+        speeches = rows(provider, "/audio/speech/models", public=True)
+        general = (rows(provider, "/models?output_modalities=all", public=True)
+                   if model not in speeches and model.endswith(":free") else {})
+        settings = speech_options(speech_metadata(model, speeches, general), options.get("voice"))
+    elif mode == "music" and model in MUSIC_MODELS:
+        row = rows(provider, "/models?output_modalities=all", public=True).get(model, {})
+        if "text-to-music" in kinds(row, None):
+            settings = {}
+    if settings is None:
+        raise ValueError(f"Model {model} is unavailable for OpenRouter {mode} tasks or requested voice")
+    return settings
+
+
 def check_available(provider, model, mode, options):
+    if mode in ("image", "speech", "music", "sound_effect"):
+        generation_options(provider, model, mode, options)
+        return
     if mode == "video":
         videos = rows(provider, "/videos/models", public=True)
         general = rows(provider, "/models?output_modalities=video", public=True)

@@ -1,13 +1,30 @@
 """Model discovery and durable asynchronous video jobs on SiliconFlow."""
 
 from concurrent.futures import ThreadPoolExecutor
+import re
 import time
 
 
 CATALOG_FILTERS = {
     "chat": "sub_type=chat", "image": "type=image", "video": "type=video", "text-to-video": "sub_type=text-to-video",
-    "audio": "type=audio", "embedding": "sub_type=embedding", "rerank": "sub_type=reranker",
+    "audio": "type=audio", "text-to-image": "sub_type=text-to-image", "text-to-speech": "sub_type=text-to-speech", "embedding": "sub_type=embedding", "rerank": "sub_type=reranker",
 }
+
+
+def supports_text_prompt(model, kind):
+    # The image subtype also includes edit-only Qwen checkpoints that require an image.
+    return kind != "text-to-image" or not re.search(r"(?:^|[-_/])(edit(?:ing)?|inpaint|controlnet)(?:$|[-_/])",
+                                                    model, re.IGNORECASE)
+
+
+def check_media_available(provider, model, mode, options):
+    kind = {"image": "text-to-image", "speech": "text-to-speech"}.get(mode)
+    if kind and supports_text_prompt(model, kind):
+        body = provider.request("/models?" + CATALOG_FILTERS[kind], timeout=15)
+        if isinstance(body, dict) and isinstance(body.get("data"), list):
+            if any(isinstance(row, dict) and row.get("id") == model for row in body["data"]):
+                return
+    raise ValueError(f"Model {model} is unavailable for SiliconFlow {mode} tasks")
 
 
 def list_catalog(provider):
@@ -24,7 +41,7 @@ def list_catalog(provider):
         subsets = {kind: pool.submit(ids, "/models?" + query) for kind, query in CATALOG_FILTERS.items()}
         for kind, subset in subsets.items():
             for model in subset.result():
-                if model in catalog:
+                if model in catalog and supports_text_prompt(model, kind):
                     catalog[model].append(kind)
     return [{"id": model, "kinds": catalog[model] or ["other"]} for model in sorted(catalog)]
 
