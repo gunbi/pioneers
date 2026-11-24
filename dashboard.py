@@ -18,7 +18,7 @@ import webbrowser
 from iterations import iteration_summary, project_snapshot, registered_run
 from progress import STATUS_LABELS, artifact_name
 from dispatch import dispatch_summary, workflow_path
-from model_plugins import dispatch_models
+from model_plugins import PROVIDERS
 from model_board import MEDIA_FILENAME, ModelBoard, media_reference
 
 
@@ -250,6 +250,7 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
     project_prefix = "/project" if run_dir is not None else ""
     control_key = secrets.token_urlsafe(32) if cloud_origin else None
     key_deadline = monotonic() + CLOUD_CONTROL_SECONDS
+    last_preview = None
 
     class DashboardHandler(BaseHTTPRequestHandler):
         def run_route(self, path):
@@ -396,6 +397,7 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
                     remaining -= len(chunk)
 
         def do_GET(self):
+            nonlocal last_preview
             path = urlsplit(self.path).path
             if model_board and path == project_prefix + "/models":
                 self.respond(Path(__file__).with_name("model-dashboard.html").read_bytes(), "text/html")
@@ -467,7 +469,21 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
                     tasks.update({key: job for key, job in snapshot["tasks"].items() if key not in tasks})
                     snapshot["dispatch"] = dispatch_summary(snapshot, tasks)
                     if project and snapshot["mode"] == "host" and snapshot.get("workspace"):
-                        snapshot["dispatch"].update(dispatch_models(project[0], Path(snapshot["workspace"])))
+                        # Render the host's routing rules without making provider requests on page polls.
+                        from model_selection import load_catalogs
+                        from pioneers import host_routing_summary
+                        registry = project[0]
+                        files = [status, workflow_path(target_run, snapshot), Path(snapshot["workspace"]) / ".pioneers/models.json",
+                                 registry / "model-policy.sqlite3", *(registry / f"model-catalog-{p}.json" for p in PROVIDERS)]
+                        stamp = (target_run, int(monotonic() // 10), tuple(p.stat().st_mtime_ns if p.exists() else None for p in files))
+                        previous = last_preview
+                        if previous and previous[0] == stamp:
+                            snapshot["dispatch"] = previous[1]
+                        else:
+                            from functools import lru_cache
+                            load = lru_cache(maxsize=1)(lambda: load_catalogs(registry, cached_only=True))
+                            view = host_routing_summary(target_run, snapshot, tasks, snapshot["dispatch"], registry, load)
+                            last_preview = (stamp, view)
                 content, kind = json.dumps(snapshot, ensure_ascii=False).encode("utf-8"), "application/json"
             else:
                 match = ARTIFACT_PATH.fullmatch(route)

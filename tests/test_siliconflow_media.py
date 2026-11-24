@@ -48,6 +48,12 @@ class SiliconFlowVideoTest(unittest.TestCase):
         self.assertEqual(run(self.request, self.root, self.output), expected)
         return json.loads(self.output.read_text())
 
+    def test_recovery_does_not_submit_if_receipt_disappears(self):
+        self.request["route"]["reuse_only"] = True
+        self.assertIn("回执", self.execute(1)["error"])
+        self.assertFalse(self.receipt.exists())
+        self.assertEqual(self.provider.request.call_count, 0)
+
     def test_worker_submits_once_and_resumes_known_job(self):
         self.provider.request.side_effect = [self.submission, {"status": "InQueue"}, TimeoutError("timeout"),
                                              {"status": "InProgress"}, self.completed]
