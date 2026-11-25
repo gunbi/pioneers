@@ -141,17 +141,22 @@ def provider_key(name):
     return source.get(name, "").strip()
 
 
-def has_provider_credentials():
+def configured_provider_ids():
     """Check credential format in the current project context without a provider request."""
     from model_plugins import PROVIDERS
 
-    for provider in PROVIDERS.values():
+    configured = set()
+    for name, provider in PROVIDERS.items():
         try:
             provider.api_key()
-            return True
         except ValueError:
             continue
-    return False
+        configured.add(name)
+    return configured
+
+
+def has_provider_credentials():
+    return bool(configured_provider_ids())
 
 
 def _setup_path(registry):

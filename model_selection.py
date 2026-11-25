@@ -11,7 +11,7 @@ import sqlite3
 import time
 from uuid import uuid4
 
-from model_policy import MODEL_ID, MODE_KINDS, banned
+from model_policy import MODEL_ID, MODEL_PRESETS, MODE_KINDS, banned
 from provider_credentials import catalog_path, project_credentials
 from skill_sources import read_json, write_json
 
@@ -261,6 +261,10 @@ def rank_candidates(catalogs, task, mode, policy, profiles=(), *, limit=MAX_CAND
         return []
     preference = policy.get("preference") if isinstance(policy.get("preference"), str) else ""
     only_free = requires_free(preference)
+    preset = MODEL_PRESETS.get(policy.get("preset"))
+    preferred_models = preset["models"].get(mode, []) if preset else []
+    if preferred_models:
+        preference += "，优先质量"
     complexity = task.get("complexity")
     level = complexity.get("level", "medium") if isinstance(complexity, dict) else "medium"
     task_text = " ".join(str(task.get(k, "")) for k in ("prompt", "title"))
@@ -283,6 +287,16 @@ def rank_candidates(catalogs, task, mode, policy, profiles=(), *, limit=MAX_CAND
                     or banned(policy, provider, name) or (only_free and not confirmed_free(provider, row, mode))):
                 continue
             seen.add(name)
-            ranked.append(_score(row, provider, mode, level, preference, task_traits, labels.get((provider, name), [])))
+            score, candidate = _score(row, provider, mode, level, preference, task_traits, labels.get((provider, name), []))
+            # Apply the preset after eligibility checks, before the shortlist limit.
+            priority = len(preferred_models) + 1
+            if preferred_models and provider == preset["provider"]:
+                if name in preferred_models:
+                    priority = preferred_models.index(name)
+                    candidate["reason"] += f"；内置策略推荐（第 {priority + 1} 选择）"
+                else:
+                    priority = len(preferred_models)
+                    candidate["reason"] += "；内置策略优先同供应商"
+            ranked.append(((priority, *score), candidate))
     ranked.sort(key=lambda item: item[0])
     return [candidate for _, candidate in ranked[:limit]]

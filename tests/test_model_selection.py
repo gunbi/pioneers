@@ -27,6 +27,30 @@ def models(candidates):
 
 
 class ModelRankingTest(unittest.TestCase):
+    def test_quality_preset_ranks_the_matching_siliconflow_models_by_task(self):
+        recommendations = {
+            "text": ("chat", ["deepseek-ai/DeepSeek-V4-Pro"]),
+            "patch": ("chat", ["zai-org/GLM-5.3", "moonshotai/Kimi-K2.7-Code"]),
+            "image": ("text-to-image", ["OpenMOSS-Team/MOSS-Image"]),
+            "speech": ("text-to-speech", ["FunAudioLLM/CosyVoice2-0.5B"]),
+            "video": ("text-to-video", ["MiniMaxAI/MiniMax-H3"]),
+        }
+        for mode, (kind, preferred) in recommendations.items():
+            with self.subTest(mode=mode):
+                def row(model):
+                    return {"id": model, "kinds": [kind]}
+
+                catalogs = {"siliconflow": [row("other/fast"), row("other/flagship"), *map(row, reversed(preferred))],
+                            "openrouter": [row(preferred[0])]}
+                policy = {"preset": "siliconflow-quality"}
+                ranked = rank_candidates(catalogs, task("low"), mode, policy, limit=None)
+                self.assertEqual(models(ranked), [*preferred, "other/flagship", "other/fast", preferred[0]])
+                self.assertEqual(ranked[0]["provider"], "siliconflow")
+                self.assertIn("内置策略", ranked[0]["reason"])
+                self.assertEqual(ranked[-1]["provider"], "openrouter")
+                policy["banned"] = [{"provider": "siliconflow", "model": preferred[0]}]
+                self.assertEqual(models(rank_candidates(catalogs, task(), mode, policy)), models(ranked)[1:])
+
     def test_complexity_changes_first_choice_using_evidence_outside_model_names(self):
         rows = [chat("vendor/a", description="A lightweight, low-latency assistant"),
                 chat("vendor/b", tags=["reasoning"], context_length=262144)]

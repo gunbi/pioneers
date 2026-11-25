@@ -120,6 +120,46 @@ class FirstProviderSetupTest(unittest.TestCase):
         self.assertNotIn("model_preference_setup", self.start())
         self.assertNotIn("model_preference_setup", self.invoke("--configure-provider-env", envfile, "--workspace", self.project))
 
+    def test_quality_preset_offered_with_siliconflow_and_saved_by_cli_or_board(self):
+        env = {**self.env, "SILICONFLOW_API_KEY": "test-sf"}
+        first = self.start(env=env)["model_preference_setup"]
+        preset = first["presets"][0]
+        self.assertEqual(preset["id"], "siliconflow-quality")
+        self.assertIn(preset["label"], first["question"])
+        board = ModelBoard(project_registry(self.project), "test", self.project)
+        args = ("--set-model-preset", preset["id"], "--workspace", self.project, "--policy-revision")
+        self.assertEqual(self.invoke(*args, first["revision"])["preset"], preset["id"])
+        self.assertNotIn("model_preference_setup", self.start(env=env))
+        with patch.object(board, "providers", return_value=[]):
+            snapshot = board.snapshot()
+        self.assertIn(preset, snapshot["model_presets"])
+        self.assertEqual(snapshot["policy"]["preset"], preset["id"])
+        board.apply({"action": "preset", "value": None, "revision": snapshot["policy"]["revision"]})
+        self.assertIn("刷新", self.invoke(*args, first["revision"], expected=1))
+        self.assertFalse(read_policy(board.registry).get("preset"))
+        with self.assertRaisesRegex(ValueError, "未知"):
+            board.apply({"action": "preset", "value": ["unknown"], "revision": 2})
+        board.apply({"action": "preference", "value": "仅免费", "revision": 2})
+        board.apply({"action": "ban", "provider": "siliconflow", "model": "demo/blocked", "revision": 3})
+        enabled = self.invoke(*args, 4)
+        self.assertEqual(enabled["preference"], "仅免费")
+        self.assertEqual(enabled["banned"], [{"provider": "siliconflow", "model": "demo/blocked"}])
+        disabled = self.invoke("--set-model-preset", "none", "--workspace", self.project, "--policy-revision", 5)
+        self.assertFalse(disabled.get("preset"))
+        self.assertEqual(disabled["banned"], enabled["banned"])
+
+        other = self.root / "bound"
+        other.mkdir()
+        envfile = self.root / "keys.env"
+        envfile.write_text("SILICONFLOW_API_KEY=test-sf\n")
+        bind = self.invoke("--configure-provider-env", envfile, "--workspace", other)
+        self.assertEqual(bind["model_preference_setup"]["presets"], [preset])
+        router = self.root / "router"
+        router.mkdir()
+        offer = self.start(router, {**self.env, "OPENROUTER_API_KEY": "test-or"})["model_preference_setup"]
+        self.assertNotIn(preset, offer.get("presets", []))
+        self.assertNotIn(preset["label"], offer["question"])
+
     def test_existing_policy_default_and_stale_reply(self):
         registry = project_registry(self.project)
         board = ModelBoard(registry, "test", self.project)

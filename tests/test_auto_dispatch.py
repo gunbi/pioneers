@@ -111,8 +111,24 @@ class AutomaticDispatchTest(unittest.TestCase):
         self.policy("clear", mode="text")
         self.assertEqual(self.claim("high")["executor"]["model"], "org/deep/reasoner:free")
 
+    def test_quality_preset_claim_fallback_and_policy_overrides(self):
+        preferred = "deepseek-ai/DeepSeek-V4-Pro"
+        self.catalogs["siliconflow"] = [{"id": model, "kinds": ["chat"]} for model in (preferred, "v/alternate")]
+        self.setup_run()
+        self.policy("preset", value="siliconflow-quality")
+        with patch.dict(os.environ, SILICONFLOW_API_KEY="sf-test"):
+            ready = host_ready(self.run)["ready"][0]
+            self.assertEqual(ready["model_candidates"][0]["model"], preferred)
+            self.check.side_effect = [ValueError("offline"), None]
+            self.assertEqual(self.claim()["executor"]["model"], "v/alternate")
+            self.policy("preference", value="仅免费")
+            self.check.side_effect = None
+            second = self.claim("high")["executor"]
+            self.assertEqual((second["provider"], second["model"]), ("openrouter", "org/deep/reasoner:free"))
+
     def test_named_default_is_fixed_soft_named_preference_is_not(self):
         self.setup_run()
+        self.policy("preset", value="siliconflow-quality")
         config = self.project / ".pioneers" / "models.json"
         config.parent.mkdir(exist_ok=True)
         profiles = {"quick": {"provider": "openrouter", "model": "org/flash", "tags": ["preferred"], "mode": "text"}}
@@ -125,6 +141,7 @@ class AutomaticDispatchTest(unittest.TestCase):
 
     def test_host_only_and_unsafe_patch_do_not_discover(self):
         self.setup_run(role="engineer", write_paths=["app.py"])
+        self.policy("preset", value="siliconflow-quality")
         self.assertEqual(host_ready(self.run)["ready"][0]["model_candidates"], [])
         self.assertEqual(self.claim()["executor"]["provider"], "host")
         self.lookup.assert_not_called()
@@ -132,6 +149,7 @@ class AutomaticDispatchTest(unittest.TestCase):
 
     def test_independent_qa_is_host_only_despite_project_model_default(self):
         self.setup_run(role="qa", review=True, acceptance=["Snapshot matches"])
+        self.policy("preset", value="siliconflow-quality")
         self.policy("select", mode="text", provider="openrouter", model="org/flash")
         self.assertEqual(host_ready(self.run)["ready"][0]["model_candidates"], [])
         self.assertEqual(self.claim()["executor"], {"provider": "host"})

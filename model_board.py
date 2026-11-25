@@ -8,7 +8,7 @@ from time import monotonic
 
 from iterations import registered_run
 from model_plugins import PROVIDERS, public_profiles
-from model_policy import MEDIA_MODES, MODE_KINDS, banned, read_policy, update_policy
+from model_policy import MEDIA_MODES, MODE_KINDS, MODEL_PRESETS, banned, read_policy, update_policy
 from provider_credentials import catalog_path, project_credentials
 from skill_sources import read_json, write_json
 
@@ -134,7 +134,7 @@ class ModelBoard:
             for model in provider["models"]:
                 if banned(policy, provider["id"], model["id"]):
                     model["blocked"] = True
-        return {"project": self.name, "providers": providers, "policy": policy,
+        return {"project": self.name, "providers": providers, "policy": policy, "model_presets": list(MODEL_PRESETS.values()),
                 "profiles": public_profiles(self.workspace) if self.workspace else [], "usage": run_usage(self.registry)}
 
     def apply(self, request):

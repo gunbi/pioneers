@@ -35,9 +35,9 @@ from model_plugins import (
     PROVIDERS, banned, check_available, dispatch_models, models_config, project_default, public_profiles, resolve_route, shared_preflight, task_mode,
 )
 import generated_media
-from model_policy import MEDIA_MODES, offer_model_preference, read_policy, update_policy
+from model_policy import MEDIA_MODES, MODEL_PRESETS, offer_model_preference, read_policy, update_policy
 from provider_credentials import (
-    configure_provider_env, has_provider_credentials, offer_provider_setup, prepare_provider_setup,
+    configure_provider_env, configured_provider_ids, offer_provider_setup, prepare_provider_setup,
     project_credentials, skip_provider_setup, skipped_without_credentials,
 )
 
@@ -1362,8 +1362,8 @@ def start_host(workflow_path, output_dir, workspace, require_release):
 
 def print_with_model_preference(registry, result):
     with project_credentials(registry):
-        configured = has_provider_credentials()
-    with offer_model_preference(registry) if configured else nullcontext() as offer:
+        providers = configured_provider_ids()
+    with offer_model_preference(registry, providers) if providers else nullcontext() as offer:
         if offer:
             result = {**result, "model_preference_setup": offer}
         print(json.dumps(result, ensure_ascii=False), flush=True)
@@ -2471,6 +2471,8 @@ def main():
     action.add_argument("--clear-provider-env", action="store_true", help="Remove this project's provider env file binding.")
     action.add_argument("--skip-provider-setup", action="store_true", help="Remember the user's choice to skip first-time provider setup.")
     action.add_argument("--set-model-preference", metavar="TEXT", help="Save this project's model preference. Use an empty string for the default.")
+    action.add_argument("--set-model-preset", choices=(*MODEL_PRESETS, "none"),
+                        help="Apply a built-in model selection policy, or disable it with 'none'.")
     parser.add_argument("--policy-revision", type=int, help="Expected policy revision from the model preference prompt.")
     action.add_argument("--status", type=Path, metavar="RUN_DIR", help="Show the latest team status.")
     action.add_argument("--watch", type=Path, metavar="RUN_DIR", help="Follow team status until the run stops.")
@@ -2584,10 +2586,10 @@ def main():
         args.continue_run,
     ))
     tool_action = any(value is not None for value in (args.list_capabilities, args.mcp_config, args.run_tool))
-    provider_action = (args.configure_provider_env is not None or args.clear_provider_env
-                       or args.skip_provider_setup or args.set_model_preference is not None)
-    if args.policy_revision is not None and (args.set_model_preference is None or args.policy_revision < 0):
-        parser.error("--policy-revision requires --set-model-preference and a non-negative revision")
+    policy_action = args.set_model_preference is not None or args.set_model_preset is not None
+    provider_action = args.configure_provider_env is not None or args.clear_provider_env or args.skip_provider_setup or policy_action
+    if args.policy_revision is not None and (not policy_action or args.policy_revision < 0):
+        parser.error("--policy-revision requires a model policy action and a non-negative revision")
     if (args.create_team or args.bind_project or provider_action or viewing or tool_action or host_action) and (args.workflow is not None or args.live):
         parser.error("team setup, status, host commands and tools are separate actions from running a workflow")
     if (args.host_claim or args.host_report) and not args.task:
@@ -2649,9 +2651,12 @@ def main():
                 result = configure_provider_env(registry, args.configure_provider_env)
                 print_with_model_preference(registry, result)
                 return 0
-            if args.set_model_preference is not None:
+            if policy_action:
                 revision = args.policy_revision if args.policy_revision is not None else read_policy(registry)["revision"]
-                result = update_policy(registry, {"action": "preference", "revision": revision, "value": args.set_model_preference})
+                change = {"action": "preference", "value": args.set_model_preference}
+                if args.set_model_preset is not None:
+                    change = {"action": "preset", "value": None if args.set_model_preset == "none" else args.set_model_preset}
+                result = update_policy(registry, {**change, "revision": revision})
             elif args.skip_provider_setup:
                 result = skip_provider_setup(registry)
             else:

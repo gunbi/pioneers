@@ -16,6 +16,21 @@ MODES = tuple(MODE_KINDS)
 MODEL_ID = re.compile(r"~?[A-Za-z0-9][A-Za-z0-9_./:+-]{0,255}")
 PROVIDER_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 
+# These are preferred catalog IDs. Project pins and bans are stored separately.
+SILICONFLOW_QUALITY = {
+    "id": "siliconflow-quality",
+    "label": "SiliconFlow 优先、质量优先",
+    "provider": "siliconflow",
+    "models": {
+        "text": ["deepseek-ai/DeepSeek-V4-Pro"],
+        "patch": ["zai-org/GLM-5.3", "moonshotai/Kimi-K2.7-Code"],
+        "image": ["OpenMOSS-Team/MOSS-Image"],
+        "video": ["MiniMaxAI/MiniMax-H3"],
+        "speech": ["FunAudioLLM/CosyVoice2-0.5B"],
+    },
+}
+MODEL_PRESETS = {SILICONFLOW_QUALITY["id"]: SILICONFLOW_QUALITY}
+
 
 class PolicyConflict(ValueError):
     """The operator edited a stale dashboard snapshot."""
@@ -72,7 +87,7 @@ def _policy_transaction(registry):
 
 
 @contextmanager
-def offer_model_preference(registry):
+def offer_model_preference(registry, providers=()):
     """Mark the question delivered only once the caller has flushed the response."""
     with _policy_transaction(registry) as db:
         policy = _read(db)
@@ -81,13 +96,22 @@ def offer_model_preference(registry):
             yield None
             return
         db.execute("INSERT INTO preference_setup VALUES (1)")
-        yield {"action": "ask", "revision": policy["revision"],
-               "question": "这个项目希望怎么选模型？可以说「仅免费」「优先速度」或「优先质量」，也可以使用默认策略（免费和收费模型都可选）。"}
+        presets = [preset for preset in MODEL_PRESETS.values() if preset["provider"] in providers]
+        choices = "、".join("「" + preset["label"] + "」" for preset in presets)
+        question = "这个项目希望怎么选模型？"
+        if choices:
+            question += f"可以选内置策略{choices}，按任务类型优先使用推荐型号。"
+        question += "可以说「仅免费」「优先速度」或「优先质量」，也可以使用默认策略（免费和收费模型都可选）。"
+        offer = {"action": "ask", "revision": policy["revision"], "question": question}
+        if presets:
+            offer["presets"] = presets
+        yield offer
 
 
 def update_policy(registry, request):
     fields = {"select": ("mode", "provider", "model"), "clear": ("mode",),
-              "ban": ("provider", "model"), "unban": ("provider", "model"), "preference": ("value",)}
+              "ban": ("provider", "model"), "unban": ("provider", "model"),
+              "preference": ("value",), "preset": ("value",)}
     action = request.get("action")
     if not isinstance(action, str) or action not in fields or set(request) != {"action", "revision", *fields[action]}:
         raise ValueError("未知模型规则或字段")
@@ -105,6 +129,9 @@ def update_policy(registry, request):
         ref = {"provider": provider, "model": model}
     if action == "preference" and (not isinstance(request["value"], str) or len(request["value"]) > 1000):
         raise ValueError("模型倾向应为 1000 字以内的文本")
+    if action == "preset" and request["value"] is not None:
+        if not isinstance(request["value"], str) or request["value"] not in MODEL_PRESETS:
+            raise ValueError("未知的内置选模策略")
     with _policy_transaction(registry) as db:
         policy = _read(db)
         if revision != policy["revision"]:
@@ -121,9 +148,14 @@ def update_policy(registry, request):
             policy["selected"] = {k: v for k, v in policy["selected"].items() if not banned(policy, v["provider"], v["model"])}
         elif action == "unban":
             policy["banned"] = [v for v in policy["banned"] if v != ref]
-        else:
+        elif action == "preference":
             policy["preference"] = request["value"].strip()
-            # Saving an empty preference explicitly opts into the default policy.
+        elif request["value"] is None:
+            policy.pop("preset", None)
+        else:
+            policy["preset"] = request["value"]
+        if action in ("preference", "preset"):
+            # Saving an explicit choice finishes preference onboarding, including the default.
             db.execute("INSERT OR IGNORE INTO preference_setup VALUES (1)")
         policy["revision"] += 1
         db.execute("INSERT OR REPLACE INTO policy VALUES (1,?)", (json.dumps(policy, ensure_ascii=False),))
