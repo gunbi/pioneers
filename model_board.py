@@ -6,6 +6,7 @@ import re
 from threading import Lock, Thread
 from time import monotonic
 
+from dispatch import execution_phase
 from iterations import registered_run
 from model_plugins import PROVIDERS, public_profiles
 from model_policy import MEDIA_MODES, MODE_KINDS, MODEL_PRESETS, active_preset, banned, read_policy, update_policy
@@ -52,8 +53,10 @@ def run_usage(registry):
                     total = usage["prompt_tokens"] + usage["completion_tokens"]
                 current = int(attempt) == task.get("attempt", 1)
                 state = "failed" if executor.get("error") else task["state"] if current else "previous"
+                if data.get("mode") == "host" and state == "running":
+                    state = execution_phase(task)
                 generation = executor.get("video_generation")
-                if current and state == "running" and executor.get("mode") == "video" and type(generation) is int:
+                if current and state in ("running", "awaiting_start") and executor.get("mode") == "video" and type(generation) is int:
                     receipt = read_json(directory / f".video-{task_id}-{generation}.json")
                     if receipt:
                         video = receipt

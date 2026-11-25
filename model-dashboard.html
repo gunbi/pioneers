@@ -171,7 +171,7 @@ const mediaKinds = {
 };
 for (const [mode,[,capability]] of Object.entries(mediaKinds)) kinds[capability]=modes[mode];
 const audioModes = ["speech","music","sound_effect"];
-const states = {running:"执行中",completed:"已完成",failed:"失败",interrupted:"已中断",blocked:"受阻",judging:"待判断",pending:"待执行",recovery_required:"待恢复",awaiting_confirmation:"待确认",returned:"需返工",accepted:"已验收",started:"已启动",succeeded:"成功",Succeed:"生成成功",InProgress:"生成中",InQueue:"排队中",Failed:"生成失败"};
+const states = {awaiting_start:"待启动",running:"执行中",completed:"已完成",failed:"失败",interrupted:"已中断",blocked:"受阻",judging:"待判断",pending:"待执行",recovery_required:"待恢复",awaiting_confirmation:"待确认",returned:"需返工",accepted:"已验收",started:"已启动",succeeded:"成功",Succeed:"生成成功",InProgress:"生成中",InQueue:"排队中",Failed:"生成失败"};
 const fmt = new Intl.NumberFormat("zh-CN");
 const pageSize = 15;
 let data, page = 0, busy = false, polling = false, key = "", catalogStamp, providerStamp, rulesStamp, usageStamp, prefRevision;

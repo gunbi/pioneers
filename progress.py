@@ -8,11 +8,14 @@ import sqlite3
 import tempfile
 import time
 
+from dispatch import execution_phase
 from iterations import DELIVERED, build_summary
 
 
 STATUS_LABELS = {
     "running": "进行中",
+    "awaiting_start": "待启动",
+    "awaiting_host": "待宿主核实",
     "recovery_required": "待人工恢复",
     "completed": "已完成",
     "failed": "失败",
@@ -91,7 +94,15 @@ def codex_activity(event):
     return activity
 
 
-def print_board(data):
+def display_phases(data):
+    if data.get("mode") != "host":
+        return {}
+    return {key: execution_phase(job) for key, job in data["tasks"].items() if job["state"] == "running"}
+
+
+def print_board(data, phases=None):
+    if phases is None:
+        phases = display_phases(data)
     print(f"团队状态：{STATUS_LABELS[data['state']]} · {data['updated_at']}", flush=True)
     if data.get("paused"):
         print(f"  已暂停：{data['paused']}", flush=True)
@@ -121,7 +132,8 @@ def print_board(data):
                 ]
                 activity = f"等待 {', '.join(waiting)}" if waiting else task["activity"]
             else:
-                activity = f"{STATUS_LABELS[task['state']]} · {task['activity']}"
+                state = phases.get(task["id"]) or task["state"]
+                activity = f"{STATUS_LABELS[state]} · {task['activity']}"
                 if task.get("evidence"):
                     activity += f" · 证据：{task['evidence']}"
             attempt = f"（第 {task['attempt']} 轮）" if task.get("attempt", 1) > 1 else ""
@@ -269,17 +281,19 @@ class Progress:
 
 def show_progress(run_dir, watch):
     path = run_dir / "status.json"
-    previous = None
+    previous = previous_phases = None
     while True:
         snapshot = path.read_text(encoding="utf-8")
         if snapshot != previous:
             data = json.loads(snapshot)
-            print_board(data)
+        phases = display_phases(data)
+        if snapshot != previous or phases != previous_phases:
+            print_board(data, phases)
             waiting = data["state"] in ("running", "accepted", "publishing") or (
                 data["state"] == "completed" and data.get("paused")
             )
             if not watch or not waiting:
                 return
             print(flush=True)
-            previous = snapshot
+            previous, previous_phases = snapshot, phases
         time.sleep(0.5)

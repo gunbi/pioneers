@@ -8,7 +8,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from dashboard import dashboard_server
+from dashboard import collaboration_flow, dashboard_server, dashboard_snapshot
 from iterations import register_run
 from model_board import ModelBoard, run_usage
 from model_policy import PolicyConflict
@@ -70,6 +70,27 @@ class ModelBoardTest(unittest.TestCase):
             self.board.apply({"action": "unban_provider", "provider": "openrouter", "revision": 2})
             router = self.board.snapshot()["providers"][0]
             self.assertEqual([row["id"] for row in router["models"] if row.get("blocked")], ["org/one", "~dynamic"])
+
+    def test_dashboard_and_model_usage_show_ownership_separately_from_execution(self):
+        run = self.root / "run-handoff"
+        run.mkdir()
+        register_run(self.registry, run)
+        status = run / "status.json"
+        native = {"role": "pm", "state": "running", "depends_on": [], "attempt": 2, "lease_expires_at": 1,
+                  "executors": {"2": {"provider": "host"}}}
+        remote = {"role": "pm", "state": "running", "depends_on": [], "attempt": 1,
+                  "executors": {"1": {"provider": "siliconflow", "model": "demo/text", "mode": "text"}}}
+        data = {"mode": "host", "tasks": {"native": native, "remote": remote}, "events": [
+            {"role": "pm", "state": "interrupted", "task": "native", "attempt": 1}]}
+        write_json(status, data)
+        snapshot, _ = dashboard_snapshot(status)
+        phases = {node["key"]: node.get("execution_phase") for node in collaboration_flow(snapshot)["nodes"]}
+        self.assertEqual(phases, {"native.1": None, "native.2": "awaiting_host", "remote.1": "awaiting_start"})
+        self.assertEqual(run_usage(self.registry)[0]["state"], "awaiting_start")
+        self.assertEqual(json.loads(status.read_text()), data)
+        remote["executors"]["1"]["started_at"] = "2026-11-25T01:00:00Z"
+        write_json(status, data)
+        self.assertEqual(run_usage(self.registry)[0]["state"], "running")
 
     def test_usage_includes_all_attempts_and_hides_signed_urls(self):
         run = self.root / "run-sample"

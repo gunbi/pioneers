@@ -76,7 +76,9 @@
 9. 把 `--host-ready` 返回的 `replan` 当作待处理的 LD 任务。等 `replan.ready` 为真后，用 `--replan RUN_DIR` 获取用户指令、当前计划和状态，将返回的提示交给只读 LD。将 LD 返回的 JSON 用 `--replan RUN_DIR --revision N --artifact PLAN.json` 提交，随后重新查询并派发更新后的任务。
 10. 暂时无任务可执行且运行未结束时，告知用户在看板需要处理的事项，然后在同一协调会话运行 `--host-ready RUN_DIR --wait 25` 等待。收到 `timed_out` 后继续等待，阶段交付结束也先重查队列。状态就绪后直接领取任务、处理待判断的交付物、重规划，或在 `release_ready` 为真时按已审批范围开始发布。若用户手动暂停了新任务，等看板「继续领取新任务」再派发。宿主会话已关闭时，从同一运行目录重新接入。
 
-宿主领取返回的 `attempt` 用于之后的心跳、回报和重派。命令型执行端用 `--host-exec RUN_DIR --task TASK_ID --attempt N --exec-command COMMAND ...` 启动，由框架负责进程存活期间的续约和退出清理。保持执行命令前台运行，并把运行记录放在框架进程有写权限的目录。无法包装为本地命令的原生会话，由宿主提供独立的存活检查和续约能力。宿主能观察执行端存活时，可每 60 秒用 `--host-heartbeat RUN_DIR --task TASK_ID --attempt N` 续约，前提是已观察到执行端仍活跃。实际进度回报也会续约。发现执行器异常退出时可用 `--host-report ... --state lost`；重新查询 `--host-ready` 处理回收后就绪的任务。看到「待人工恢复」时，呈现原执行端、任务版本和已有证据，由操作者核对后重跑或接续产物。需要重跑的外部操作仍按新的授权审批派发。CLI 调度进程退出后用 `--continue RUN_DIR` 接回原运行。
+领取后保留任务 ID 和 `attempt`。协调会话首次派工或重新接入时，从 `--host-ready RUN_DIR` 读取 `active`。远端分配的 `execution_phase` 为 `awaiting_start` 时，立即运行该条目的 `start_command`（参数数组），启动原尝试。启动时会复查禁用和费用规则，模型调用期间由框架续约。同一轮只启动一次。
+
+原生 Agent 由宿主观察存活。在宿主的成员状态接口或等待接口刚刚确认某轮仍活跃后，可在常规调度查询中附加 `--observed-active TASK:ATTEMPT`，多个活跃成员可重复传入。仅查询队列、查看看板或看到文件修改都不能证明成员存活。超过 180 秒缺少观测时，该轮显示「待宿主核实」并保留执行权。先查看原会话。仍在工作就登记观测，已交付就用原轮次回报。暂时无法核实时，等待成员的状态通知或人工核对。确认已停止才用 `--host-report ... --state lost` 或按现有流程核对产物后恢复。命令型执行端用 `--host-exec RUN_DIR --task ID --attempt N --exec-command COMMAND ...` 在前台运行，由框架自动续约并清理进程。CLI 调度进程退出后用 `--continue RUN_DIR` 接回原运行。
 
 需要成员续接时，优先使用 `--host-ready` 返回的 `preferred_member`。把 `continuation` 随当前分配转交给执行端。宿主可用 `--host-checkpoint` 保存阶段摘要和操作状态，外部操作应记录开始和可确认的结果。旧执行端已停止并收到 `resume_session_id` 时，可以使用宿主的原生会话续接能力。否则用检查点和操作记录开启新执行，按当前工作区和审批范围工作。涉及结果不明的外部操作，由操作者查验回执并登记恢复检查，避免重放已发生的操作。
 

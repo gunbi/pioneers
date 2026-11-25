@@ -383,7 +383,9 @@ python3 pioneers.py --release RUN_DIR --state published --activity "部署成功
 python3 pioneers.py --host-exec RUN_DIR --task verify --attempt 1 --exec-command python3 verify_browser.py
 ```
 
-当需要框架托管时，将执行端作为前台命令或本地适配器启动，并用 `--output-dir` 把运行记录放到启动进程有写权限的目录。无法通过本地命令启动的原生会话，应由宿主提供独立的存活检查和续约能力。宿主领取任务时会获得 `attempt` 和 180 秒租约。执行器仍活跃时，宿主至少每 60 秒续约一次。带 `--state running` 的进度回报也会续约。只有确认执行器或其会话仍活跃时才续约。确认执行器异常退出时，可以报告 `--state lost`。宿主查就绪队列或尝试领取时，也会回收租约超时的任务。
+**远端模型**领取后显示「待启动」。领取保留任务和轮次，开始调用时才启用 180 秒的执行租约。协调会话在领取后启动执行器；如果在两步之间退出，重新接入同一运行，在 `--host-ready` 的 `active` 里找到 `awaiting_start`，按返回的 `start_command` 参数启动同一轮。并发启动由框架加锁保护。
+
+**宿主原生 Agent** 可以安静地进行长时间推理或浏览器操作。协调者通过宿主平台确认某个成员仍活跃后，将这次观测随正常查询上报，例如 `--host-ready RUN_DIR --observed-active fix:1 --observed-active verify:2`。超过 180 秒没有新观测时显示「待宿主核实」，任务继续占用原有成员和工作区。迟到的存活回报、检查点和交付仍使用原轮次。单次心跳和实际进度回报也能确认存活。查看队列或看板不会续约。确认原执行端已停止时报告 `--state lost`，或检查已有产物后再恢复。可包装成前台命令的执行端使用上面的框架托管入口。
 
 ```bash
 python3 pioneers.py --host-heartbeat RUN_DIR --task fix --attempt 1

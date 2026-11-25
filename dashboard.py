@@ -18,7 +18,7 @@ import webbrowser
 from capabilities import REGISTRY
 from iterations import iteration_summary, project_snapshot, registered_run
 from progress import STATUS_LABELS, artifact_name
-from dispatch import dispatch_summary, workflow_path
+from dispatch import dispatch_summary, execution_phase, workflow_path
 from model_plugins import PROVIDERS
 from model_board import MEDIA_FILENAME, ModelBoard, media_reference
 
@@ -157,6 +157,8 @@ def flow_with_approvals(flow, decisions):
 def read_dashboard_status(status):
     data = json.loads(status.read_bytes())
     for task_id, task in data["tasks"].items():
+        if data.get("mode") == "host" and task["state"] == "running":
+            task["execution_phase"] = execution_phase(task)
         for executor in task.get("executors", {}).values():
             if "media" in executor:
                 executor["media"] = media_reference(task_id, executor)
@@ -500,7 +502,9 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
                             files = [status, workflow_path(target_run, snapshot), Path(snapshot["workspace"]) / ".pioneers/models.json",
                                      registry / "model-policy.sqlite3", registry / PROVIDER_SETUP,
                                      *(catalog_path(registry, p) for p in PROVIDERS)]
-                            stamp = (target_run, source.revision, int(monotonic() // 10), tuple(p.stat().st_mtime_ns if p.exists() else None for p in files))
+                            phases = tuple((item["task"], item.get("execution_phase")) for item in snapshot["dispatch"]["active"])
+                            stamp = (target_run, source.revision, phases, int(monotonic() // 10),
+                                     tuple(p.stat().st_mtime_ns if p.exists() else None for p in files))
                             previous = last_preview
                             if previous and previous[0] == stamp:
                                 snapshot["dispatch"] = previous[1]

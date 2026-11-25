@@ -63,7 +63,8 @@
     .running,.publishing { background:#deebfe; color:var(--accent); }
     .completed,.accepted,.published,.approved { background:#e1f2ec; color:#166052; }
     .blocked,.failed,.interrupted,.returned,.publish_failed { background:#fdf0ef; color:var(--return); }
-    .awaiting_confirmation,.paused,.recovery_required { background:#fff0d4; color:var(--amber); }
+    .awaiting_confirmation,.paused,.recovery_required,.awaiting_host { background:#fff0d4; color:var(--amber); }
+    .awaiting_start { background:#e9eff6; color:#405876; }
     .judging { background:#ece7f5; color:#594075; }
     .flow { margin-top:1.12rem; border:1px solid var(--line); border-radius:.9rem; overflow:hidden; background:#fff; }
     .dispatch { margin-top:1.55rem; padding:1.2rem 0 0; border-top:1px solid var(--line); }
@@ -429,7 +430,7 @@
       interrupted:"已中断", blocked:"已阻塞", planned:"计划已生成", returned:"已退回",
       accepted:"验收通过", publishing:"发布中", published:"已发布", publish_failed:"发布失败",
       judging:"等待 LLM 判断", awaiting_confirmation:"待人工确认", paused:"已暂停",
-      recovery_required:"待人工恢复",
+      recovery_required:"待人工恢复", awaiting_start:"待启动", awaiting_host:"待宿主核实",
       approved:"已确认", superseded:"已作废"
     };
     const byId = id => document.getElementById(id);
@@ -533,10 +534,11 @@
     function card(stage, roles, tasks, incoming, stages, skillCatalog) {
       const node = element("article", "", "task");
       node.id = "stage-" + stage.key;
-      if (stage.state === "running" || stage.state === "publishing") node.classList.add("running-card");
+      const shown = stage.execution_phase || stage.state;
+      if (shown === "running" || shown === "publishing") node.classList.add("running-card");
       if (stage.state === "returned" || incoming.some(edge => edge.kind === "return")) node.classList.add("return-card");
       const header = element("div", "", "task-header");
-      header.append(element("h3", stageTitle(stage)), element("span", labels[stage.state], "pill " + stage.state));
+      header.append(element("h3", stageTitle(stage)), element("span", labels[shown], "pill " + shown));
       node.append(header);
       const meta = [stage.member?.name, roles[stage.role], stage.task,
         stage.attempt && ("第 " + stage.attempt + " 轮"), stage.at && clock(stage.at)];
@@ -1180,7 +1182,12 @@
       const row = element("li", "");
       row.append(stageLink({key:item.task + "." + item.attempt}, item.task + attemptLabel(item.attempt)));
       row.append(element("p", [data.roles[item.role], item.member?.name,
-        item.remaining_steps ? "最长剩余依赖链 " + item.remaining_steps + " 步" : labels[item.state]].filter(Boolean).join(" · ")));
+        item.remaining_steps ? "最长剩余依赖链 " + item.remaining_steps + " 步" : labels[item.execution_phase || item.state]].filter(Boolean).join(" · ")));
+      if (item.execution_phase === "awaiting_start") {
+        row.append(element("p", "已选定模型，等待协调会话启动本轮执行器。", "reason"));
+      } else if (item.execution_phase === "awaiting_host") {
+        row.append(element("p", "宿主尚未确认存活。核实原会话后可继续回报本轮进度或交付产物。", "reason"));
+      }
       if (item.preferred_member) row.append(element("p", "优先由 " + item.preferred_member.name + " 续接"));
       if (item.branch) row.append(element("p", "分支 · " + item.branch));
       if (item.write_paths?.length) row.append(element("p", "可写 · " + item.write_paths.join("、")));
@@ -1207,9 +1214,10 @@
       appendExecution(row, job, item.attempt);
       const operations = Object.values(job.execution?.[item.attempt]?.operations || {});
       const external = operations.filter(op => op.kind === "external");
-      if (item.state === "recovery_required" && external.length) {
+      const recoverable = item.state === "recovery_required" || ["awaiting_host", "awaiting_start"].includes(item.execution_phase);
+      if (recoverable && external.length) {
         row.append(element("p", "请核对外部回执后用 --recover 登记结果。", "reason"));
-      } else if (item.state === "recovery_required" && !data.read_only) {
+      } else if (recoverable && !data.read_only) {
         const button = element("button", "检查后重跑", "secondary");
         button.type = "button";
         button.onclick = () => openAction("recover", {task:item.task, attempt:item.attempt}, item.task + " · 确认重跑");
