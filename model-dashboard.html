@@ -108,6 +108,9 @@ dl.metrics { display:flex; flex-wrap:wrap; gap:1.2rem 2rem; padding:.65rem 0; ma
     <p id="feedback" role="status" aria-live="polite"></p>
     <section id="catalog"><div class="section-heading"><h2>模型目录</h2></div><p class="hint">默认显示 Pioneers 已接入的模型。将「框架支持」切换为「全部」可查看供应商的完整目录。</p>
       <div class="providers" id="providers"></div>
+      <details id="provider-setup" hidden><summary>如何使用已有的密钥文件？</summary>
+        <p>在运行 Pioneers 的机器上，用 <code>python3 pioneers.py --configure-provider-env FILE --workspace PROJECT</code> 绑定文件，再刷新目录。将 FILE 和 PROJECT 换成密钥文件和交付项目的路径。</p>
+      </details>
       <div class="controls">
         <label>查找模型<input id="search" type="search" placeholder="输入模型或提供商名称"></label>
         <label>API 提供商<select id="provider"><option value="">全部提供商</option></select></label>
@@ -225,6 +228,7 @@ function preserved(container, render) {
   if (focus) Array.from(container.querySelectorAll("[data-focus]")).find(item => item.dataset.focus === focus)?.focus({preventScroll:true});
 }
 function drawProviders() {
+  el("provider-setup").hidden = data.providers.every(provider => provider.connected);
   const ids = data.providers.map(provider => provider.id);
   const stamp = JSON.stringify(ids);
   if (stamp !== providerStamp) {
