@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 from dashboard import dashboard_server
 from iterations import register_run
 from model_board import ModelBoard, run_usage
+from model_policy import PolicyConflict
 from model_plugins import OpenRouter, SiliconFlow
 from skill_sources import write_json
 
@@ -46,6 +47,29 @@ class ModelBoardTest(unittest.TestCase):
         self.assertEqual(snapshot["providers"][0]["models"], models)
         self.assertTrue(snapshot["providers"][0]["error"])
         self.assertNotIn("test-key", json.dumps(snapshot))
+
+    def test_provider_toggle_keeps_model_rules_and_rejects_stale_or_unknown_edits(self):
+        self.board.apply({"action": "ban", "provider": "openrouter", "model": "org/one", "revision": 0})
+        self.board.apply({"action": "ban_provider", "provider": "openrouter", "revision": 1})
+
+        def providers():
+            return [{"id": name, "models": [{"id": model} for model in ("org/one", "org/two", "~dynamic")]}
+                    for name in ("openrouter", "siliconflow")]
+
+        with patch.object(self.board, "providers", side_effect=providers):
+            snapshot = self.board.snapshot()
+            self.assertEqual(snapshot["policy"]["banned_providers"], ["openrouter"])
+            router, silicon = snapshot["providers"]
+            self.assertTrue(all(row["blocked"] for row in router["models"]))
+            self.assertFalse(any(row.get("blocked") for row in silicon["models"]))
+            for provider in ("host", "unknown", None, []):
+                with self.assertRaises(ValueError):
+                    self.board.apply({"action": "ban_provider", "provider": provider, "revision": 2})
+            with self.assertRaises(PolicyConflict):
+                self.board.apply({"action": "unban_provider", "provider": "openrouter", "revision": 1})
+            self.board.apply({"action": "unban_provider", "provider": "openrouter", "revision": 2})
+            router = self.board.snapshot()["providers"][0]
+            self.assertEqual([row["id"] for row in router["models"] if row.get("blocked")], ["org/one", "~dynamic"])
 
     def test_usage_includes_all_attempts_and_hides_signed_urls(self):
         run = self.root / "run-sample"

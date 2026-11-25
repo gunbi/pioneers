@@ -37,6 +37,10 @@ class PolicyConflict(ValueError):
 
 
 def banned(policy, provider, model):
+    return provider in policy.get("banned_providers", ()) or _model_banned(policy, provider, model)
+
+
+def _model_banned(policy, provider, model):
     blocked = [entry["model"] for entry in policy.get("banned", []) if entry["provider"] == provider]
     if provider != "openrouter":
         return model in blocked
@@ -49,7 +53,23 @@ def banned(policy, provider, model):
 
 
 def empty_policy():
-    return {"revision": 0, "selected": {}, "banned": [], "preference": ""}
+    return {"revision": 0, "selected": {}, "banned": [], "banned_providers": [],
+            "provider_ban_reasons": {}, "preference": "", "default_preset": SILICONFLOW_QUALITY["id"]}
+
+
+def active_preset(policy):
+    # An explicit preset (including None for general routing) overrides the project default.
+    default = None if policy.get("preference", "").strip() else policy.get("default_preset")
+    return MODEL_PRESETS.get(policy.get("preset", default))
+
+
+def initialize_model_policy(registry):
+    """Persist the project-wide default on startup without resetting operator choices."""
+    with _policy_transaction(registry) as db:
+        row = db.execute("SELECT data FROM policy WHERE id=1").fetchone()
+        if row and "default_preset" in json.loads(row[0]):
+            return
+        db.execute("INSERT OR REPLACE INTO policy VALUES (1,?)", (json.dumps(_read(db), ensure_ascii=False),))
 
 
 def _policy_path(registry):
@@ -61,7 +81,7 @@ def _policy_path(registry):
 
 def _read(db):
     row = db.execute("SELECT data FROM policy WHERE id=1").fetchone()
-    return json.loads(row[0]) if row else empty_policy()
+    return {**empty_policy(), **json.loads(row[0])} if row else empty_policy()
 
 
 def read_policy(registry):
@@ -83,6 +103,7 @@ def _policy_transaction(registry):
         db.execute("BEGIN IMMEDIATE")
         db.execute("CREATE TABLE IF NOT EXISTS policy (id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS preference_setup (id INTEGER PRIMARY KEY)")
+        db.execute("CREATE TABLE IF NOT EXISTS provider_decisions (provider TEXT PRIMARY KEY, revision INTEGER NOT NULL)")
         yield db
 
 
@@ -101,7 +122,7 @@ def offer_model_preference(registry, providers=()):
         question = "这个项目希望怎么选模型？"
         if choices:
             question += f"可以选内置策略{choices}，按任务类型优先使用推荐型号，允许选择收费模型。"
-        question += "可以说「仅免费」「优先速度」或「优先质量」，也可以使用默认策略（免费和收费模型都可选）。"
+        question += "项目默认先尝试可用的 SiliconFlow，允许免费和收费模型。也可以说「仅免费」「优先速度」或「优先质量」。"
         offer = {"action": "ask", "revision": policy["revision"], "question": question}
         if presets:
             offer["presets"] = presets
@@ -111,6 +132,7 @@ def offer_model_preference(registry, providers=()):
 def update_policy(registry, request):
     fields = {"select": ("mode", "provider", "model"), "clear": ("mode",),
               "ban": ("provider", "model"), "unban": ("provider", "model"),
+              "ban_provider": ("provider",), "unban_provider": ("provider",),
               "preference": ("value",), "preset": ("value",)}
     action = request.get("action")
     if not isinstance(action, str) or action not in fields or set(request) != {"action", "revision", *fields[action]}:
@@ -121,6 +143,11 @@ def update_policy(registry, request):
     mode = request.get("mode")
     if "mode" in request and mode not in MODES:
         raise ValueError("未知的派工类型")
+    if action in ("ban_provider", "unban_provider"):
+        from model_plugins import PROVIDERS
+        provider = request["provider"]
+        if not isinstance(provider, str) or provider not in PROVIDERS:
+            raise ValueError("请选择已接入的模型提供商")
     if "model" in request:
         model, provider = request["model"], request["provider"]
         if (not isinstance(model, str) or not MODEL_ID.fullmatch(model)
@@ -145,18 +172,43 @@ def update_policy(registry, request):
         elif action == "ban":
             if ref not in policy["banned"]:
                 policy["banned"].append(ref)
-            policy["selected"] = {k: v for k, v in policy["selected"].items() if not banned(policy, v["provider"], v["model"])}
+            policy["selected"] = {k: v for k, v in policy["selected"].items() if not _model_banned(policy, v["provider"], v["model"])}
         elif action == "unban":
             policy["banned"] = [v for v in policy["banned"] if v != ref]
+        elif action == "ban_provider":
+            if provider not in policy["banned_providers"]:
+                policy["banned_providers"].append(provider)
+        elif action == "unban_provider":
+            policy["banned_providers"] = [name for name in policy["banned_providers"] if name != provider]
         elif action == "preference":
             policy["preference"] = request["value"].strip()
-        elif request["value"] is None:
-            policy.pop("preset", None)
         else:
             policy["preset"] = request["value"]
         if action in ("preference", "preset"):
             # Saving an explicit choice finishes preference onboarding, including the default.
             db.execute("INSERT OR IGNORE INTO preference_setup VALUES (1)")
-        policy["revision"] += 1
-        db.execute("INSERT OR REPLACE INTO policy VALUES (1,?)", (json.dumps(policy, ensure_ascii=False),))
-        return policy
+        if action in ("ban_provider", "unban_provider"):
+            policy["provider_ban_reasons"].pop(provider, None)
+            db.execute("INSERT OR REPLACE INTO provider_decisions VALUES (?,?)", (provider, revision + 1))
+        return _save(db, policy)
+
+
+def _save(db, policy):
+    policy["revision"] += 1
+    db.execute("INSERT OR REPLACE INTO policy VALUES (1,?)", (json.dumps(policy, ensure_ascii=False),))
+    return policy
+
+
+def ban_insufficient_credit(registry, provider, observed_revision):
+    """Merge a verified provider error unless a newer manual decision supersedes that request."""
+    with _policy_transaction(registry) as db:
+        policy = _read(db)
+        if provider in policy["banned_providers"]:
+            return True
+        decision = db.execute("SELECT revision FROM provider_decisions WHERE provider=?", (provider,)).fetchone()
+        if decision and decision[0] > observed_revision:
+            return False
+        policy["banned_providers"].append(provider)
+        policy["provider_ban_reasons"][provider] = "insufficient_credit"
+        _save(db, policy)
+        return True

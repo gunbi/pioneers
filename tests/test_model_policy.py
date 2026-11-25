@@ -1,13 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from model_plugins import public_profiles, resolve_route
-from model_policy import PolicyConflict, read_policy, update_policy
+from model_policy import PolicyConflict, ban_insufficient_credit, read_policy, update_policy
 
 
 class ModelPolicyTests(unittest.TestCase):
@@ -32,6 +33,38 @@ class ModelPolicyTests(unittest.TestCase):
             self.assertCountEqual(pool.map(worker, ("文案", "快速")), [1, None])
         self.assertEqual(read_policy(self.registry)["revision"], 1)
         self.assertEqual(read_policy(self.root / "other")["preference"], "")
+
+    def test_old_policy_and_provider_bans_preserve_individual_rules(self):
+        self.registry.mkdir()
+        legacy = {"revision": 4, "selected": {"text": self.ref}, "banned": [], "preference": "质量"}
+        with sqlite3.connect(self.registry / "model-policy.sqlite3") as db:
+            db.execute("CREATE TABLE policy (id INTEGER PRIMARY KEY, data TEXT)")
+            db.execute("INSERT INTO policy VALUES (1,?)", (json.dumps(legacy),))
+        self.assertEqual(read_policy(self.registry)["banned_providers"], [])
+        update_policy(self.registry, {"action": "ban_provider", "provider": "siliconflow", "revision": 4})
+        policy = update_policy(self.registry, {"action": "ban", "provider": "openrouter", "model": "org/model",
+                                              "revision": 5})
+        self.assertEqual(policy["selected"], legacy["selected"])
+        self.assertEqual(policy["preference"], "质量")
+
+    def test_concurrent_credit_events_and_manual_restore(self):
+        update_policy(self.registry, {"action": "preference", "revision": 0, "value": "quality"})
+        def reject(_):
+            return ban_insufficient_credit(self.registry, "openrouter", 0)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            self.assertTrue(all(pool.map(reject, range(4))))
+        policy = read_policy(self.registry)
+        self.assertEqual(policy["revision"], 2)
+        self.assertEqual(policy["provider_ban_reasons"], {"openrouter": "insufficient_credit"})
+        self.assertEqual(policy["preference"], "quality")
+        update_policy(self.registry, {"action": "unban_provider", "revision": 2, "provider": "openrouter"})
+        self.assertFalse(ban_insufficient_credit(self.registry, "openrouter", 0))
+        self.assertEqual(read_policy(self.registry)["banned_providers"], [])
+        self.assertTrue(ban_insufficient_credit(self.registry, "openrouter", 3))
+        policy = update_policy(self.registry, {"action": "ban_provider", "revision": 4, "provider": "openrouter"})
+        self.assertTrue(ban_insufficient_credit(self.registry, "openrouter", 3))
+        self.assertEqual(read_policy(self.registry)["provider_ban_reasons"], {})
+        self.assertEqual(read_policy(self.registry)["revision"], policy["revision"])
 
     def test_ban_invalidates_pinned_aliases_and_preserves_other_rules(self):
         def change(action, **fields):

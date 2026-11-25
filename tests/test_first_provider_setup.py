@@ -178,7 +178,8 @@ class FirstProviderSetupTest(unittest.TestCase):
         self.assertIn("刷新", self.invoke(*args, revision, expected=1))
         self.assertEqual(read_policy(registry)["preference"], "优先质量")
         saved = self.invoke(*args, revision + 1)
-        self.assertEqual(saved, {"revision": 4, "preference": "", "selected": {"video": pin}, "banned": [ban]})
+        self.assertEqual(saved, {"revision": 4, "preference": "", "selected": {"video": pin}, "banned": [ban],
+                                 "banned_providers": [], "provider_ban_reasons": {}, "default_preset": "siliconflow-quality"})
         self.assertNotIn("model_preference_setup", self.start(env=env))
 
     def test_preference_saved_before_binding_reuses_legacy_text_or_dashboard_default(self):

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from model_plugins import InsufficientCreditError
 from model_policy import read_policy, update_policy
 from pioneers import create_run, execute_host, host_ready, main, project_registry, update_host, validate_workflow
 from progress import Progress
@@ -130,6 +131,63 @@ class AutomaticDispatchTest(unittest.TestCase):
             second = self.claim("high")["executor"]
             self.assertEqual((second["provider"], second["model"]), ("openrouter", "org/deep/reasoner:free"))
 
+    @patch.dict(os.environ, SILICONFLOW_API_KEY="sf-test")
+    def test_provider_ban_suspends_fixed_routes_and_restores_original_pin(self):
+        self.setup_run()
+        config = self.project / ".pioneers" / "models.json"
+        config.parent.mkdir()
+        profile = {"provider": "siliconflow", "model": "org/default", "mode": "text"}
+        config.write_text(json.dumps({"profiles": {"writer": profile}, "defaults": {"types": {"text": "writer"}}}))
+        same_id = "org/flash"
+        self.catalogs["siliconflow"] = [{"id": same_id, "kinds": ["chat"]}]
+        self.policy("select", mode="text", provider="siliconflow", model=same_id)
+        self.policy("preset", value="siliconflow-quality")
+        self.policy("ban_provider", provider="siliconflow")
+        self.catalogs["siliconflow"].append({"id": "new/flash", "kinds": ["chat"]})
+        candidates = host_ready(self.run)["ready"][0]["model_candidates"]
+        self.assertTrue(candidates)
+        self.assertEqual({item["provider"] for item in candidates}, {"openrouter"})
+        with self.assertRaisesRegex(ValueError, "提供商.*禁用|禁用.*提供商"):
+            self.claim(profile="writer")
+        with self.assertRaisesRegex(ValueError, "提供商.*禁用"):
+            self.claim(model_choice="siliconflow/new/flash")
+        self.assertEqual(self.claim()["executor"]["provider"], "openrouter")
+        self.policy("ban_provider", provider="openrouter")
+        self.assertEqual(self.claim("high")["executor"]["provider"], "host")
+        self.setup_run()
+        self.policy("unban_provider", provider="siliconflow")
+        restored = self.claim()["executor"]
+        self.assertEqual((restored["provider"], restored["model"]), ("siliconflow", same_id))
+
+    @patch.dict(os.environ, SILICONFLOW_API_KEY="sf-test")
+    def test_insufficient_credit_preflight_skips_all_models_at_failed_provider(self):
+        self.setup_run()
+        self.policy("select", mode="text", provider="siliconflow", model="org/first")
+        self.catalogs["siliconflow"] = [{"id": "org/second", "kinds": ["chat"]}]
+        self.check.side_effect = [InsufficientCreditError("account empty"), None]
+        self.assertEqual(self.claim()["executor"]["provider"], "openrouter")
+        self.assertEqual([call.args[0]["provider"] for call in self.check.call_args_list], ["siliconflow", "openrouter"])
+        self.assertEqual(read_policy(self.registry)["provider_ban_reasons"], {"siliconflow": "insufficient_credit"})
+
+    @patch.dict(os.environ, SILICONFLOW_API_KEY="sf-test")
+    def test_host_choice_remains_valid_when_primary_provider_runs_out_of_credit(self):
+        self.setup_run()
+        self.catalogs["siliconflow"] = [{"id": "org/primary", "kinds": ["chat"]}]
+        self.check.side_effect = [InsufficientCreditError("account empty"), None]
+        assignment = self.claim(model_choice="openrouter/org/flash")
+        self.assertEqual(assignment["executor"]["model"], "org/flash")
+        self.assertEqual(read_policy(self.registry)["banned_providers"], ["siliconflow"])
+        self.assertEqual([call.args[0]["provider"] for call in self.check.call_args_list], ["siliconflow", "openrouter"])
+
+    def test_provider_disabled_after_claim_prevents_execution(self):
+        self.setup_run()
+        self.assertEqual(self.claim()["executor"]["provider"], "openrouter")
+        self.policy("ban_provider", provider="openrouter")
+        with patch("pioneers.supervise_host_executor") as worker, redirect_stdout(io.StringIO()):
+            self.assertEqual(execute_host(self.run, "low", 1, None), 1)
+        worker.assert_not_called()
+        self.assertEqual(self.claim()["executor"]["provider"], "host")
+
     def test_named_default_is_fixed_soft_named_preference_is_not(self):
         self.setup_run()
         self.policy("preset", value="siliconflow-quality")
@@ -180,6 +238,10 @@ class AutomaticDispatchTest(unittest.TestCase):
         self.policy("preference", value="仅免费")
         with self.assertRaisesRegex(ValueError, "回执"):
             self.claim(profile="host")
+        self.policy("ban_provider", provider="openrouter")
+        with self.assertRaisesRegex(ValueError, "禁用"):
+            self.claim()
+        self.policy("unban_provider", provider="openrouter")
         self.check.reset_mock()
         result = self.claim()
         self.lookup.assert_not_called()

@@ -32,10 +32,12 @@ from dispatch import (
 from iterations import has_delivery_history, latest_delivery, project_snapshot, register_run
 from skill_sources import SNAPSHOT, read_json, refresh_run, write_json
 from model_plugins import (
-    PROVIDERS, banned, check_available, dispatch_models, models_config, project_default, public_profiles, resolve_route, shared_preflight, task_mode,
+    PROVIDERS, InsufficientCreditError, banned, check_available, dispatch_models, models_config, project_default,
+    project_pin, public_profiles, resolve_route, shared_preflight, task_mode,
 )
 import generated_media
-from model_policy import MEDIA_MODES, MODEL_PRESETS, offer_model_preference, read_policy, update_policy
+from model_policy import (MEDIA_MODES, MODEL_PRESETS, active_preset, ban_insufficient_credit,
+                          initialize_model_policy, offer_model_preference, read_policy, update_policy)
 from provider_credentials import (
     configure_provider_env, configured_provider_ids, offer_provider_setup, prepare_provider_setup,
     project_credentials, skip_provider_setup, skipped_without_credentials,
@@ -169,6 +171,7 @@ def bind_project(workspace):
         status = "bound"
     if git_root(workspace):
         worktree_git(workspace, "config", "--local", "pioneers.framework", str(ROOT), check=False)
+    initialize_model_policy(project_registry(workspace))
     return {"status": status, "project_rules": str(path)}
 
 
@@ -900,7 +903,17 @@ def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True, 
     git = job.get("git")
     isolated = git and git["attempt"] == attempt
     history = job.setdefault("recoveries", [])
-    within_budget = sum(entry["automatic"] for entry in history) < MAX_AUTOMATIC_RECOVERIES
+    error_code = job.get("executors", {}).get(str(attempt), {}).get("error_code")
+    reroute = error_code in ("insufficient_credit", "provider_disabled")
+    prior_interruptions = sum(entry["automatic"] and not entry.get("reroute") for entry in history)
+    within_budget = reroute or prior_interruptions < MAX_AUTOMATIC_RECOVERIES
+    if reroute:
+        path = generation_receipt(progress.path.parent, task, job)
+        if ((path and os.path.lexists(path))
+                or any(record.get("checkpoint") for key, record in job.get("execution", {}).items()
+                       if int(key) >= job.get("continuity_from", attempt))):
+            automatic = False
+            reason += "；已有回执或检查点，请人工核对后沿原执行接续"
     if task.get("media"):
         path = generated_media.receipt_path(progress.path.parent, task_id, generated_media.generation(job))
         if os.path.lexists(path) and generated_media.read_receipt(path).get("state") != "ready":
@@ -922,10 +935,11 @@ def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True, 
     history.append({"attempt": attempt, "at": timestamp(), "reason": reason, "git": git,
                     "member": job.get("member"), "automatic": retry, "activity": job.get("activity"),
                     "workspace": git["workspace"] if isolated else progress.data.get("workspace"),
-                    "executor_stopped": executor_stopped})
+                    "executor_stopped": executor_stopped, "reroute": reroute})
     if retry:
         progress.event(job["role"], task_id, "interrupted", reason)
-        queue_recovery(progress, task_id, "已回收失联任务，等待重新派发 · " + reason)
+        activity = "等待按最新模型策略重新派工" if reroute else "已回收失联任务，等待重新派发"
+        queue_recovery(progress, task_id, activity + " · " + reason)
     else:
         progress.task(task_id, "recovery_required", "需要人工核对旧执行结果 · " + reason, announce=False)
 
@@ -1019,8 +1033,8 @@ def routing_options(run_dir, data, task, workspace, config, policy, profile, loa
     receipt = bool(path and os.path.lexists(path))
     previous = retained_executor(run_dir, task, job, receipt)
     mode = task_mode(task)
-    fixed = profile or project_default(config, task)
-    pinned = policy.get("selected", {}).get(mode)
+    fixed = profile or project_default(config, task, policy)
+    pinned = project_pin(policy, mode)
     if previous:
         if previous["provider"] == "host":
             if profile not in (None, "host"):
@@ -1082,22 +1096,30 @@ def routing_options(run_dir, data, task, workspace, config, policy, profile, loa
     return options_list, False, "没有符合任务能力、项目限制与凭据的可用模型，由宿主执行"
 
 
-def select_claim(options, fixed, fallback, model_choice, receipt):
+def select_claim(options, fixed, fallback, model_choice, receipt, preset=None):
+    selected = None
     if model_choice:
-        options = [(item, route) for item, route in options[:8] if f"{item['provider']}/{item['model']}" == model_choice]
-        if not options:
+        selected = next((pair for pair in options[:8] if f"{pair[0]['provider']}/{pair[0]['model']}" == model_choice), None)
+        if not selected:
             raise ValueError("--model-choice 必须匹配当前任务的可用候选或已指定模型")
+        primary = []
+        if preset and not fixed and selected[0]["provider"] != preset["provider"]:
+            primary = [pair for pair in options if pair[0]["provider"] == preset["provider"]]
+        options = [*primary, selected]
     failed = 0
     for item, route in options:
         try:
             if not receipt:
                 check_available(route)
+        except InsufficientCreditError as error:
+            error.provider = route["provider"]
+            raise
         except (ValueError, RuntimeError, OSError):
-            if fixed or model_choice:
+            if fixed or (selected and item is selected[0]):
                 raise
             failed += 1
             continue
-        if model_choice and not fixed:
+        if selected and item is selected[0] and not fixed:
             route = {**route, "reason": "宿主从候选中选择：" + route["reason"]}
         if failed:
             route = {**route, "reason": f"前 {failed} 个候选预检失败，改用 {item['model']}。 " + route["reason"]}
@@ -1956,12 +1978,21 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
         receipt = generation_receipt(run_dir, task, job)
         reuse_only = bool(receipt and os.path.lexists(receipt))
         config = ({}, {}) if profile == "host" else models_config(workspace)
-        policy = read_policy(registry)
-        # All catalog reads and provider preflight happen outside the heartbeat lock.
+        # Catalog reads and provider preflight happen outside the heartbeat lock.
+        load = cached_catalogs(registry)
         with project_credentials(registry), shared_preflight():
-            options, fixed, fallback = routing_options(run_dir, data, task, workspace, config, policy, profile,
-                                                      cached_catalogs(registry))
-            route, reason = select_claim(options, fixed, fallback, model_choice, reuse_only)
+            while True:
+                policy = read_policy(registry)
+                if model_choice and model_choice.partition("/")[0] in policy["banned_providers"]:
+                    raise ValueError("--model-choice 指定的模型提供商已被项目禁用")
+                options, fixed, fallback = routing_options(run_dir, data, task, workspace, config, policy, profile, load)
+                try:
+                    route, reason = select_claim(options, fixed, fallback, model_choice, reuse_only, active_preset(policy))
+                    break
+                except InsufficientCreditError as error:
+                    disabled = ban_insufficient_credit(registry, error.provider, policy["revision"])
+                    if not disabled or profile or (model_choice and model_choice.partition("/")[0] == error.provider):
+                        raise ValueError(f"{error.provider} 预检时账户余额不足，请按最新策略重新派工") from error
         if not (dashboard_is_running(run_dir, data.get("dashboard_port")) or active_project_port(registry, run_dir)):
             raise ValueError("Start the run dashboard with --project-dashboard --workspace PROJECT or --dashboard RUN_DIR before claiming tasks")
     # Serialize status read/modify/write across independent CLI invocations.
@@ -2085,7 +2116,10 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
             raise ValueError("Model request already started; check its attempt before reassigning")
         policy = read_policy(registry)
         message = None
-        if banned(policy, executor["provider"], executor["model"]):
+        if executor["provider"] in policy["banned_providers"]:
+            executor["error_code"] = "provider_disabled"
+            message = "模型启动前提供商已被项目禁用，请重新派工"
+        elif banned(policy, executor["provider"], executor["model"]):
             message = "模型启动前已被项目禁用，请重新派工"
         elif not executor.get("reuse_only") and requires_free(policy.get("preference", "")) and not confirmed:
             message = "项目要求仅免费，启动前未能确认模型免费，请重新派工"
@@ -2095,6 +2129,7 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
             report = report_task(progress, tasks, task_id, "lost", message, None, attempt)
             print(json.dumps({**report, "executor": executor}, ensure_ascii=False))
             return 1
+        observed_revision = policy["revision"]
         executor["started_at"] = timestamp()
         progress.task(task_id, "running", f"正在调用 {executor['provider']} · {executor['model']}", announce=False)
     start = time.monotonic()
@@ -2120,6 +2155,12 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
         result["error"] = "模型执行器已中断"
     except (OSError, ValueError, RuntimeError) as error:
         result["error"] = str(error)
+    credit_rejection = "error" in result and result.get("error_code") == "insufficient_credit"
+    if credit_rejection:
+        provider_id = planned["provider"]
+        disabled = ban_insufficient_credit(registry, provider_id, observed_revision)
+        state = "项目已禁用该提供商" if disabled else "项目策略已更新"
+        result["error"] = f"{provider_id} 账户余额不足，{state}"
     with Progress.locked(run_dir) as progress:
         job = progress.data["tasks"][task_id]
         active_assignment(job, task_id, attempt)
@@ -2133,6 +2174,8 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
             executor["video"] = {key: result["video"][key] for key in ("request_id", "state") if key in result["video"]}
         _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
         if "error" in result:
+            if credit_rejection:
+                executor["error_code"] = "insufficient_credit"
             executor["error"] = result["error"]
             report = report_task(progress, tasks, task_id, "lost", result["error"], None, attempt)
         else:
