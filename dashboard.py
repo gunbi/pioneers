@@ -471,19 +471,21 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
                     if project and snapshot["mode"] == "host" and snapshot.get("workspace"):
                         # Render the host's routing rules without making provider requests on page polls.
                         from model_selection import load_catalogs
+                        from provider_credentials import catalog_path, project_credentials
                         from pioneers import host_routing_summary
                         registry = project[0]
-                        files = [status, workflow_path(target_run, snapshot), Path(snapshot["workspace"]) / ".pioneers/models.json",
-                                 registry / "model-policy.sqlite3", *(registry / f"model-catalog-{p}.json" for p in PROVIDERS)]
-                        stamp = (target_run, int(monotonic() // 10), tuple(p.stat().st_mtime_ns if p.exists() else None for p in files))
-                        previous = last_preview
-                        if previous and previous[0] == stamp:
-                            snapshot["dispatch"] = previous[1]
-                        else:
-                            from functools import lru_cache
-                            load = lru_cache(maxsize=1)(lambda: load_catalogs(registry, cached_only=True))
-                            view = host_routing_summary(target_run, snapshot, tasks, snapshot["dispatch"], registry, load)
-                            last_preview = (stamp, view)
+                        with project_credentials(registry) as source:
+                            files = [status, workflow_path(target_run, snapshot), Path(snapshot["workspace"]) / ".pioneers/models.json",
+                                     registry / "model-policy.sqlite3", *(catalog_path(registry, p) for p in PROVIDERS)]
+                            stamp = (target_run, source.revision, int(monotonic() // 10), tuple(p.stat().st_mtime_ns if p.exists() else None for p in files))
+                            previous = last_preview
+                            if previous and previous[0] == stamp:
+                                snapshot["dispatch"] = previous[1]
+                            else:
+                                from functools import lru_cache
+                                load = lru_cache(maxsize=1)(lambda: load_catalogs(registry, cached_only=True))
+                                view = host_routing_summary(target_run, snapshot, tasks, snapshot["dispatch"], registry, load)
+                                last_preview = (stamp, view)
                 content, kind = json.dumps(snapshot, ensure_ascii=False).encode("utf-8"), "application/json"
             else:
                 match = ARTIFACT_PATH.fullmatch(route)

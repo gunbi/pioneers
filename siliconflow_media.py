@@ -1,6 +1,7 @@
 """Model discovery and durable asynchronous video jobs on SiliconFlow."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 import re
 import time
 
@@ -41,7 +42,7 @@ def list_catalog(provider):
     source = rows("/models")
     catalog = {model: [] for model in source}
     with ThreadPoolExecutor(max_workers=3) as pool:
-        subsets = {kind: pool.submit(rows, "/models?" + query) for kind, query in CATALOG_FILTERS.items()}
+        subsets = {kind: pool.submit(copy_context().run, rows, "/models?" + query) for kind, query in CATALOG_FILTERS.items()}
         for kind, subset in subsets.items():
             for model in subset.result():
                 if model in catalog and supports_text_prompt(model, kind):

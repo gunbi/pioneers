@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from contextvars import copy_context
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -11,6 +12,7 @@ import time
 from uuid import uuid4
 
 from model_policy import MODEL_ID, MODE_KINDS, banned
+from provider_credentials import catalog_path, project_credentials
 from skill_sources import read_json, write_json
 
 
@@ -32,7 +34,8 @@ def _fresh(path):
 
 
 def _load_provider(registry, name, provider):
-    path = registry / ("model-catalog-" + name + ".json")
+    path = catalog_path(registry, name)
+    refresh_id = path.stem
     cached = _fresh(path)
     if cached is not None:
         return cached
@@ -48,14 +51,14 @@ def _load_provider(registry, name, provider):
             changed = db.execute(
                 "INSERT INTO refresh VALUES (?,?,?) ON CONFLICT(provider) DO UPDATE SET "
                 "owner=excluded.owner, until=excluded.until WHERE refresh.until <= ?",
-                (name, owner, now + 180, now))
+                (refresh_id, owner, now + 180, now))
         if not changed.rowcount:
             # Give a concurrent first refresh a chance to populate the shared cache.
             # Failed refreshes carry a retry timestamp and can fall back immediately.
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
                 cached = _fresh(path)
-                entry = db.execute("SELECT owner FROM refresh WHERE provider=?", (name,)).fetchone()
+                entry = db.execute("SELECT owner FROM refresh WHERE provider=?", (refresh_id,)).fetchone()
                 if cached is not None or not entry or not entry[0]:
                     return cached or []
                 time.sleep(0.1)
@@ -76,10 +79,15 @@ def _load_provider(registry, name, provider):
             retry_at = 0 if refreshed else time.time() + RETRY_SECONDS
             with db:
                 db.execute("UPDATE refresh SET owner='', until=? WHERE provider=? AND owner=?",
-                           (retry_at, name, owner))
+                           (retry_at, refresh_id, owner))
 
 
 def load_catalogs(registry, *, cached_only=False):
+    with project_credentials(registry):
+        return _catalogs(registry, cached_only)
+
+
+def _catalogs(registry, cached_only):
     from model_plugins import PROVIDERS  # The dispatch module also consumes this shortlist.
 
     connected = {}
@@ -92,10 +100,10 @@ def load_catalogs(registry, *, cached_only=False):
     if not connected:
         return {}
     if cached_only:
-        return {name: _fresh(Path(registry) / ("model-catalog-" + name + ".json")) or [] for name in connected}
+        return {name: _fresh(catalog_path(registry, name)) or [] for name in connected}
     catalogs = {}
     with ThreadPoolExecutor(max_workers=len(connected)) as pool:
-        pending = {name: pool.submit(_load_provider, Path(registry), name, provider)
+        pending = {name: pool.submit(copy_context().run, _load_provider, Path(registry), name, provider)
                    for name, provider in connected.items()}
         for name, future in pending.items():
             try:

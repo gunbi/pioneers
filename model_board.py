@@ -1,7 +1,7 @@
 """Project model directory and observed usage from Pioneers delivery runs."""
 
 from datetime import datetime, timezone
-import os
+from contextvars import copy_context
 import re
 from threading import Lock, Thread
 from time import monotonic
@@ -9,6 +9,7 @@ from time import monotonic
 from iterations import registered_run
 from model_plugins import PROVIDERS, public_profiles
 from model_policy import MEDIA_MODES, MODE_KINDS, banned, read_policy, update_policy
+from provider_credentials import catalog_path, project_credentials
 from skill_sources import read_json, write_json
 
 
@@ -81,25 +82,23 @@ class ModelBoard:
         self.last_check = {}
         self.errors = {}
 
-    def _cache(self, name):
-        return self.registry / ("model-catalog-" + name + ".json")
-
     def _refresh(self, name):
+        cache = catalog_path(self.registry, name)
         try:
             provider = PROVIDERS[name]
             models = provider.list_catalog()
             self.registry.mkdir(parents=True, exist_ok=True)
-            write_json(self._cache(name), {"models": models, "updated_at": datetime.now(timezone.utc).isoformat()})
+            write_json(cache, {"models": models, "updated_at": datetime.now(timezone.utc).isoformat()})
             with self.lock:
-                self.errors.pop(name, None)
+                self.errors.pop(cache, None)
         except (OSError, ValueError, RuntimeError) as error:
             with self.lock:
-                self.errors[name] = str(error)
+                self.errors[cache] = str(error)
             raise
         finally:
             with self.lock:
-                self.refreshing.discard(name)
-                self.last_check[name] = monotonic()
+                self.refreshing.discard(cache)
+                self.last_check[cache] = monotonic()
 
     def _background_refresh(self, name):
         try:
@@ -109,17 +108,23 @@ class ModelBoard:
 
     def providers(self):
         rows = []
-        for name, provider in PROVIDERS.items():
-            saved = read_json(self._cache(name))
-            connected = bool(os.environ.get(provider.key_env, "").strip())
-            with self.lock:
-                if ((connected or provider.public_catalog) and name not in self.refreshing and
-                        (name not in self.last_check or monotonic() - self.last_check[name] >= 600)):
-                    self.refreshing.add(name)
-                    Thread(target=self._background_refresh, args=(name,), daemon=True).start()
-                rows.append({"id": name, "connected": connected, "public_catalog": provider.public_catalog, "models": saved.get("models", []),
-                             "updated_at": saved.get("updated_at"), "error": self.errors.get(name),
-                             "refreshing": name in self.refreshing})
+        with project_credentials(self.registry) as source:
+            for name, provider in PROVIDERS.items():
+                cache = catalog_path(self.registry, name)
+                saved = read_json(cache)
+                try:
+                    provider.api_key()
+                    connected = True
+                except ValueError:
+                    connected = False
+                with self.lock:
+                    if ((connected or provider.public_catalog) and cache not in self.refreshing and
+                            (cache not in self.last_check or monotonic() - self.last_check[cache] >= 600)):
+                        self.refreshing.add(cache)
+                        Thread(target=copy_context().run, args=(self._background_refresh, name), daemon=True).start()
+                    rows.append({"id": name, "connected": connected, "public_catalog": provider.public_catalog, "models": saved.get("models", []),
+                                 "updated_at": saved.get("updated_at"), "error": source.error or self.errors.get(cache),
+                                 "refreshing": cache in self.refreshing})
         return rows
 
     def snapshot(self):
@@ -138,14 +143,17 @@ class ModelBoard:
         if action in ("refresh", "select", "ban", "unban") and (not isinstance(name, str) or name not in PROVIDERS):
             raise ValueError("请选择已接入的模型提供商")
         if action == "refresh":
-            with self.lock:
-                if name in self.refreshing:
-                    return {"ok": True, "refreshing": True}
-                self.refreshing.add(name)
-            self._refresh(name)
+            with project_credentials(self.registry):
+                cache = catalog_path(self.registry, name)
+                with self.lock:
+                    if cache in self.refreshing:
+                        return {"ok": True, "refreshing": True}
+                    self.refreshing.add(cache)
+                self._refresh(name)
         else:
             if action == "select":
-                models = read_json(self._cache(name)).get("models", [])
+                with project_credentials(self.registry):
+                    models = read_json(catalog_path(self.registry, name)).get("models", [])
                 mode = request.get("mode")
                 kind = MODE_KINDS.get(mode) if isinstance(mode, str) else None
                 if not kind or not any(m["id"] == request.get("model") and kind in m["kinds"] for m in models):

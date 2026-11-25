@@ -3,7 +3,6 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 import json
-import os
 import re
 from http.client import HTTPException
 from pathlib import Path
@@ -12,6 +11,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from dispatch import writes_workspace
 from model_policy import MEDIA_MODES, MODEL_ID, MODES, banned, read_policy
+from provider_credentials import provider_key
 import openrouter_media
 import siliconflow_media
 
@@ -44,7 +44,7 @@ class ChatProvider:
 
     @classmethod
     def api_key(cls):
-        key = os.environ.get(cls.key_env, "").strip()
+        key = provider_key(cls.key_env)
         if not key or not key.isascii() or not key.isprintable() or any(c.isspace() for c in key):
             raise ValueError(f"Set a valid {cls.key_env} for the {cls.name} executor")
         return key

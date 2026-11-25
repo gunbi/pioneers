@@ -36,6 +36,7 @@ from model_plugins import (
 )
 import generated_media
 from model_policy import MEDIA_MODES, read_policy
+from provider_credentials import configure_provider_env, project_credentials
 
 
 @dataclass(frozen=True)
@@ -1130,9 +1131,11 @@ def host_ready(run_dir, wait=0):
 def host_routing_summary(run_dir, data, tasks, summary, registry, load=None):
     workspace = Path(data["workspace"])
     summary.update(dispatch_models(registry, workspace))
-    if summary["ready"]:
-        load = load or cached_catalogs(registry)
-        config = models_config(workspace) if "model_profiles_error" not in summary else None
+    if not summary["ready"]:
+        return summary
+    load = load or cached_catalogs(registry)
+    config = models_config(workspace) if "model_profiles_error" not in summary else None
+    with project_credentials(registry):
         for item in summary["ready"]:
             task = tasks[item["task"]]
             item.update(complexity=task.get("complexity", {}), model_candidates=[])
@@ -1908,9 +1911,9 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
         config = ({}, {}) if profile == "host" else models_config(workspace)
         policy = read_policy(registry)
         # All catalog reads and provider preflight happen outside the heartbeat lock.
-        options, fixed, fallback = routing_options(run_dir, data, task, workspace, config, policy, profile,
-                                                  cached_catalogs(registry))
-        with shared_preflight():
+        with project_credentials(registry), shared_preflight():
+            options, fixed, fallback = routing_options(run_dir, data, task, workspace, config, policy, profile,
+                                                      cached_catalogs(registry))
             route, reason = select_claim(options, fixed, fallback, model_choice, reuse_only)
         if not (dashboard_is_running(run_dir, data.get("dashboard_port")) or active_project_port(registry, run_dir)):
             raise ValueError("Start the run dashboard with --project-dashboard --workspace PROJECT or --dashboard RUN_DIR before claiming tasks")
@@ -2059,7 +2062,8 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
             env = project_environment()
             provider = PROVIDERS[executor["provider"]]
             if executor["mode"] == "video" or not executor.get("reuse_only"):
-                env[provider.key_env] = provider.api_key()
+                with project_credentials(registry):
+                    env[provider.key_env] = provider.api_key()
             code = supervise_host_executor(command, workspace, renew, deadline_seconds=limit, env=env)
             result = read_json(output)
             if code or not result.get("content"):
@@ -2439,6 +2443,8 @@ def main():
     action.add_argument("--list-roles", action="store_true", help="List the available team roles.")
     action.add_argument("--create-team", action="store_true", help="Initialize a team and print its JSON manifest.")
     action.add_argument("--bind-project", action="store_true", help="Add Pioneers continuation rules to the project AGENTS.md.")
+    action.add_argument("--configure-provider-env", metavar="FILE", help="Use a local provider env file for this project.")
+    action.add_argument("--clear-provider-env", action="store_true", help="Remove this project's provider env file binding.")
     action.add_argument("--status", type=Path, metavar="RUN_DIR", help="Show the latest team status.")
     action.add_argument("--watch", type=Path, metavar="RUN_DIR", help="Follow team status until the run stops.")
     action.add_argument("--dashboard", type=Path, metavar="RUN_DIR", help="Serve a live browser dashboard on localhost.")
@@ -2602,10 +2608,15 @@ def main():
         parser.error("--plan-only requires --goal")
     if args.runner is not None and not args.live:
         parser.error("--runner requires --live")
-    if not (args.create_team or args.bind_project or viewing or tool_action or host_action or args.goal is not None or args.workflow is not None):
+    configure_credentials = args.configure_provider_env is not None or args.clear_provider_env
+    if not (args.create_team or args.bind_project or configure_credentials or viewing or tool_action or host_action or args.goal is not None or args.workflow is not None):
         parser.error("provide --goal, a workflow JSON file or a team action")
 
     try:
+        if configure_credentials:
+            registry = project_registry(project_workspace(args.workspace))
+            print(json.dumps(configure_provider_env(registry, args.configure_provider_env)))
+            return 0
         if project_view:
             workspace = project_workspace(args.workspace)
             registry = project_registry(workspace)
