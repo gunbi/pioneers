@@ -34,6 +34,16 @@ def registered_run(registry, run_id):
     return None
 
 
+def has_delivery_history(registry):
+    for entry in registry.glob("run-*.json"):
+        run = registered_run(registry, entry.stem)
+        if run:
+            data = read_json(run / "status.json")
+            if data.get("mode") in ("live", "host") and not data.get("plan_only"):
+                return True
+    return False
+
+
 def build_summary(data):
     release = data.get("release", {})
     decisions = data.get("decisions", {})

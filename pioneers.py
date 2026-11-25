@@ -29,14 +29,14 @@ from dispatch import (
     can_adopt_merged, claim_blockers, design_only, dispatch_can_continue, dispatch_summary, path_is_within, pending_replan,
     preapproval_required, replan_ready, waiting_on, workflow_path, writes_workspace,
 )
-from iterations import latest_delivery, project_snapshot, register_run
+from iterations import has_delivery_history, latest_delivery, project_snapshot, register_run
 from skill_sources import SNAPSHOT, read_json, refresh_run, write_json
 from model_plugins import (
     PROVIDERS, banned, check_available, dispatch_models, models_config, project_default, public_profiles, resolve_route, shared_preflight, task_mode,
 )
 import generated_media
 from model_policy import MEDIA_MODES, read_policy
-from provider_credentials import configure_provider_env, project_credentials
+from provider_credentials import configure_provider_env, offer_provider_setup, project_credentials, skip_provider_setup, skipped_without_credentials
 
 
 @dataclass(frozen=True)
@@ -1029,6 +1029,8 @@ def routing_options(run_dir, data, task, workspace, config, policy, profile, loa
         return [], True, "宿主原生执行"
     elif fixed == "host" and not pinned:
         return [], True, "项目默认由宿主执行"
+    elif not profile and (fixed or pinned) and skipped_without_credentials():
+        return [], False, "已跳过 API Key 配置，由宿主执行"
 
     isolated = bool(data.get("git_base"))
     options = {"isolated": isolated, "config": config, "policy": {**policy, "preference": ""}}
@@ -1333,6 +1335,8 @@ def start_host(workflow_path, output_dir, workspace, require_release):
         validate_release_workflow(tasks)
     binding = bind_project(workspace)
     git_base = host_worktree_base(workspace)
+    registry = project_registry(workspace)
+    first_delivery = not has_delivery_history(registry)
     run_dir, progress = create_run(output_dir, goal, tasks, order, "host", require_release)
     (run_dir / "workflow.json").write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     progress.data["workspace"] = str(workspace)
@@ -1342,16 +1346,17 @@ def start_host(workflow_path, output_dir, workspace, require_release):
         progress.data["git_base"] = git_base
     reconcile(progress, tasks)
     progress.event("ld", None, "completed", "工作流已登记，启动看板后可领取依赖就绪的任务")
-    registry = project_registry(workspace)
     register_run(registry, run_dir)
     refresh_run_skills(progress)
     port = active_project_port(registry, run_dir)
     project_url = f"http://127.0.0.1:{port}/" if port else None
-    return {"run_dir": str(run_dir), "project_dashboard_url": project_url,
-            "project_run_url": f"{project_url}runs/{run_dir.name}/" if project_url else None,
-            "workspace": str(workspace), "project_rules": binding["project_rules"],
-            "tasks": progress.data["tasks"],
-            "skill_sources": progress.data["skill_sources"]}
+    result = {"run_dir": str(run_dir), "project_dashboard_url": project_url,
+              "project_run_url": f"{project_url}runs/{run_dir.name}/" if project_url else None,
+              "workspace": str(workspace), "project_rules": binding["project_rules"],
+              "tasks": progress.data["tasks"], "skill_sources": progress.data["skill_sources"]}
+    if first_delivery and (offer := offer_provider_setup(registry)):
+        result["provider_setup"] = offer
+    return result
 
 
 def run_dashboard_project(data):
@@ -2445,6 +2450,7 @@ def main():
     action.add_argument("--bind-project", action="store_true", help="Add Pioneers continuation rules to the project AGENTS.md.")
     action.add_argument("--configure-provider-env", metavar="FILE", help="Use a local provider env file for this project.")
     action.add_argument("--clear-provider-env", action="store_true", help="Remove this project's provider env file binding.")
+    action.add_argument("--skip-provider-setup", action="store_true", help="Remember the user's choice to skip first-time provider setup.")
     action.add_argument("--status", type=Path, metavar="RUN_DIR", help="Show the latest team status.")
     action.add_argument("--watch", type=Path, metavar="RUN_DIR", help="Follow team status until the run stops.")
     action.add_argument("--dashboard", type=Path, metavar="RUN_DIR", help="Serve a live browser dashboard on localhost.")
@@ -2557,7 +2563,8 @@ def main():
         args.continue_run,
     ))
     tool_action = any(value is not None for value in (args.list_capabilities, args.mcp_config, args.run_tool))
-    if (args.create_team or args.bind_project or viewing or tool_action or host_action) and (args.workflow is not None or args.live):
+    provider_action = args.configure_provider_env is not None or args.clear_provider_env or args.skip_provider_setup
+    if (args.create_team or args.bind_project or provider_action or viewing or tool_action or host_action) and (args.workflow is not None or args.live):
         parser.error("team setup, status, host commands and tools are separate actions from running a workflow")
     if (args.host_claim or args.host_report) and not args.task:
         parser.error("host claim and report require --task")
@@ -2608,14 +2615,15 @@ def main():
         parser.error("--plan-only requires --goal")
     if args.runner is not None and not args.live:
         parser.error("--runner requires --live")
-    configure_credentials = args.configure_provider_env is not None or args.clear_provider_env
-    if not (args.create_team or args.bind_project or configure_credentials or viewing or tool_action or host_action or args.goal is not None or args.workflow is not None):
+    if not (args.create_team or args.bind_project or provider_action or viewing or tool_action or host_action or args.goal is not None or args.workflow is not None):
         parser.error("provide --goal, a workflow JSON file or a team action")
 
     try:
-        if configure_credentials:
+        if provider_action:
             registry = project_registry(project_workspace(args.workspace))
-            print(json.dumps(configure_provider_env(registry, args.configure_provider_env)))
+            result = (skip_provider_setup(registry) if args.skip_provider_setup else
+                      configure_provider_env(registry, args.configure_provider_env))
+            print(json.dumps(result))
             return 0
         if project_view:
             workspace = project_workspace(args.workspace)

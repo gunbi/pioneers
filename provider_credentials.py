@@ -12,11 +12,13 @@ import stat
 import tempfile
 from typing import Optional
 
+from skill_sources import read_json, write_json
 
 _active = ContextVar("pioneers_provider_credentials", default=None)
 _assignment = re.compile(r"(?:export[ \t]+)?([A-Za-z_][A-Za-z_0-9]*)[ \t]*=[ \t]*(.*)")
 _value = re.compile(r"""(?:"([^"]*)"|'([^']*)'|([^\s'"]+))\s*(?:\s\#.*)?""")
 _invalid_file = "Cannot read the configured provider env file. Check the file or configure it again."
+PROVIDER_SETUP = "provider-setup.json"
 
 
 def _binding(registry):
@@ -138,6 +140,46 @@ def provider_key(name):
         raise ValueError(current.error)
     source = current.keys if current and current.keys is not None else os.environ
     return source.get(name, "").strip()
+
+
+def has_provider_credentials():
+    """Check credential format in the current project context without a provider request."""
+    from model_plugins import PROVIDERS
+
+    for provider in PROVIDERS.values():
+        try:
+            provider.api_key()
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def skipped_without_credentials():
+    current = _active.get()
+    return (current is not None and
+            read_json(current.registry / PROVIDER_SETUP).get("state") == "skipped" and not has_provider_credentials())
+
+
+def offer_provider_setup(registry):
+    """Emit a host conversation prompt at most once, even for concurrent first runs."""
+    with project_credentials(registry):
+        if has_provider_credentials():
+            return None
+    # Startup has already registered this run. Concurrent starts may both have
+    # observed an empty history, but only one of them can create the receipt.
+    try:
+        with (registry / PROVIDER_SETUP).open("x", encoding="utf-8") as record:
+            json.dump({"state": "offered"}, record)
+    except FileExistsError:
+        return None
+    return {"action": "ask", "question": "这个项目还没有配置模型提供商。要现在配置 API Key 吗？可以提供本机密钥文件路径，或跳过并直接使用宿主。"}
+
+
+def skip_provider_setup(registry):
+    registry.mkdir(parents=True, exist_ok=True)
+    write_json(registry / PROVIDER_SETUP, {"state": "skipped"})
+    return {"provider_setup": "skipped"}
 
 
 def catalog_path(registry, provider):
