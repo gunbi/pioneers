@@ -123,6 +123,9 @@
     .task-header { display:flex; flex-wrap:wrap; gap:.3rem .6rem; justify-content:space-between; align-items:flex-start; }
     .task-header h3 { margin:0; }
     .stage-meta { color:var(--muted); font-size:.75rem; margin:.12rem 0 .3rem; font-variant-numeric:tabular-nums; }
+    .stage-skills { display:grid; grid-template-columns:auto minmax(0,1fr); gap:.1rem .55rem; align-items:baseline; margin:.3rem 0; font-size:.78rem; line-height:1.45; }
+    .stage-skills dt { color:var(--muted); }
+    .stage-skills dd { margin:0; overflow-wrap:anywhere; }
     .task .action { font-size:.85rem; }
     .scope,.empty { color:var(--muted); font-size:.88rem; }
     .scope { margin:.35rem 0; }
@@ -504,7 +507,30 @@
       detail.append(stageLink(stage, title));
       return detail;
     }
-    function card(stage, roles, tasks, incoming, stages) {
+    function skillList(stage, catalog) {
+      const list = element("dl", "", "stage-skills");
+      const usage = stage.skill_usage;
+      const seen = new Set();
+      for (const [field, label] of [["reported", "已使用 Skill"], ["loaded", "已加载 Skill"], ["planned", "计划 Skill"]]) {
+        const names = element("dd");
+        for (const id of usage?.[field] || []) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const spec = catalog?.[id];
+          const name = element("span", spec?.label || id);
+          name.title = [id, spec?.description].filter(Boolean).join(" · ");
+          if (names.childNodes.length) names.append("、");
+          names.append(name);
+        }
+        if (names.childNodes.length) list.append(element("dt", label), names);
+      }
+      if (!seen.size) {
+        const emptyPlan = stage.state === "pending" && Array.isArray(usage?.planned);
+        list.append(element("dt", "Skill"), element("dd", emptyPlan ? "未分配" : "无使用记录"));
+      }
+      return list;
+    }
+    function card(stage, roles, tasks, incoming, stages, skillCatalog) {
       const node = element("article", "", "task");
       node.id = "stage-" + stage.key;
       if (stage.state === "running" || stage.state === "publishing") node.classList.add("running-card");
@@ -515,6 +541,7 @@
       const meta = [stage.member?.name, roles[stage.role], stage.task,
         stage.attempt && ("第 " + stage.attempt + " 轮"), stage.at && clock(stage.at)];
       node.append(element("p", meta.filter(Boolean).join(" · "), "stage-meta"));
+      if (stage.task && stage.key !== "release") node.append(skillList(stage, skillCatalog));
       const executor = tasks[stage.task]?.executors?.[stage.attempt];
       if (executor) {
         const detail = executor.provider === "host" ? ["宿主 Agent"] : [executor.provider, executor.model];
@@ -760,7 +787,7 @@
               "影响": outgoing.get(stage.key).map(edge => stages.get(edge.to)),
             });
           } else {
-            node = card(stage, data.roles, data.tasks, sources, stages);
+            node = card(stage, data.roles, data.tasks, sources, stages, data.skill_catalog);
             node.style.setProperty("--column", lane(stage));
           }
           cards.set(stage.key, {node, level});

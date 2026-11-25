@@ -15,6 +15,7 @@
   },
   "skills": {
     "requirements-design": {
+      "label": "需求与验收设计",
       "description": "定义功能范围、用户路径和可复现的验收条件。",
       "path": "skills/requirements-design/SKILL.md",
       "sources": [
@@ -23,6 +24,7 @@
       ]
     },
     "product-experience-design": {
+      "label": "产品体验设计",
       "description": "从用户任务推导导航、页面动线与布局，并交接关键状态和验收场景。",
       "path": "skills/product-experience-design/SKILL.md",
       "sources": [
@@ -41,6 +43,7 @@
       ]
     },
     "customer-journey-mapping": {
+      "label": "用户旅程地图",
       "description": "结合访谈、用户反馈或行为数据，梳理跨阶段用户旅程和证据。",
       "path": "skills/customer-journey-mapping/SKILL.md",
       "sources": [
@@ -51,6 +54,7 @@
       ]
     },
     "acceptance-testing": {
+      "label": "验收与回归测试",
       "description": "按风险独立复现验收条件，并交付逐项证据。",
       "path": "skills/acceptance-testing/SKILL.md",
       "sources": [
@@ -59,6 +63,7 @@
       ]
     },
     "ios-development": {
+      "label": "iOS 开发",
       "description": "沿用 iOS 项目现有技术栈，验证状态、构建和设备交互。",
       "path": "skills/ios-development/SKILL.md",
       "sources": [
@@ -67,6 +72,7 @@
       ]
     },
     "android-development": {
+      "label": "Android 开发",
       "description": "沿用 Android 项目现有技术栈，验证适配、Gradle 构建和设备交互。",
       "path": "skills/android-development/SKILL.md",
       "sources": [
@@ -76,42 +82,51 @@
       ]
     },
     "wechat-miniprogram-development": {
+      "label": "微信小程序开发",
       "description": "在微信小程序实现、联调或验收时使用，覆盖页面路由、接口接入、开发者工具预览和真机验证。",
       "path": "skills/wechat-miniprogram-development/SKILL.md",
       "sources": [["TencentCloudBase/skills", "skills/miniprogram-development/SKILL.md"]]
     },
     "aliyun-ecs-container-deployment": {
+      "label": "阿里云 ECS 容器部署",
       "description": "准备、执行或验收阿里云 ECS 容器部署，覆盖 Docker Compose、ACR 镜像、健康检查和回滚。",
       "path": "skills/aliyun-ecs-container-deployment/SKILL.md",
       "sources": [["aliyun/alibabacloud-aiops-skills", "skills/computing/computenest/alibabacloud-ecs-code-deploy/SKILL.md", "master"]]
     },
     "architecture-design": {
+      "label": "架构设计",
       "description": "识别跨模块变更的复杂度，比较方案，并记录接口、取舍和演进条件。",
       "path": "skills/architecture-design/SKILL.md"
     },
     "change-impact-preflight": {
+      "label": "变更影响面预检",
       "description": "开工前核对变更基线、共享契约、旧数据、并行写入、权限及回滚条件。",
       "path": "skills/change-impact-preflight/SKILL.md"
     },
     "verifiable-delivery-evidence": {
+      "label": "交付证据包",
       "description": "把交付和独立验收证据绑定到实际版本，按风险记录可复跑结果和独立回读。",
       "path": "skills/verifiable-delivery-evidence/SKILL.md"
     },
     "engineering-design": {
+      "label": "编程设计",
       "description": "在实现与重构时划分业务规则、状态、副作用和执行控制。",
       "path": "skills/engineering-design/SKILL.md"
     },
     "systematic-debugging": {
+      "label": "系统化调试",
       "description": "在构建失败、行为异常或 QA 退回时复现问题，验证根因，并证明修复有效。",
       "path": "skills/systematic-debugging/SKILL.md",
       "sources": [["obra/superpowers", "skills/systematic-debugging/SKILL.md"]]
     },
     "change-integration": {
+      "label": "变更集成",
       "description": "在并行改动汇合或跨模块联调时确认目标与集成顺序，并验证集成后的版本。",
       "path": "skills/change-integration/SKILL.md",
       "sources": [["obra/superpowers", "skills/finishing-a-development-branch/SKILL.md"]]
     },
     "test-engineering": {
+      "label": "测试工程",
       "description": "为新行为、缺陷或高风险变更选择测试层级，编写或评审可重复执行的回归测试。",
       "path": "skills/test-engineering/SKILL.md",
       "sources": [
@@ -120,18 +135,22 @@
       ]
     },
     "code-review": {
+      "label": "代码评审",
       "description": "对照实际变更、接口和测试证据审查交付，区分阻塞问题和建议。",
       "path": "skills/code-review/SKILL.md"
     },
     "frontend-development": {
+      "label": "前端开发",
       "description": "实现页面和交互，覆盖用户路径、异常状态及浏览器验证。",
       "path": "skills/frontend-development/SKILL.md"
     },
     "backend-development": {
+      "label": "后端开发",
       "description": "实现 API 和业务逻辑，验证接口契约及服务端行为。",
       "path": "skills/backend-development/SKILL.md"
     },
     "existing-ui-audit": {
+      "label": "既有界面审计",
       "description": "沿现有用户路径检查界面层级、响应式与可访问性，留下旧版和复验依据。",
       "path": "skills/existing-ui-audit/SKILL.md",
       "sources": [
@@ -146,6 +165,7 @@
       ]
     },
     "existing-ui-redesign": {
+      "label": "既有界面改版",
       "description": "参照旧版审计和确认的设计，在现有技术栈内改造界面布局与层级。",
       "path": "skills/existing-ui-redesign/SKILL.md",
       "sources": [
@@ -157,66 +177,79 @@
       ]
     },
     "frontend-design": {
+      "label": "前端视觉设计",
       "description": "设计并实现有清晰视觉方向的前端界面。",
       "path": "skills/frontend-design/SKILL.md",
       "sources": [["anthropics/skills", "skills/frontend-design/SKILL.md"]]
     },
     "desktop-framework-electron": {
+      "label": "Electron 桌面开发",
       "description": "开发和验证跨平台 Electron 应用，覆盖主进程、渲染、IPC、原生 API、打包和更新。",
       "path": "skills/desktop-framework-electron/SKILL.md",
       "sources": [["agents-inc/skills", "dist/plugins/desktop-framework-electron/skills/desktop-framework-electron/SKILL.md", "845a1f2833eedc494bb82e3172710c06cab547a1"]]
     },
     "tauri-app-builder": {
+      "label": "Tauri 桌面开发",
       "description": "开发和验证 Tauri v2 桌面应用，覆盖 Rust 与前端集成、窗口、系统集成、安全和打包。",
       "path": "skills/tauri-app-builder/SKILL.md",
       "sources": [["pinkpixel-dev/tauri-skills", "skills/tauri-app-builder/SKILL.md", "99697aa3006bec7d65bb2a8f8be0d294407186da"]]
     },
     "macos-spm-app-packaging": {
+      "label": "macOS SwiftPM 打包",
       "description": "搭建、构建和验证原生 SwiftPM macOS 应用，覆盖应用包、签名和公证。",
       "path": "skills/macos-spm-app-packaging/SKILL.md",
       "sources": [["Dimillian/Skills", "macos-spm-app-packaging/SKILL.md", "05ba982bfeb0d77d3c97d4542b0ee15034d05f84"]]
     },
     "winui-dev-workflow": {
+      "label": "WinUI 3 开发",
       "description": "搭建、构建和调试基于 Windows App SDK 的 WinUI 3 应用。",
       "path": "skills/winui/winui-dev-workflow/SKILL.md",
       "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-dev-workflow/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
     },
     "winui-design": {
+      "label": "WinUI 界面设计",
       "description": "设计和核对 WinUI 3 的 XAML 布局、控件、主题和可访问性。",
       "path": "skills/winui/winui-design/SKILL.md",
       "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-design/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
     },
     "winui-ui-testing": {
+      "label": "WinUI 界面测试",
       "description": "在 Windows 上用 UI Automation 验证桌面交互和窗口状态。",
       "path": "skills/winui/winui-ui-testing/SKILL.md",
       "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-ui-testing/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
     },
     "winui-code-review": {
+      "label": "WinUI 代码评审",
       "description": "审查 WinUI 3 XAML 和 C# 实现，核对正确性、可访问性和性能。",
       "path": "skills/winui/winui-code-review/SKILL.md",
       "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-code-review/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
     },
     "winui-packaging": {
+      "label": "WinUI 打包发布",
       "description": "准备和验证 WinUI 3 的应用包、签名和 MSIX 发布产物。",
       "path": "skills/winui/winui-packaging/SKILL.md",
       "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-packaging/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
     },
     "winui-setup": {
+      "label": "WinUI 环境配置",
       "description": "检查 WinUI 3 和 Windows App SDK 的开发与测试环境。",
       "path": "skills/winui/winui-setup/SKILL.md",
       "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-setup/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
     },
     "winui-wpf-migration": {
+      "label": "WPF 迁移至 WinUI",
       "description": "规划和验证从 WPF 到 WinUI 3 的迁移。",
       "path": "skills/winui/winui-wpf-migration/SKILL.md",
       "sources": [["microsoft/winappCli", "plugins/winui/agent-plugin/skills/winui-wpf-migration/SKILL.md", "e7e4587ad7a6e51c085ad6360a10ede0cee7ab6e"]]
     },
     "chrome-extensions": {
+      "label": "Chrome 扩展开发",
       "description": "开发和验证 Manifest V3 Chrome 扩展，覆盖扩展 API、权限、调试与商店发布准备。",
       "path": "skills/chrome-extensions/SKILL.md",
       "sources": [["GoogleChrome/modern-web-guidance", "skills/chrome-extensions/SKILL.md", "64a6d708f5a43f2cd3fde5d4d7db3905ba1bdf65"]]
     },
     "webapp-testing": {
+      "label": "Web 应用测试",
       "description": "用 Python Playwright 验证 Web 应用，收集截图和浏览器日志。",
       "path": "skills/webapp-testing/SKILL.md",
       "sources": [["anthropics/skills", "skills/webapp-testing/SKILL.md"]]

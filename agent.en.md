@@ -86,6 +86,8 @@ See the [README](README.en.md) for usage examples and progress entry points.
 
 ## Report progress to the user
 
+When a host member uses an authorized skill, include `--attempt N --used-skill SKILL_ID` in their next `--host-report`. Repeat the flag for multiple skills. Pioneers records skills included in the execution prompt automatically and displays member-reported use separately.
+
 Before the first assignment, verify that the project dashboard and the iteration's `dashboard-data.json` endpoint respond, then show the initial assignments. Provide a reachable project URL when available. The dispatch view shows who is executing, what can run in parallel and which tasks are waiting for dependencies or approval. On a local desktop, try to open the browser by default.
 
 If a cloud host can deploy and view a private live site, use its tools to expose the dashboard. Prefer an existing private entry point or a private HTTPS port preview connected to the running service. Verify both the page and the iteration's `dashboard-data.json` through the remote entry point before sharing the URL. For dashboard approvals, configure forwarding and the control credential as described in [Cloud dashboard controls](docs/usage.en.md#cloud-dashboard-controls).

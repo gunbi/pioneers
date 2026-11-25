@@ -217,11 +217,14 @@ python3 pioneers.py --host-ready RUN_DIR
 python3 pioneers.py --host-claim RUN_DIR --task requirements
 
 # 执行端有新进展时上报，完成时附上本地交付物文件。
-python3 pioneers.py --host-report RUN_DIR --task requirements --state running \
+python3 pioneers.py --host-report RUN_DIR --task requirements --attempt 1 --state running \
+  --used-skill requirements-design \
   --activity "正在定义空白标题和刷新后恢复的验收步骤"
 python3 pioneers.py --host-report RUN_DIR --task requirements --state completed \
   --activity "已整理三条可复现的验收步骤" --artifact /path/to/requirements.md
 ```
+
+在「团队协作流程」中，每张任务卡按本轮记录展示 Skill。「计划 Skill」来自任务分配，「已加载 Skill」表示框架把正文放进执行提示，「已使用 Skill」来自宿主成员的使用回报。上例中的 `1` 应换成领取返回的 `attempt`。成员用到其他已获授权的 Skill 时，也可在同一次回报中重复传入 `--used-skill`。重派后，新旧两轮分别展示各自的记录。历史运行只展示能从当时记录还原的信息。
 
 完成回报返回 `judgment`，包含 `decision`、`task`、`attempt`、给判断 LLM 的提示和输出结构。宿主将它交给只读判断会话，再提交 JSON。浏览器重审后，宿主也可主动查询待判断项，使用 `--judge RUN_DIR --decision D2` 取得同一请求。
 

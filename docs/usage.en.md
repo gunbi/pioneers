@@ -217,11 +217,14 @@ python3 pioneers.py --host-ready RUN_DIR
 python3 pioneers.py --host-claim RUN_DIR --task requirements
 
 # Report progress, then attach the local deliverable on completion.
-python3 pioneers.py --host-report RUN_DIR --task requirements --state running \
+python3 pioneers.py --host-report RUN_DIR --task requirements --attempt 1 --state running \
+  --used-skill requirements-design \
   --activity "Defining acceptance steps for blank titles and restoring state after refresh"
 python3 pioneers.py --host-report RUN_DIR --task requirements --state completed \
   --activity "Documented three reproducible acceptance steps" --artifact /path/to/requirements.md
 ```
+
+Each task card in the collaboration flow shows skills for that attempt. Planned skills (计划 Skill) come from the task definition. Loaded skills (已加载 Skill) were included in the execution prompt. Used skills (已使用 Skill) were reported by the host member. Replace `1` in the example with the `attempt` returned by the claim. Repeat `--used-skill` in the same report to record other authorized skills the member used. Each retry has its own record. For older runs, the card shows the information available for that attempt.
 
 A completion report returns `judgment`, which contains `decision`, `task`, `attempt`, the prompt for the judging LLM, and the output schema. Give it to a read-only judgment session, then submit the JSON result. After a revision in the browser, the host can also query pending judgments and use `--judge RUN_DIR --decision D2` to retrieve the same request.
 
