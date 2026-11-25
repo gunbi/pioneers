@@ -1,6 +1,6 @@
 """Project model controls shared by the dashboard and host dispatch processes."""
 
-from contextlib import closing
+from contextlib import closing, contextmanager
 import json
 from pathlib import Path
 import re
@@ -60,6 +60,31 @@ def read_policy(registry):
         return _read(db)
 
 
+@contextmanager
+def _policy_transaction(registry):
+    path = _policy_path(registry)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("CREATE TABLE IF NOT EXISTS policy (id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS preference_setup (id INTEGER PRIMARY KEY)")
+        yield db
+
+
+@contextmanager
+def offer_model_preference(registry):
+    """Mark the question delivered only once the caller has flushed the response."""
+    with _policy_transaction(registry) as db:
+        policy = _read(db)
+        if policy["preference"] or db.execute("SELECT 1 FROM preference_setup WHERE id=1").fetchone():
+            db.commit()
+            yield None
+            return
+        db.execute("INSERT INTO preference_setup VALUES (1)")
+        yield {"action": "ask", "revision": policy["revision"],
+               "question": "这个项目希望怎么选模型？可以说「仅免费」「优先速度」或「优先质量」，也可以使用默认策略（免费和收费模型都可选）。"}
+
+
 def update_policy(registry, request):
     fields = {"select": ("mode", "provider", "model"), "clear": ("mode",),
               "ban": ("provider", "model"), "unban": ("provider", "model"), "preference": ("value",)}
@@ -80,11 +105,7 @@ def update_policy(registry, request):
         ref = {"provider": provider, "model": model}
     if action == "preference" and (not isinstance(request["value"], str) or len(request["value"]) > 1000):
         raise ValueError("模型倾向应为 1000 字以内的文本")
-    path = _policy_path(registry)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(path)) as db, db:
-        db.execute("BEGIN IMMEDIATE")
-        db.execute("CREATE TABLE IF NOT EXISTS policy (id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
+    with _policy_transaction(registry) as db:
         policy = _read(db)
         if revision != policy["revision"]:
             raise PolicyConflict("规则已被其他操作更新，请刷新后重试")
@@ -102,6 +123,8 @@ def update_policy(registry, request):
             policy["banned"] = [v for v in policy["banned"] if v != ref]
         else:
             policy["preference"] = request["value"].strip()
+            # Saving an empty preference explicitly opts into the default policy.
+            db.execute("INSERT OR IGNORE INTO preference_setup VALUES (1)")
         policy["revision"] += 1
         db.execute("INSERT OR REPLACE INTO policy VALUES (1,?)", (json.dumps(policy, ensure_ascii=False),))
         return policy

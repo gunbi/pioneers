@@ -35,9 +35,10 @@ from model_plugins import (
     PROVIDERS, banned, check_available, dispatch_models, models_config, project_default, public_profiles, resolve_route, shared_preflight, task_mode,
 )
 import generated_media
-from model_policy import MEDIA_MODES, read_policy
+from model_policy import MEDIA_MODES, offer_model_preference, read_policy, update_policy
 from provider_credentials import (
-    configure_provider_env, offer_provider_setup, prepare_provider_setup, project_credentials, skip_provider_setup, skipped_without_credentials,
+    configure_provider_env, has_provider_credentials, offer_provider_setup, prepare_provider_setup,
+    project_credentials, skip_provider_setup, skipped_without_credentials,
 )
 
 
@@ -1359,11 +1360,22 @@ def start_host(workflow_path, output_dir, workspace, require_release):
             "tasks": progress.data["tasks"], "skill_sources": progress.data["skill_sources"]}
 
 
-def print_host_start(result):
-    with offer_provider_setup(project_registry(Path(result["workspace"]))) as offer:
+def print_with_model_preference(registry, result):
+    with project_credentials(registry):
+        configured = has_provider_credentials()
+    with offer_model_preference(registry) if configured else nullcontext() as offer:
         if offer:
-            result = {**result, "provider_setup": offer}
+            result = {**result, "model_preference_setup": offer}
         print(json.dumps(result, ensure_ascii=False), flush=True)
+
+
+def print_host_start(result):
+    registry = project_registry(Path(result["workspace"]))
+    with offer_provider_setup(registry) as offer:
+        if offer:
+            print(json.dumps({**result, "provider_setup": offer}, ensure_ascii=False), flush=True)
+        else:
+            print_with_model_preference(registry, result)
 
 
 def run_dashboard_project(data):
@@ -2458,6 +2470,8 @@ def main():
     action.add_argument("--configure-provider-env", metavar="FILE", help="Use a local provider env file for this project.")
     action.add_argument("--clear-provider-env", action="store_true", help="Remove this project's provider env file binding.")
     action.add_argument("--skip-provider-setup", action="store_true", help="Remember the user's choice to skip first-time provider setup.")
+    action.add_argument("--set-model-preference", metavar="TEXT", help="Save this project's model preference. Use an empty string for the default.")
+    parser.add_argument("--policy-revision", type=int, help="Expected policy revision from the model preference prompt.")
     action.add_argument("--status", type=Path, metavar="RUN_DIR", help="Show the latest team status.")
     action.add_argument("--watch", type=Path, metavar="RUN_DIR", help="Follow team status until the run stops.")
     action.add_argument("--dashboard", type=Path, metavar="RUN_DIR", help="Serve a live browser dashboard on localhost.")
@@ -2570,7 +2584,10 @@ def main():
         args.continue_run,
     ))
     tool_action = any(value is not None for value in (args.list_capabilities, args.mcp_config, args.run_tool))
-    provider_action = args.configure_provider_env is not None or args.clear_provider_env or args.skip_provider_setup
+    provider_action = (args.configure_provider_env is not None or args.clear_provider_env
+                       or args.skip_provider_setup or args.set_model_preference is not None)
+    if args.policy_revision is not None and (args.set_model_preference is None or args.policy_revision < 0):
+        parser.error("--policy-revision requires --set-model-preference and a non-negative revision")
     if (args.create_team or args.bind_project or provider_action or viewing or tool_action or host_action) and (args.workflow is not None or args.live):
         parser.error("team setup, status, host commands and tools are separate actions from running a workflow")
     if (args.host_claim or args.host_report) and not args.task:
@@ -2628,9 +2645,18 @@ def main():
     try:
         if provider_action:
             registry = project_registry(project_workspace(args.workspace))
-            result = (skip_provider_setup(registry) if args.skip_provider_setup else
-                      configure_provider_env(registry, args.configure_provider_env))
-            print(json.dumps(result))
+            if args.configure_provider_env is not None:
+                result = configure_provider_env(registry, args.configure_provider_env)
+                print_with_model_preference(registry, result)
+                return 0
+            if args.set_model_preference is not None:
+                revision = args.policy_revision if args.policy_revision is not None else read_policy(registry)["revision"]
+                result = update_policy(registry, {"action": "preference", "revision": revision, "value": args.set_model_preference})
+            elif args.skip_provider_setup:
+                result = skip_provider_setup(registry)
+            else:
+                result = configure_provider_env(registry, None)
+            print(json.dumps(result, ensure_ascii=False))
             return 0
         if project_view:
             workspace = project_workspace(args.workspace)

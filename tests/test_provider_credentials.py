@@ -45,7 +45,12 @@ class ProviderCredentialsTest(unittest.TestCase):
         self.assertEqual(set(json.loads(bound.stdout)["variables"]), {SiliconFlow.key_env, OpenRouter.key_env})
         self.assertNotIn(str(self.envfile), bound.stdout)
         self.assertNotIn("sf:first", bound.stdout + bound.stderr)
-        self.assertEqual(list(self.project.iterdir()), [])
+        # The preference offer is project state. Credential values and their file stay private.
+        for path in self.project.rglob("*"):
+            if path.is_file():
+                data = path.read_bytes()
+                for private in (str(self.envfile), "sf:first", "router:first"):
+                    self.assertNotIn(private.encode(), data)
         binding, = list(self.home.rglob("*.json"))
         self.assertEqual(json.loads(binding.read_text()), str(self.envfile))
         if os.name == "posix":

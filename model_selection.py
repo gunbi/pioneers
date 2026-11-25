@@ -168,7 +168,7 @@ def confirmed_free(provider, row, mode):
 
 
 TRAITS = {
-    "fast": r"\b(?:flash|fast|turbo|lite|mini|small|haiku|speed|lightweight|low[- ]latency)\b|快速|低延迟|高速|轻量",
+    "fast": r"\b(?:flash|fast|turbo|lite|mini|small|haiku|speed|lightweight|low[- ]latency)\b|速度|快速|低延迟|高速|轻量",
     "reasoning": r"\b(?:reasoning|reasoner|thinking|reasoned)\b|推理|深度思考",
     "quality": r"\b(?:quality|flagship|frontier|pro|max|opus|large)\b|高质量|质量|旗舰|高品质",
     "coding": r"\b(?:coding|coder|code|programming|debugging)\b|编程|代码|补丁",

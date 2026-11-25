@@ -1,16 +1,19 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from model_policy import update_policy
-from pioneers import print_host_start, project_registry, update_host
+from model_board import ModelBoard
+from model_policy import read_policy, update_policy
+from pioneers import host_ready, print_host_start, project_registry, update_host
 from provider_credentials import PROVIDER_SETUP
 
 
@@ -45,6 +48,7 @@ class FirstProviderSetupTest(unittest.TestCase):
         history = self.invoke("--project-history", "--workspace", self.project, "--output-dir", self.root / "runs")
         self.assertNotIn("provider_setup", history)
         started = self.start()
+        self.assertNotIn("model_preference_setup", started)
         self.assertEqual(started["provider_setup"]["action"], "ask")
         self.assertIn("文件路径", started["provider_setup"]["question"])
         reply = self.invoke("--skip-provider-setup", "--workspace", self.project)
@@ -52,7 +56,9 @@ class FirstProviderSetupTest(unittest.TestCase):
         ready = self.invoke("--host-ready", started["run_dir"])
         self.assertNotIn("provider_setup", ready)
         self.assertEqual(ready["ready"][0]["model_candidates"], [])
-        self.assertNotIn("provider_setup", self.start())
+        later = self.start()
+        self.assertNotIn("provider_setup", later)
+        self.assertNotIn("model_preference_setup", later)
         other = self.root / "other"
         other.mkdir()
         self.assertIn("provider_setup", self.start(other))
@@ -65,6 +71,7 @@ class FirstProviderSetupTest(unittest.TestCase):
         self.assertNotIn("invalid key", error)
         envfile.write_text("OPENROUTER_API_KEY=sample-only-test-key\n")
         result = self.invoke("--configure-provider-env", envfile, "--workspace", self.project)
+        self.assertEqual(result.pop("model_preference_setup")["action"], "ask")
         self.assertEqual(result, {"configured": True, "variables": ["OPENROUTER_API_KEY"]})
         self.assertNotIn("provider_setup", self.start())
         self.invoke("--clear-provider-env", "--workspace", self.project)
@@ -86,7 +93,86 @@ class FirstProviderSetupTest(unittest.TestCase):
         project.mkdir()
         self.invoke("--skip-provider-setup", "--workspace", project)
         self.assertNotIn("provider_setup", self.start(project))
-        self.assertTrue(self.invoke("--configure-provider-env", envfile, "--workspace", project)["configured"])
+        self.assertIn("model_preference_setup", self.invoke("--configure-provider-env", envfile, "--workspace", project))
+
+    def test_bound_preference_reaches_board_ready_and_claim(self):
+        started = self.start()
+        envfile = self.root / "models.env"
+        envfile.write_text("OPENROUTER_API_KEY=test-token\n")
+        bind = self.invoke("--configure-provider-env", envfile, "--workspace", self.project)
+        offer = bind["model_preference_setup"]
+        self.assertEqual(offer["action"], "ask")
+        self.assertIn("收费", offer["question"])
+        policy = self.invoke("--set-model-preference", "仅免费", "--policy-revision", offer["revision"],
+                             "--workspace", self.project)
+        registry = project_registry(self.project)
+        board = ModelBoard(registry, "test", self.project)
+        with patch.object(board, "providers", return_value=[]):
+            self.assertEqual(board.snapshot()["policy"], policy)
+        catalogs = {"openrouter": [{"id": "v/flash-paid", "kinds": ["chat"]},
+                                   {"id": "v/slow:free", "kinds": ["chat"]}]}
+        run = Path(started["run_dir"])
+        with patch.dict(os.environ, self.env), patch("model_selection.load_catalogs", return_value=catalogs), \
+                patch("pioneers.dashboard_is_running", return_value=True), patch("pioneers.check_available"):
+            ready = host_ready(run)["ready"][0]
+            self.assertEqual([c["model"] for c in ready["model_candidates"]], ["v/slow:free"])
+            self.assertEqual(update_host(run, "draft", None, None, None, None)["executor"]["model"], "v/slow:free")
+        self.assertNotIn("model_preference_setup", self.start())
+        self.assertNotIn("model_preference_setup", self.invoke("--configure-provider-env", envfile, "--workspace", self.project))
+
+    def test_existing_policy_default_and_stale_reply(self):
+        registry = project_registry(self.project)
+        board = ModelBoard(registry, "test", self.project)
+        pin = {"provider": "openrouter", "model": "test/chosen"}
+        ban = {"provider": "openrouter", "model": "test/blocked"}
+        update_policy(registry, {"action": "select", "revision": 0, "mode": "video", **pin})
+        board.apply({"action": "ban", "revision": 1, **ban})
+        env = {**self.env, "OPENROUTER_API_KEY": "test-token"}
+        started = self.start(env=env)
+        self.assertNotIn("provider_setup", started)
+        revision = started["model_preference_setup"]["revision"]
+        self.assertEqual(revision, 2)
+        board.apply({"action": "preference", "value": "优先质量", "revision": revision})
+        args = ("--set-model-preference", "", "--workspace", self.project, "--policy-revision")
+        self.assertIn("刷新", self.invoke(*args, revision, expected=1))
+        self.assertEqual(read_policy(registry)["preference"], "优先质量")
+        saved = self.invoke(*args, revision + 1)
+        self.assertEqual(saved, {"revision": 4, "preference": "", "selected": {"video": pin}, "banned": [ban]})
+        self.assertNotIn("model_preference_setup", self.start(env=env))
+
+    def test_preference_saved_before_binding_reuses_legacy_text_or_dashboard_default(self):
+        envfile = self.root / "account.env"
+        envfile.write_text("SILICONFLOW_API_KEY=fixture\n")
+        for value in ("", "低成本"):
+            with self.subTest(value=value):
+                project = self.root / ("default" if not value else "legacy")
+                project.mkdir()
+                registry = project_registry(project)
+                if value:
+                    registry.mkdir(parents=True)
+                    with closing(sqlite3.connect(registry / "model-policy.sqlite3")) as db, db:
+                        db.execute("CREATE TABLE policy (id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
+                        db.execute("INSERT INTO policy VALUES (1, ?)", (json.dumps(
+                            {"revision": 3, "selected": {}, "banned": [], "preference": value}),))
+                else:
+                    ModelBoard(registry, "test", project).apply({"action": "preference", "value": "", "revision": 0})
+                self.assertNotIn("model_preference_setup", self.invoke("--configure-provider-env", envfile, "--workspace", project))
+                self.assertNotIn("model_preference_setup", self.start(project))
+                self.assertEqual(read_policy(registry)["preference"], value)
+
+    def test_preference_offer_survives_broken_pipe_and_racing_bind_start(self):
+        self.invoke("--bind-project", "--workspace", self.project)
+        env = {**self.env, "SILICONFLOW_API_KEY": "test-token"}
+        with patch.dict(os.environ, env), patch("builtins.print", side_effect=BrokenPipeError):
+            with self.assertRaises(BrokenPipeError):
+                print_host_start({"workspace": str(self.project)})
+        envfile = self.root / "account.env"
+        envfile.write_text("SILICONFLOW_API_KEY=fixture\n")
+        with ThreadPoolExecutor(max_workers=2) as threads:
+            bind = threads.submit(self.invoke, "--configure-provider-env", envfile, "--workspace", self.project)
+            start = threads.submit(self.start, env=env)
+        self.assertEqual(sum("model_preference_setup" in item.result() for item in (bind, start)), 1)
+        self.assertNotIn("model_preference_setup", self.start())
 
     def test_skip_allows_implicit_remote_defaults_and_pins_to_fall_back_to_host(self):
         for fixed in ("default", "pin"):

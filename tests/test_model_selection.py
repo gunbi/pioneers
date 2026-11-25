@@ -61,6 +61,12 @@ class ModelRankingTest(unittest.TestCase):
                          ["v/c:free", "v/b", "v/a", "free-model"])
         self.assertEqual(models(rank_candidates(rows, task(), "text", {"preference": "仅免费"})), ["v/c:free"])
 
+    def test_speed_and_quality_answers_change_the_order_for_the_same_task(self):
+        rows = {"openrouter": [chat("v/a", description="flagship"), chat("v/b", description="low latency")]}
+        for preference, expected in (("优先质量", "v/a"), ("优先速度", "v/b"), ("速度优先", "v/b")):
+            with self.subTest(preference=preference):
+                self.assertEqual(models(rank_candidates(rows, task(), "text", {"preference": preference}))[0], expected)
+
     def test_fee_proof_matches_the_generation_mode_and_rejects_ambiguous_skus(self):
         token_zeros = {"prompt": "0", "completion": "0"}
         for mode, kind, key in [("image", "text-to-image", "image_output"),
