@@ -170,6 +170,7 @@ class Progress:
                 "id": task_id,
                 "role": tasks[task_id]["role"],
                 "prompt": tasks[task_id]["prompt"],
+                "planned_skills": list(dict.fromkeys(tasks[task_id].get("skills", []))),
                 "depends_on": tasks[task_id].get("depends_on", []),
                 "state": "pending",
                 "activity": "等待执行",

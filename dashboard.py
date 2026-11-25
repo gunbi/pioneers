@@ -15,6 +15,7 @@ from time import monotonic
 from urllib.parse import quote, urlsplit
 import webbrowser
 
+from capabilities import REGISTRY
 from iterations import iteration_summary, project_snapshot, registered_run
 from progress import STATUS_LABELS, artifact_name
 from dispatch import dispatch_summary, workflow_path
@@ -37,7 +38,7 @@ def preview_origin(value):
     return f"https://{match[1]}" + (f":{port}" if port != 443 else "")
 
 
-def collaboration_flow(data):
+def collaboration_flow(data, planned=None):
     tasks = data["tasks"]
     events = data.get("events", [])
     nodes = {}
@@ -59,6 +60,20 @@ def collaboration_flow(data):
         node = nodes[key]
         node["key"] = f"{key[0]}.{key[1]}"
         node["attempt"] = key[1]
+        job = tasks[key[0]]
+        node.pop("skill_attempts", None)
+        node.pop("planned_skills", None)
+        usage = job.get("skill_attempts", {}).get(str(key[1]))
+        if usage is not None:
+            node["skill_usage"] = usage
+        elif key[1] == job.get("attempt", 1) or not data.get("workflow_revision"):
+            # Unrevised workflows also describe older attempts. A later plan cannot prove
+            # what was loaded for an earlier attempt.
+            skills = job.get("planned_skills")
+            if skills is None and planned and key[0] in planned:
+                skills = planned[key[0]].get("skills", [])
+            if isinstance(skills, list) and all(isinstance(s, str) and re.fullmatch(r"[a-z0-9_-]+", s) for s in skills):
+                node["skill_usage"] = {"planned": list(dict.fromkeys(skills))}
     for key in ordered:
         node = nodes[key]
         if node["state"] != "returned":
@@ -458,13 +473,20 @@ def dashboard_server(run_dir, port, control=None, *, cloud_origin=None, project=
                     snapshot["read_only"] = True
                 if cloud_origin and self.can_control(target_run):
                     snapshot["cloud_control"] = True
-                snapshot["flow"] = flow_with_approvals(collaboration_flow(snapshot), snapshot.get("decisions", {}))
+                try:
+                    plan_path = workflow_path(target_run, snapshot)
+                    workflow = {} if plan_path.is_symlink() else json.loads(plan_path.read_bytes())
+                    planned = {task["id"]: task for task in workflow.get("tasks", [])}
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                    planned = {}
+                snapshot["flow"] = flow_with_approvals(collaboration_flow(snapshot, planned), snapshot.get("decisions", {}))
+                used = {skill for node in snapshot["flow"]["nodes"]
+                        for skills in node.get("skill_usage", {}).values() for skill in skills}
+                snapshot["skill_catalog"] = {
+                    skill: {"label": spec.get("label", skill), "description": spec["description"]}
+                    for skill, spec in REGISTRY["skills"].items() if skill in used
+                }
                 if snapshot["mode"] in ("host", "live"):
-                    try:
-                        workflow = json.loads(workflow_path(target_run, snapshot).read_bytes())
-                        planned = {task["id"]: task for task in workflow["tasks"]}
-                    except (OSError, json.JSONDecodeError):
-                        planned = {}
                     tasks = {key: task for key, task in planned.items() if key in snapshot["tasks"]}
                     tasks.update({key: job for key, job in snapshot["tasks"].items() if key not in tasks})
                     snapshot["dispatch"] = dispatch_summary(snapshot, tasks)

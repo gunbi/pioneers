@@ -106,10 +106,15 @@ class MediaDispatchTest(unittest.TestCase):
             resolve_route(self.project, self.task, "coder", isolated=False)
 
     def test_paid_speech_dispatch_excludes_context_and_publishes_usage_and_bytes(self):
+        self.task["skills"] = ["engineering-design"]
         self.setup_run("speech")
         self.assertEqual(self.claim()["sandbox"], "read-only")
         request = json.loads((self.run / ".model-art-1.json").read_text())
         self.assertNotIn("Project context", json.dumps(request))
+        usage = Progress.open(self.run).data["tasks"]["art"]["skill_attempts"]["1"]
+        self.assertEqual(usage, {"planned": ["engineering-design"], "loaded": [], "reported": []})
+        with self.assertRaisesRegex(ValueError, "native host"):
+            update_host(self.run, "art", "running", "生成中", None, 1, used_skills=["engineering-design"])
         self.assertEqual(request["route"]["voice"], "alice")
         with patch("pioneers.supervise_host_executor", self.executor), redirect_stdout(StringIO()), patch(
                 "generated_media.generate", return_value=(MP3, "audio/mpeg", {"prompt_tokens": 7, "extra": "omit"})) as submit:

@@ -255,6 +255,34 @@ class ApprovalTest(unittest.TestCase):
         return self.cli("--host-checkpoint", self.run_dir, "--task", task, "--attempt", attempt,
                         "--artifact", self.artifact)
 
+    def test_dashboard_skill_provenance_follows_claim_report_and_retry(self):
+        planned, extra = "requirements-design", "customer-journey-mapping"
+        self.host([self.task("analysis", skills=[planned])])
+        def snapshot():
+            with urlopen(self.started["dashboard_url"] + "dashboard-data.json", timeout=2) as result:
+                view = json.load(result)
+            return {n["key"]: n.get("skill_usage") for n in view["flow"]["nodes"]}, view["skill_catalog"]
+
+        self.assertEqual(snapshot()[0]["analysis.1"], {"planned": [planned]})
+        self.assertIn("--used-skill", self.claim("analysis")["prompt"])
+        running = ("--host-report", self.run_dir, "--task", "analysis", "--state", "running", "--activity", "分析需求")
+        self.cli(*running, "--attempt", 1, "--used-skill", extra, "--used-skill", extra)
+        self.cli(*running, "--attempt", 1, "--used-skill", extra)
+        usage = {"planned": [planned], "loaded": [planned], "reported": [extra]}
+        stages, catalog = snapshot()
+        self.assertEqual(stages["analysis.1"], usage)
+        self.assertEqual(set(catalog), {planned, extra})
+        self.assertEqual(set(catalog[extra]), {"label", "description"})
+        self.cli(*running, "--attempt", 1, "--used-skill", "product-experience-design", "--used-skill", "test-engineering", code=1)
+        self.cli(*running, "--used-skill", extra, code=2)
+        self.assertEqual(snapshot()[0]["analysis.1"], usage)
+        self.cli("--host-report", self.run_dir, "--task", "analysis", "--attempt", 1, "--state", "lost", "--activity", "重派")
+        self.claim("analysis")
+        self.cli(*running, "--attempt", 1, "--used-skill", planned, code=1)
+        stages, _ = snapshot()
+        self.assertEqual(stages["analysis.1"], usage)
+        self.assertEqual(stages["analysis.2"], {"planned": [planned], "loaded": [planned], "reported": []})
+
     def test_host_prefers_original_member_and_carries_execution_history(self):
         self.host([self.task("analysis"), self.task("other"), self.task("handoff")])
         claim = lambda task, *member: self.cli("--host-claim", self.run_dir, "--task", task, *member)

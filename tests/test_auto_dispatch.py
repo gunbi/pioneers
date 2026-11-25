@@ -51,7 +51,7 @@ class AutomaticDispatchTest(unittest.TestCase):
         return update_host(self.run, task, None, None, None, None, **kwargs)
 
     def test_ready_shares_catalog_and_cli_selects_from_ranked_candidates(self):
-        self.setup_run()
+        self.setup_run(skills=["requirements-design"])
         ready = host_ready(self.run)
         self.lookup.assert_called_once()
         low, high = ready["ready"]
@@ -63,6 +63,10 @@ class AutomaticDispatchTest(unittest.TestCase):
         with patch("sys.argv", argv), redirect_stdout(io.StringIO()) as output:
             self.assertEqual(main(), 0)
         chosen = json.loads(output.getvalue())["executor"]
+        request = json.loads((self.run / ".model-low-1.json").read_text())
+        self.assertIn("本任务的 Skill requirements-design", request["prompt"])
+        self.assertEqual(Progress.open(self.run).data["tasks"]["low"]["skill_attempts"]["1"]["loaded"],
+                         ["requirements-design"])
         self.assertEqual(chosen["model"], "org/deep/reasoner:free")
         self.assertIn("宿主", chosen["reason"])
         self.assertEqual(read_policy(self.registry)["revision"], 0)

@@ -16,6 +16,18 @@ from pioneers import control_run, create_run, load_workflow, plan_workflow, proj
 
 
 class DeliveryLoopTest(unittest.TestCase):
+    def test_legacy_flow_reports_only_recoverable_plans(self):
+        job = {"role": "qa", "state": "pending", "attempt": 2, "depends_on": []}
+        data = {"tasks": {"check": job}, "events": [{"task": "check", "attempt": 1, "state": "interrupted"}]}
+        self.assertTrue(all("skill_usage" not in n for n in collaboration_flow(data)["nodes"]))
+        plan = {"check": {"skills": ["acceptance-testing"]}}
+        self.assertEqual([n["skill_usage"] for n in collaboration_flow(data, plan)["nodes"]],
+                         [{"planned": ["acceptance-testing"]}] * 2)
+        data["workflow_revision"] = 2
+        first, current = collaboration_flow(data, plan)["nodes"]
+        self.assertNotIn("skill_usage", first)
+        self.assertEqual(current["skill_usage"], {"planned": ["acceptance-testing"]})
+
     def test_workflow_diagram_places_approvals_on_dependency_path(self):
         flow = {"nodes": [{"key": key} for key in ("plan.1", "execute.1", "release")],
                 "edges": [{"from": "plan.1", "to": "execute.1", "kind": "waiting"},
@@ -257,6 +269,8 @@ class DeliveryLoopTest(unittest.TestCase):
             snapshot = json.loads((run_dir / "status.json").read_text())
             self.assertEqual(snapshot["state"], "completed")
             self.assertEqual(snapshot["tasks"]["ios"]["depends_on"], ["requirements"])
+            for task in planned:
+                self.assertEqual(snapshot["tasks"][task["id"]]["skill_attempts"]["1"]["loaded"], task["skills"])
             self.assertTrue(all(task["state"] == "completed" for task in snapshot["tasks"].values()))
 
     def test_live_executor_retries_before_completion(self):

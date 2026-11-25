@@ -1580,6 +1580,9 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
             raise ValueError("视频已有供应商回执，请用原模型查询或人工核对交付物")
     if progress.data["mode"] == "host":
         execution = {"provider": "host"}
+        if not route:
+            assignment["prompt"] += ("\n实际使用 Skill 后，在本轮 --host-report 中带上 --attempt 和 --used-skill ID。"
+                                     "使用多项时重复 --used-skill。")
         if fallback_reason:
             execution["reason"] = fallback_reason
         if route:
@@ -1614,6 +1617,12 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
         expires = time.time() + HOST_LEASE_SECONDS
         tasks[task_id]["lease_expires_at"] = expires
         assignment.update(lease_expires_at=expires, lease_seconds=HOST_LEASE_SECONDS)
+    planned_skills = list(dict.fromkeys(task.get("skills", [])))
+    # Media workers receive only the creative brief. Other assignments carry the Skill text.
+    loaded_skills = [] if route and route["mode"] in ("video", *MEDIA_MODES) else planned_skills
+    job.setdefault("skill_attempts", {})[str(assignment["attempt"])] = {
+        "planned": planned_skills, "loaded": loaded_skills, "reported": [],
+    }
     progress.task(task_id, "running", "LD 已领取任务，等待执行端反馈", announce=False)
     return assignment
 
@@ -1628,11 +1637,24 @@ def active_assignment(job, task_id, attempt):
         raise ValueError(f"Task {task_id} has an expired lease; check --host-ready for recovery")
 
 
-def report_task(progress, workflow_tasks, task_id, state, activity, result, attempt):
+def report_task(progress, workflow_tasks, task_id, state, activity, result, attempt, *, used_skills=()):
     tasks = progress.data["tasks"]
     job = tasks[task_id]
     active_assignment(job, task_id, attempt)
     current_attempt = job.get("attempt", 1)
+    if used_skills:
+        if attempt is None:
+            raise ValueError("Reporting Skill use requires the active --attempt")
+        executor = job.get("executors", {}).get(str(attempt), {})
+        if executor.get("provider", "host") != "host":
+            raise ValueError("Only a native host assignment can report on-demand Skill use")
+        allowed = assigned_capabilities(job["role"])["skills"]
+        if any(skill not in allowed for skill in used_skills):
+            raise ValueError("Reported Skill must be assigned to this task's role")
+        records = job.setdefault("skill_attempts", {})
+        # An upgraded runner may accept a report from a task claimed by an older version.
+        usage = records.setdefault(str(attempt), {"planned": list(dict.fromkeys(workflow_tasks[task_id].get("skills", [])))})
+        usage["reported"] = list(dict.fromkeys([*usage.get("reported", []), *used_skills]))
     if state == "running" and progress.data["mode"] == "host":
         job["lease_expires_at"] = time.time() + HOST_LEASE_SECONDS
         if activity is None:
@@ -1914,7 +1936,8 @@ def execute_live(tasks, order, executor, progress):
                 raise
 
 
-def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=None, member_name=None, profile=None, model_choice=None):
+def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=None, member_name=None, profile=None, model_choice=None,
+                *, used_skills=()):
     run_dir = run_dir.resolve(strict=True)
     if state is None:
         data = Progress.open(run_dir).data
@@ -1964,7 +1987,7 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
             record_execution(job, json.loads(result))
             job["lease_expires_at"] = time.time() + HOST_LEASE_SECONDS
             return {"task": task_id, "attempt": attempt, "lease_expires_at": job["lease_expires_at"]}
-        return report_task(progress, tasks, task_id, state, activity, result, attempt)
+        return report_task(progress, tasks, task_id, state, activity, result, attempt, used_skills=used_skills)
 
 
 HOST_EXECUTOR_STOP_GRACE_SECONDS = 2
@@ -2513,6 +2536,8 @@ def main():
     parser.add_argument("--state", choices=("running", "completed", "failed", "blocked", "lost", "publishing", "published", "publish_failed"),
                         help="New state for --host-report or --release.")
     parser.add_argument("--activity", help="Concrete current action or result for --host-report.")
+    parser.add_argument("--used-skill", action="append", metavar="ID",
+                        help="Skill actually used by the host member in this attempt. Repeat for multiple Skills.")
     parser.add_argument("--attempt", type=int, help="Attempt returned by --host-claim, required when reporting a retry.")
     parser.add_argument("--decision", action="append", help="Decision ID. Repeat for selective confirmation.")
     parser.add_argument("--all", action="store_true", help="Confirm all decisions currently waiting for a person.")
@@ -2613,6 +2638,8 @@ def main():
         parser.error("--host-checkpoint requires --artifact containing a JSON event")
     if args.recovery_checks is not None and not args.recover:
         parser.error("--recovery-checks requires --recover")
+    if args.used_skill and (not args.host_report or not args.attempt or args.attempt < 1):
+        parser.error("--used-skill requires --host-report and an explicit positive --attempt")
     if args.host_report and (args.state not in ("running", "completed", "failed", "blocked", "lost") or not (args.activity or "").strip()):
         parser.error("--host-report requires a task state and a non-empty --activity")
     if args.host_report and args.state == "lost" and (not args.attempt or args.attempt < 1):
@@ -2749,7 +2776,7 @@ def main():
             activity = None if args.host_heartbeat else (args.activity or "").strip()[:1000]
             result = update_host(args.host_claim or args.host_report or args.host_heartbeat or args.host_checkpoint, args.task, state,
                                  activity, args.artifact, args.attempt,
-                                 args.member, args.member_name, args.profile, args.model_choice)
+                                 args.member, args.member_name, args.profile, args.model_choice, used_skills=args.used_skill)
             print(json.dumps(result, ensure_ascii=False))
             return 0
         if args.release is not None:
