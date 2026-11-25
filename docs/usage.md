@@ -293,7 +293,15 @@ python3 pioneers.py --host-exec RUN_DIR --task requirements --attempt 1
 }
 ```
 
-看板服务、领取和执行远端任务的进程按供应商从环境读取 `SILICONFLOW_API_KEY` 或 `OPENROUTER_API_KEY`。可将两个变量保存在同一份本机环境文件，在启动看板和派工进程前导出。模型配置只保存供应商和型号。在项目看板打开「模型管理」可搜索账号的完整目录、按能力筛选、指定模型、禁用或解禁、保存选型倾向。同一项目的迭代共享这些设置。单轮看板也提供项目模型页的只读入口。
+宿主收到密钥文件路径后，先为交付项目绑定这份文件。文件中可各占一行填写 `SILICONFLOW_API_KEY=...` 和 `OPENROUTER_API_KEY=...`，只配置一个提供商时填写对应的一行即可。下例使用本机路径。
+
+```bash
+python3 pioneers.py --configure-provider-env "$HOME/env/apikey.env" --workspace PROJECT
+```
+
+绑定后，看板和新启动的派工命令都从这份文件读取该项目的提供商凭据。只在本机用户配置中保存文件路径。可以更新文件中的密钥，或再次运行绑定命令改用另一份文件。在「模型管理」中刷新目录即可核对结果。首次从旧版本升级时，将旧看板服务在原端口重启一次，沿用原项目与运行记录。执行 `python3 pioneers.py --clear-provider-env --workspace PROJECT` 可解除绑定，恢复从进程环境读取凭据。
+
+在项目看板打开「模型管理」可搜索账号的完整目录、按能力筛选、指定模型、禁用或解禁、保存选型倾向。同一项目的迭代共享这些设置。单轮看板也提供项目模型页的只读入口。
 
 SiliconFlow 目录从不附加类型筛选的 `GET /v1/models` 获取，再用分类查询标注能力。派工时才检查要执行的具体能力，例如文本查 `sub_type=chat`，文生视频查 `sub_type=text-to-video`。目录刷新失败时仍显示上次成功的数据和时间。[官方模型目录 API](https://api-docs.siliconflow.cn/docs/api/models-get)
 

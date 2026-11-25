@@ -293,7 +293,15 @@ To set a default for a task type, specify video parameters, or provide a trusted
 }
 ```
 
-The dashboard and the processes that claim or execute remote tasks read `SILICONFLOW_API_KEY` or `OPENROUTER_API_KEY` from the environment according to provider. Store both variables in the same local environment file if desired, and export them before starting the dashboard and dispatch processes. The model configuration stores provider and model information without credentials. In the dashboard's model management page (模型管理), search the account's full catalog, filter by capability, pin models, ban or unban them, and save selection preferences. Iterations of the same project share these settings. The single-run dashboard also has a read-only link to the project's models page.
+When the user supplies a credential file, bind it to the delivery project on the machine that runs Pioneers. The file can contain `SILICONFLOW_API_KEY=...` and `OPENROUTER_API_KEY=...` on separate lines. To configure one provider, include its line only.
+
+```bash
+python3 pioneers.py --configure-provider-env "$HOME/env/apikey.env" --workspace PROJECT
+```
+
+The dashboard and new dispatch commands read the project's provider credentials from the bound file. Only its path is saved in the local user's configuration. Update the keys in the file or repeat the binding command to switch files. Refresh the catalog in Model Management to verify the result. When upgrading a dashboard started with an older release, restart that service once on the original port with the same project and run records. Use `python3 pioneers.py --clear-provider-env --workspace PROJECT` to remove the binding and resume using process environment variables.
+
+On the dashboard's model management page (模型管理), search the account's full catalog, filter by capability, pin models, ban or unban them, and save selection preferences. Iterations of the same project share these settings. The single-run dashboard also has a read-only link to the project's models page.
 
 SiliconFlow's catalog starts with `GET /v1/models` without a type filter. Category queries annotate capabilities. Dispatch checks the particular capability required, such as `sub_type=chat` for text and `sub_type=text-to-video` for text-to-video. If refreshing fails, the dashboard retains the last successful catalog and its timestamp. [Official catalog API](https://api-docs.siliconflow.cn/docs/api/models-get)
 
