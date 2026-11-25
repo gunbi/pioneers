@@ -126,6 +126,7 @@ class FirstProviderSetupTest(unittest.TestCase):
         preset = first["presets"][0]
         self.assertEqual(preset["id"], "siliconflow-quality")
         self.assertIn(preset["label"], first["question"])
+        self.assertIn("允许选择收费模型", first["question"])
         board = ModelBoard(project_registry(self.project), "test", self.project)
         args = ("--set-model-preset", preset["id"], "--workspace", self.project, "--policy-revision")
         self.assertEqual(self.invoke(*args, first["revision"])["preset"], preset["id"])

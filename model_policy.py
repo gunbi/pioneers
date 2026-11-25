@@ -100,7 +100,7 @@ def offer_model_preference(registry, providers=()):
         choices = "、".join("「" + preset["label"] + "」" for preset in presets)
         question = "这个项目希望怎么选模型？"
         if choices:
-            question += f"可以选内置策略{choices}，按任务类型优先使用推荐型号。"
+            question += f"可以选内置策略{choices}，按任务类型优先使用推荐型号，允许选择收费模型。"
         question += "可以说「仅免费」「优先速度」或「优先质量」，也可以使用默认策略（免费和收费模型都可选）。"
         offer = {"action": "ask", "revision": policy["revision"], "question": question}
         if presets:
