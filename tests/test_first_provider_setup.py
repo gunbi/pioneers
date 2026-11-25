@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -9,7 +10,8 @@ import unittest
 from unittest.mock import patch
 
 from model_policy import update_policy
-from pioneers import project_registry, update_host
+from pioneers import print_host_start, project_registry, update_host
+from provider_credentials import PROVIDER_SETUP
 
 
 class FirstProviderSetupTest(unittest.TestCase):
@@ -129,8 +131,35 @@ class FirstProviderSetupTest(unittest.TestCase):
         self.assertEqual(sum("provider_setup" in result for result in starts), 1)
         # Simulate a registry from before onboarding without changing its real run history.
         registry = self.project / ".pioneers" / "iterations"
-        (registry / "provider-setup.json").unlink()
+        (registry / PROVIDER_SETUP).unlink()
         self.assertNotIn("provider_setup", self.start())
+
+    def test_failed_start_or_startup_output_keeps_question_for_retry(self):
+        command = [sys.executable, "-B", str(self.cli), "--host-start", str(self.workflow),
+                   "--workspace", str(self.project), "--output-dir", str(self.root / "runs"), "--no-open-browser"]
+        with socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            failed = subprocess.run([*command, "--port", str(occupied.getsockname()[1])], text=True, env=self.env,
+                                    capture_output=True, stdin=subprocess.DEVNULL, timeout=10)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertEqual(failed.stdout.strip(), "")
+
+        # A broken coordinator pipe must roll back the in-flight response too.
+        with patch.dict(os.environ, self.env), patch("builtins.print", side_effect=BrokenPipeError):
+            with self.assertRaises(BrokenPipeError):
+                print_host_start({"workspace": str(self.project)})
+        with subprocess.Popen([*command, "--port", "0", "--serve-dashboard"], text=True, env=self.env,
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as retry:
+            try:
+                started = json.loads(retry.stdout.readline())
+                self.assertEqual(started["provider_setup"]["action"], "ask")
+                self.assertTrue(started["dashboard_url"])
+                # Query before stopping the server so it commits its callback normally.
+                self.assertNotIn("provider_setup", self.start())
+            finally:
+                retry.terminate()
+                retry.communicate(timeout=5)
 
     def test_sibling_worktree_uses_same_first_run_decision(self):
         subprocess.run(["git", "init", "-q", str(self.project)], check=True)

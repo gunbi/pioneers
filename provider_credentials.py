@@ -1,6 +1,6 @@
 """Local, per-project credential-file bindings for provider requests."""
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -8,17 +8,16 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import stat
 import tempfile
 from typing import Optional
-
-from skill_sources import read_json, write_json
 
 _active = ContextVar("pioneers_provider_credentials", default=None)
 _assignment = re.compile(r"(?:export[ \t]+)?([A-Za-z_][A-Za-z_0-9]*)[ \t]*=[ \t]*(.*)")
 _value = re.compile(r"""(?:"([^"]*)"|'([^']*)'|([^\s'"]+))\s*(?:\s\#.*)?""")
 _invalid_file = "Cannot read the configured provider env file. Check the file or configure it again."
-PROVIDER_SETUP = "provider-setup.json"
+PROVIDER_SETUP = "provider-setup.sqlite3"
 
 
 def _binding(registry):
@@ -155,30 +154,61 @@ def has_provider_credentials():
     return False
 
 
+def _setup_path(registry):
+    path = registry / PROVIDER_SETUP
+    if registry.is_symlink() or path.is_symlink():
+        raise ValueError("Provider setup state must be local to the project registry")
+    return path
+
+
+@contextmanager
+def _setup_transaction(registry):
+    path = _setup_path(registry)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("CREATE TABLE IF NOT EXISTS setup (id INTEGER PRIMARY KEY, state TEXT NOT NULL)")
+        yield db
+
+
+def prepare_provider_setup(registry):
+    """Remember the project was new before registering its first run."""
+    with _setup_transaction(registry) as db:
+        db.execute("INSERT OR IGNORE INTO setup VALUES (1, 'pending')")
+
+
 def skipped_without_credentials():
     current = _active.get()
-    return (current is not None and
-            read_json(current.registry / PROVIDER_SETUP).get("state") == "skipped" and not has_provider_credentials())
+    if current is None or not (path := _setup_path(current.registry)).is_file():
+        return False
+    with closing(sqlite3.connect(path)) as db:
+        # A reader can arrive before the first schema transaction commits.
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='setup'").fetchone():
+            return False
+        skipped = db.execute("SELECT 1 FROM setup WHERE id=1 AND state='skipped'").fetchone()
+    return bool(skipped) and not has_provider_credentials()
 
 
+@contextmanager
 def offer_provider_setup(registry):
-    """Emit a host conversation prompt at most once, even for concurrent first runs."""
-    with project_credentials(registry):
-        if has_provider_credentials():
-            return None
-    # Startup has already registered this run. Concurrent starts may both have
-    # observed an empty history, but only one of them can create the receipt.
-    try:
-        with (registry / PROVIDER_SETUP).open("x", encoding="utf-8") as record:
-            json.dump({"state": "offered"}, record)
-    except FileExistsError:
-        return None
-    return {"action": "ask", "question": "这个项目还没有配置模型提供商。要现在配置 API Key 吗？可以提供本机密钥文件路径，或跳过并直接使用宿主。"}
+    """Commit the first-run decision only after the host startup JSON is emitted."""
+    if not _setup_path(registry).is_file():  # Projects with only pre-onboarding history.
+        yield None
+        return
+    with _setup_transaction(registry) as db:
+        if not db.execute("SELECT 1 FROM setup WHERE id=1 AND state='pending'").fetchone():
+            db.commit()
+            yield None
+            return
+        with project_credentials(registry):
+            configured = has_provider_credentials()
+        db.execute("UPDATE setup SET state=? WHERE id=1", ("configured" if configured else "offered",))
+        yield None if configured else {"action": "ask", "question": "这个项目还没有配置模型提供商。要现在配置 API Key 吗？可以提供本机密钥文件路径，或跳过并直接使用宿主。"}
 
 
 def skip_provider_setup(registry):
-    registry.mkdir(parents=True, exist_ok=True)
-    write_json(registry / PROVIDER_SETUP, {"state": "skipped"})
+    with _setup_transaction(registry) as db:
+        db.execute("INSERT OR REPLACE INTO setup VALUES (1, 'skipped')")
     return {"provider_setup": "skipped"}
 
 

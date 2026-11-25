@@ -36,7 +36,9 @@ from model_plugins import (
 )
 import generated_media
 from model_policy import MEDIA_MODES, read_policy
-from provider_credentials import configure_provider_env, offer_provider_setup, project_credentials, skip_provider_setup, skipped_without_credentials
+from provider_credentials import (
+    configure_provider_env, offer_provider_setup, prepare_provider_setup, project_credentials, skip_provider_setup, skipped_without_credentials,
+)
 
 
 @dataclass(frozen=True)
@@ -1336,7 +1338,8 @@ def start_host(workflow_path, output_dir, workspace, require_release):
     binding = bind_project(workspace)
     git_base = host_worktree_base(workspace)
     registry = project_registry(workspace)
-    first_delivery = not has_delivery_history(registry)
+    if not has_delivery_history(registry):
+        prepare_provider_setup(registry)
     run_dir, progress = create_run(output_dir, goal, tasks, order, "host", require_release)
     (run_dir / "workflow.json").write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     progress.data["workspace"] = str(workspace)
@@ -1350,13 +1353,17 @@ def start_host(workflow_path, output_dir, workspace, require_release):
     refresh_run_skills(progress)
     port = active_project_port(registry, run_dir)
     project_url = f"http://127.0.0.1:{port}/" if port else None
-    result = {"run_dir": str(run_dir), "project_dashboard_url": project_url,
-              "project_run_url": f"{project_url}runs/{run_dir.name}/" if project_url else None,
-              "workspace": str(workspace), "project_rules": binding["project_rules"],
-              "tasks": progress.data["tasks"], "skill_sources": progress.data["skill_sources"]}
-    if first_delivery and (offer := offer_provider_setup(registry)):
-        result["provider_setup"] = offer
-    return result
+    return {"run_dir": str(run_dir), "project_dashboard_url": project_url,
+            "project_run_url": f"{project_url}runs/{run_dir.name}/" if project_url else None,
+            "workspace": str(workspace), "project_rules": binding["project_rules"],
+            "tasks": progress.data["tasks"], "skill_sources": progress.data["skill_sources"]}
+
+
+def print_host_start(result):
+    with offer_provider_setup(project_registry(Path(result["workspace"]))) as offer:
+        if offer:
+            result = {**result, "provider_setup": offer}
+        print(json.dumps(result, ensure_ascii=False), flush=True)
 
 
 def run_dashboard_project(data):
@@ -1409,7 +1416,7 @@ def serve_run_dashboard(run_dir, args, result=None):
         if result is None:
             announce(url)
         else:
-            print(json.dumps({**result, "dashboard_url": url}, ensure_ascii=False), flush=True)
+            print_host_start({**result, "dashboard_url": url})
 
     serve_dashboard(run_dir, args.port, control=control_run, on_ready=on_ready,
                     open_browser=args.open_browser, cloud_origin=args.dashboard_origin,
@@ -2699,7 +2706,7 @@ def main():
         if args.host_start is not None:
             result = start_host(args.host_start, args.output_dir, workspace, args.require_release)
             if args.register_only:
-                print(json.dumps(result, ensure_ascii=False))
+                print_host_start(result)
             else:
                 serve_run_dashboard(Path(result["run_dir"]), args, result)
             return 0
