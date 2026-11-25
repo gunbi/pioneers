@@ -35,7 +35,9 @@
 
 用户已在对话中给出提供商密钥文件时，先执行 `python3 pioneers.py --configure-provider-env FILE --workspace PROJECT`，将 `FILE` 换成用户给出的路径。用户已明确说本项目跳过时，执行 `python3 pioneers.py --skip-provider-setup --workspace PROJECT`，直接用宿主派工。密钥文件须在运行 Pioneers 的机器上可读；只接收文件路径，不让用户在聊天中粘贴密钥。
 
-首次 `--host-start` 返回 `provider_setup.action` 为 `ask` 时，在首次派工前随看板地址把 `provider_setup.question` 问给用户一次，等用户明确选择。收到路径就执行绑定，在「模型管理」核对连接；路径有误时让用户更正或跳过。收到跳过就登记并继续派工。重开会话时沿用已给出的答复。启动结果没有这项提示时，直接按现有配置派工。
+首次 `--host-start` 返回 `provider_setup.action` 为 `ask` 时，在首次派工前随看板地址向用户询问 `provider_setup.question`。收到路径就执行绑定，路径有误时让用户更正或跳过。用户跳过提供商时，记录选择并用宿主继续。
+
+在 `--configure-provider-env` 和 `--host-start` 的结果中检查 `model_preference_setup`。若 `action` 为 `ask`，在派工前用用户的语言询问 `question`。如果用户给密钥路径时已经说了选模倾向，直接使用原话。用 `python3 pioneers.py --set-model-preference "仅免费" --policy-revision N --workspace PROJECT` 保存答复，将示例文字换成用户的倾向，`N` 取提示中的 `revision`。明确回复「默认」或「跳过偏好」时，传入空字符串 `""`，这会允许免费和收费模型。若提示版本冲突，先核对看板中较新的选择，再和用户确认是否修改。项目已有答复时沿用，后续可在「模型管理 → 派工策略 → 用户偏好」更新。
 
 为项目复用一个运营看板。先用 `--project-history --workspace PROJECT` 查询运行和上一轮已交付摘要，LD 规划时核对当前代码、决策、验收和遗留事项。若项目看板尚未启动，用 `--project-dashboard --workspace PROJECT --detach` 独立启动，保留命令返回的地址和 PID，默认端口 8790。已使用其他固定端口或云端私有预览时，复用现有入口。仅恢复或介入已有迭代时保留原运行目录。
 
