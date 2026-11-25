@@ -138,12 +138,15 @@ dl.metrics { display:flex; flex-wrap:wrap; gap:1.2rem 2rem; padding:.65rem 0; ma
       <div class="section-heading"><h3>用户偏好</h3></div>
       <label for="preference">选型倾向</label><textarea id="preference" maxlength="1000" placeholder="例如：日常文案优先快速模型，或仅免费。"></textarea>
       <div class="controls"><button class="primary" id="save-preference">保存偏好</button></div>
+      <div class="section-heading"><h3>提供商派工</h3></div>
+      <p class="hint">禁用将覆盖该提供商当前和后续新增的型号。恢复时，单独禁用的型号仍保持禁用。</p>
+      <div id="policy-providers" class="chips"></div>
       <div class="section-heading"><h3>已禁用模型</h3></div><div id="banned" class="chips"></div>
       <div class="section-heading"><h3>宿主如何选择</h3></div>
       <ol>
         <li>独立 QA、浏览器等工具和外部操作由宿主执行。远端补丁需要隔离工作区、明确的文件范围和项目测试命令。</li>
         <li>远端派工先用项目指定的型号，再看宿主选用的命名配置、匹配偏好的配置和项目默认。项目禁用规则始终生效。</li>
-        <li>没有固定选择时，从已配置供应商中按任务能力、复杂度和偏好推荐型号。宿主可挑一个，也可按推荐顺序领取。默认允许收费和免费型号。填写「仅免费」后，收费或价格未知的候选会被过滤，手选冲突会提示。</li>
+        <li>项目初始化时默认启用「SiliconFlow 优先、质量优先」。优先尝试其可用型号，再尝试其他提供商。可修改项目策略或为某类任务指定型号。「仅免费」会过滤收费和价格未知的型号。</li>
         <li>自动派工时，预检失败就试下一个，都不可用则交回宿主。已发出的请求按原执行记录恢复，可在任务明细查看选型依据。</li>
       </ol>
       <details><summary>项目已配置的模型</summary><div class="table-wrap"><table><thead><tr><th>配置</th><th>任务</th><th>模型</th><th>标签</th></tr></thead><tbody id="profiles"></tbody></table></div></details>
@@ -185,7 +188,8 @@ function identity(item) { return JSON.stringify([item.provider,item.model]); }
 function inventory() {
   return data.providers.flatMap(provider => provider.models.map(item => ({provider:provider.id, model:item.id, blocked:item.blocked, kinds:item.kinds || []})));
 }
-function forbidden(item) { return !!item.blocked || data.policy.banned.some(entry => identity(entry) === identity(item)); }
+function providerBanned(id) { return (data.policy.banned_providers || []).includes(id); }
+function forbidden(item) { return providerBanned(item.provider) || !!item.blocked || data.policy.banned.some(entry => identity(entry) === identity(item)); }
 function capabilities(item, kind = "") {
   const types = [];
   if ((!kind || kind === "chat") && item.kinds.includes("chat")) types.push("text", "patch");
@@ -238,6 +242,18 @@ function preserved(container, render) {
   render();
   if (focus) Array.from(container.querySelectorAll("[data-focus]")).find(item => item.dataset.focus === focus)?.focus({preventScroll:true});
 }
+function banReason(id) {
+  if (!providerBanned(id)) return "";
+  return data.policy.provider_ban_reasons?.[id] === "insufficient_credit"
+    ? "余额不足，已自动禁用。充值后可手动恢复。" : "本项目已禁用此提供商派工";
+}
+function providerToggle(id, label) {
+  const disabled=providerBanned(id), verb=disabled ? "恢复" : "禁用";
+  const button=btn(verb+label,()=>post({action:disabled ? "unban_provider" : "ban_provider",provider:id,revision:data.policy.revision}),
+    verb+" "+providerName(id)+" 派工");
+  button.dataset.focus="toggle-"+id;
+  return button;
+}
 function drawProviders() {
   el("provider-setup").hidden = data.providers.every(provider => provider.connected);
   const ids = data.providers.map(provider => provider.id);
@@ -253,12 +269,15 @@ function drawProviders() {
     const card=node("div",null,"provider");
     const info=node("div");
     info.append(node("h3",providerName(provider.id)));
+    if (providerBanned(provider.id)) info.append(node("p",banReason(provider.id),"reason"));
     const sync = provider.refreshing ? "正在同步目录…" : provider.updated_at ? "上次同步 " + localTime(provider.updated_at) : "尚未同步目录";
     info.append(node("p",(provider.connected ? "已配置凭证" : provider.public_catalog ? "公开目录 · 派工需配置凭证" : "未配置提供商凭证") + " · " + sync,"muted"));
     if (provider.error) info.append(node("p",provider.error,"reason"));
     const refresh=btn("刷新目录",()=>post({action:"refresh",provider:provider.id}),"刷新 "+providerName(provider.id)+" 目录");
     refresh.dataset.focus = provider.id;
-    card.append(info,refresh);
+    const actions=node("div",null,"row-actions");
+    actions.append(refresh,providerToggle(provider.id,"提供商"));
+    card.append(info,actions);
     return card;
   })));
 }
@@ -279,6 +298,10 @@ function modelRow(item, kind, directory, lastChild) {
     textCell(row,capabilities(item, kind).map(m=>modes[m]).join("、") || "暂无可派任务");
     const cell = textCell(row,null);
     const banned=data.policy.banned.some(entry=>identity(entry)===identity(item));
+    if (providerBanned(item.provider)) {
+      cell.append(node("span",banned ? "提供商及型号均已禁用" : "提供商已禁用","reason"));
+      return row;
+    }
     if (!banned && forbidden(item)) {
       cell.append(node("span","受项目禁用规则限制","reason"));
       return row;
@@ -387,7 +410,7 @@ el("apply-preset").onclick=()=>{
 };
 function drawRules() {
   const items=inventory();
-  const presets=data.model_presets || [], active=presets.find(item=>item.id===data.policy.preset);
+  const presets=data.model_presets || [], active=presets.find(item=>item.id===data.effective_preset);
   const picker=el("model-preset");
   el("preset-controls").hidden=!presets.length;
   picker.replaceChildren(new Option("通用自动选模",""),...presets.map(item=>new Option(item.label,item.id)));
@@ -397,17 +420,25 @@ function drawRules() {
     const select=el("select-"+mode), chosen=data.policy.selected[mode];
     const value=drafts.get(mode)?.value ?? (chosen ? identity(chosen) : "");
     const options=items.filter(item=>!forbidden(item)&&capabilities(item).includes(mode));
-    const recommended=active?.models[mode]?.[0];
+    const recommended=active && !providerBanned(active.provider) && active.models[mode]?.[0];
     select.replaceChildren(new Option(recommended ? "按策略优先 · "+recommended : "自动选择",""));
     for (const opt of options) select.add(new Option(providerName(opt.provider)+" · "+opt.model,identity(opt)));
     if (value && !options.some(item=>identity(item)===value)) {
       const [p,m]=JSON.parse(value);
-      select.add(new Option(providerName(p)+" · "+m+"（当前目录不可选）",value));
+      const reason=providerBanned(p) ? "提供商已禁用，暂停使用" : "当前目录不可选";
+      select.add(new Option(providerName(p)+" · "+m+"（"+reason+"）",value));
       select.lastElementChild.disabled=true;
     }
     select.value=value;
   }
   if (prefRevision == null) el("preference").value=data.policy.preference;
+  preserved(el("policy-providers"),()=>el("policy-providers").replaceChildren(
+    ...data.providers.map(provider=>{
+      const chip=node("div",null,"chip");
+      chip.append(providerToggle(provider.id," "+providerName(provider.id)));
+      if (providerBanned(provider.id)) chip.append(node("span",banReason(provider.id),"reason"));
+      return chip;
+    })));
   preserved(el("banned"),()=>el("banned").replaceChildren(...data.policy.banned.map(item=>{
     const chip=node("div",null,"chip"),name=item.model+" · "+providerName(item.provider);
     const remove=btn("解禁",()=>post({action:"unban",provider:item.provider,model:item.model,revision:data.policy.revision}),"解禁 "+name);
@@ -500,7 +531,7 @@ function draw() {
   el("project").textContent=data.project+" · 项目看板";
   el("readonly").hidden=!data.read_only;
   el("credential").hidden=data.read_only || !data.cloud_control || Boolean(key);
-  const catalog=JSON.stringify([data.providers,data.policy.banned,data.read_only]);
+  const catalog=JSON.stringify([data.providers,data.policy.banned,data.policy.banned_providers,data.policy.provider_ban_reasons,data.read_only]);
   if (catalog!==catalogStamp) {drawProviders();renderCatalog();catalogStamp=catalog;}
   const rules=JSON.stringify([catalog,data.policy,data.profiles,data.model_presets]);
   if (rules!==rulesStamp) {drawRules();rulesStamp=rules;}

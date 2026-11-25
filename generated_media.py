@@ -8,6 +8,7 @@ import re
 import stat
 
 from model_policy import MEDIA_MODES
+from provider_errors import InsufficientCreditError
 from skill_sources import write_json
 
 
@@ -122,7 +123,12 @@ def media_job(provider, route, prompt, run_dir, task, number, *, reuse_only=Fals
             json.dump(receipt, handle)
             handle.flush()
             os.fsync(handle.fileno())
-        data, mime, usage = generate(provider, route, prompt)
+        try:
+            data, mime, usage = generate(provider, route, prompt)
+        except InsufficientCreditError:
+            # Only the worker that reserved the receipt can release a rejected submission.
+            path.unlink()
+            raise
         _extension(mode, mime)
         if not _valid_content(data, mime):
             raise ValueError("媒体响应的文件内容或大小无效，请核对原请求")

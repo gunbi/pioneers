@@ -8,6 +8,7 @@ import re
 import time
 from urllib.parse import urlsplit
 
+from provider_errors import InsufficientCreditError
 from skill_sources import write_json
 
 
@@ -60,7 +61,13 @@ def video_job(provider, route, prompt, receipt_path, result):
             handle.flush()
             os.fsync(handle.fileno())
         result["video"] = {"state": "submitting"}
-        request_id = adapter.submit(provider, payload)
+        try:
+            request_id = adapter.submit(provider, payload)
+        except InsufficientCreditError:
+            # The authenticated submission was rejected before a job existed.
+            receipt_path.unlink()
+            result.pop("video", None)
+            raise
         if not valid_job_id(request_id):
             raise ValueError(f"{provider.name} 未返回有效的视频请求 ID，请人工核对提交结果。")
         receipt.update(state="submitted", request_id=request_id)

@@ -159,6 +159,16 @@ class AutomaticDispatchTest(unittest.TestCase):
         restored = self.claim()["executor"]
         self.assertEqual((restored["provider"], restored["model"]), ("siliconflow", same_id))
 
+    def test_project_default_also_applies_when_the_host_suggests_openrouter(self):
+        self.catalogs["siliconflow"] = [{"id": "deepseek-ai/DeepSeek-V4-Pro", "kinds": ["chat"]}]
+        self.setup_run()
+        with patch.dict(os.environ, SILICONFLOW_API_KEY="fixture"):
+            suggested = host_ready(self.run)["ready"][0]["model_candidates"][0]
+            self.assertEqual(suggested["provider"], "siliconflow")
+            self.assertEqual(self.claim(model_choice="openrouter/org/flash")["executor"]["provider"], "siliconflow")
+            self.policy("select", mode="text", provider="openrouter", model="org/flash")
+            self.assertEqual(self.claim("high")["executor"]["provider"], "openrouter")
+
     @patch.dict(os.environ, SILICONFLOW_API_KEY="sf-test")
     def test_insufficient_credit_preflight_skips_all_models_at_failed_provider(self):
         self.setup_run()

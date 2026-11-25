@@ -12,12 +12,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from dispatch import writes_workspace
 from model_policy import MEDIA_MODES, MODEL_ID, MODES, banned, read_policy
 from provider_credentials import provider_key
+from provider_errors import InsufficientCreditError, ProviderError, account_credit_rejected
 import openrouter_media
 import siliconflow_media
-
-
-class ProviderError(RuntimeError):
-    """A safe diagnostic that can be recorded on a task attempt."""
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -57,7 +54,7 @@ class ChatProvider:
         if cache is not None and key in cache:
             result = cache[key]
             if isinstance(result, ProviderError):
-                raise ProviderError(str(result))
+                raise result
             return result
         try:
             result = cls._request(path, payload, timeout, public, raw, max_bytes, with_content_type)
@@ -88,8 +85,10 @@ class ChatProvider:
             return json.loads(body)
         except HTTPError as error:
             code = error.code
-            error.close()
-            hint = {401: "invalid credential", 402: "insufficient credits", 403: "access denied",
+            with error:
+                if not public and account_credit_rejected(cls.name, error):
+                    raise InsufficientCreditError(f"{cls.name} HTTP {code}: insufficient credits") from None
+            hint = {401: "invalid credential", 402: "payment required", 403: "access denied",
                     404: "model or endpoint unavailable", 408: "request timed out", 429: "rate limited",
                     504: "gateway timed out"}.get(code, "request rejected")
             raise ProviderError(f"{cls.name} HTTP {code}: {hint}") from None
@@ -255,15 +254,25 @@ def task_mode(task):
     return "patch" if writes_workspace(task) else "text"
 
 
-def project_default(config, task):
+def project_default(config, task, policy=None):
     profiles, defaults = config
     mode = task_mode(task)
-    if mode in defaults.get("types", {}):
-        return defaults["types"][mode]
-    role_default = defaults.get("roles", {}).get(task["role"])
-    if role_default in profiles and _profile_info(role_default, profiles[role_default])["mode"] != mode:
-        return None
-    return role_default
+    type_default = defaults.get("types", {}).get(mode)
+    name = type_default or defaults.get("roles", {}).get(task["role"])
+    if name in profiles:
+        entry = _profile_info(name, profiles[name])
+        if not type_default and entry["mode"] != mode:
+            return None
+        if policy and entry["provider"] in policy.get("banned_providers", ()):
+            return None
+    return name
+
+
+def project_pin(policy, mode):
+    selected = policy.get("selected", {}).get(mode)
+    if selected and selected["provider"] not in policy.get("banned_providers", ()):
+        return selected
+    return None
 
 
 def resolve_route(workspace, task, profile=None, *, isolated, policy=None, require_key=True, candidate=None, config=None):
@@ -273,13 +282,15 @@ def resolve_route(workspace, task, profile=None, *, isolated, policy=None, requi
     config = config if config is not None else models_config(workspace)
     profiles, _ = config
     policy = policy or {}
+    if profile in profiles and _profile_info(profile, profiles[profile])["provider"] in policy.get("banned_providers", ()):
+        raise ValueError(f"项目已禁用此配置的模型提供商：{profiles[profile]['provider']}")
     task_type = task_mode(task)
-    default = project_default(config, task)
-    selected = policy.get("selected", {}).get(task_type)
+    selected = project_pin(policy, task_type)
     if candidate:
         selected = {key: candidate[key] for key in ("provider", "model")}
     reason = "宿主指定配置"
     if selected:
+        default = project_default(config, task)
         # Copy execution options only from a compatible project-owned template.
         compatible = [name for name, spec in profiles.items() if _profile_info(name, spec)["mode"] == task_type]
         if profile is not None and profile not in compatible:
@@ -301,6 +312,7 @@ def resolve_route(workspace, task, profile=None, *, isolated, policy=None, requi
         reason = candidate["reason"] if candidate else "项目已指定此模型"
     else:
         if profile is None:
+            default = project_default(config, task, policy)
             preferred = _preferred_profile(profiles, task_type, policy, default)
             profile = preferred or default
             reason = "匹配项目倾向与模型名或标签" if preferred else "项目任务类型或角色默认配置"

@@ -37,7 +37,7 @@
 
 首次 `--host-start` 返回 `provider_setup.action` 为 `ask` 时，在首次派工前随看板地址向用户询问 `provider_setup.question`。收到路径就执行绑定，路径有误时让用户更正或跳过。用户跳过提供商时，记录选择并用宿主继续。
 
-在 `--configure-provider-env` 和 `--host-start` 的结果中检查 `model_preference_setup`。若 `action` 为 `ask`，在派工前用用户的语言询问 `question`。如果用户给密钥路径时已经说了选模倾向，直接使用原话。用 `python3 pioneers.py --set-model-preference "仅免费" --policy-revision N --workspace PROJECT` 保存答复，将示例文字换成用户的倾向，`N` 取提示中的 `revision`。明确回复「默认」或「跳过偏好」时，传入空字符串 `""`，这会允许免费和收费模型。若提示版本冲突，先核对看板中较新的选择，再和用户确认是否修改。项目已有答复时沿用，后续可在「模型管理 → 派工策略 → 用户偏好」更新。
+在 `--configure-provider-env` 和 `--host-start` 的结果中检查 `model_preference_setup`。若 `action` 为 `ask`，在派工前用用户的语言询问 `question`。如果用户给密钥路径时已经说了选模倾向，直接使用原话。用 `python3 pioneers.py --set-model-preference "仅免费" --policy-revision N --workspace PROJECT` 保存答复，将示例文字换成用户的倾向，`N` 取提示中的 `revision`。明确回复「默认」或「跳过偏好」时，传入空字符串 `""`。项目初始化时已保存「SiliconFlow 优先、质量优先」，该策略允许免费和收费模型，并由后续迭代沿用。若提示版本冲突，先核对看板中较新的选择，再和用户确认是否修改。项目已有答复时沿用，后续可在「模型管理 → 派工策略 → 用户偏好」更新。
 
 如果 `model_preference_setup.presets` 提供「SiliconFlow 优先、质量优先」，将它作为一个可直接选择的回答。用户选中这套策略时，运行 `python3 pioneers.py --set-model-preset siliconflow-quality --policy-revision N --workspace PROJECT`。这会让派工按任务类型优先尝试推荐型号，允许使用收费模型。用户另给的「仅免费」等限制可继续保存为项目偏好，后续写入使用上次保存结果中的新版本号。
 
@@ -65,7 +65,7 @@
    - 设计和开发可使用 [已有项目 UI 改版示例](examples/existing-project-redesign.json)。有访谈、反馈或行为数据需要归纳时，PM 按需选择 `customer-journey-mapping`。
 2. 有可用运行器时启动 `pioneers.py ... --live`，由 CLI 派工。使用宿主原生 Agent 时，优先复用项目看板，用 `--host-start WORKFLOW --workspace PROJECT --register-only` 登记新迭代。JSON 返回 `run_dir`、`project_dashboard_url` 和 `project_run_url`。项目看板不可用时，可用 `--dashboard RUN_DIR` 启动单轮看板。看板停止后，先恢复看板服务再领取任务。
 3. 宿主协调者用 `--host-ready RUN_DIR` 查询 `ready`、`active` 和 `waiting`。有成员容量时，同批领取独立的任务并优先较长的依赖链。领取用 `--host-claim RUN_DIR --task TASK_ID --member MEMBER_ID --member-name DISPLAY_NAME`。若领取因写入冲突被阻塞，等关联任务交接后重查队列。领取成功后交给执行端返回的提示、角色、工作目录、分支、复杂度和回报方式。每次产物放行、审批通过、恢复或退回后重查队列。没有并发能力的宿主按队列顺序执行。
-   - 从 `--host-ready` 读取就绪项的 `model_candidates`，结合任务说明、复杂度和 `model_policy.preference` 选型。默认可选免费和收费型号，项目要求「仅免费」时只选可确认免费的候选。项目已指定型号或有适用配置时沿用既定选择。其余任务可直接领取，由框架顺序预检候选，也可结合交付要求从候选中选定一个，在领取时传 `--model-choice PROVIDER/MODEL_ID`。该选择只用于当前任务。用户希望仅在本机执行时用 `--profile host`，需要沿用项目命名配置时用 `--profile NAME`。
+   - 从 `--host-ready` 读取就绪项的 `model_candidates`，结合任务说明、复杂度和 `model_policy.preference` 选型。默认可选免费和收费型号，项目要求「仅免费」时只选可确认免费的候选。项目已指定型号或有适用配置时沿用既定选择。无用户覆盖时直接领取，按项目有效策略先预检首选提供商，再尝试备选，也可结合交付要求从候选中选定一个，在领取时传 `--model-choice PROVIDER/MODEL_ID`。该选择只用于当前任务。用户希望仅在本机执行时用 `--profile host`，需要沿用项目命名配置时用 `--profile NAME`。
    - 独立验收、浏览器、MCP 和外部操作交给宿主。远端补丁需要隔离工作区、明确的文件范围和项目测试命令。视频使用 `video_prompt`，图片、旁白、配乐、音效填写 `media.type` 和 `media.prompt`。核对领取返回的 `executor.provider`，远端任务用 `--host-exec RUN_DIR --task ID --attempt N` 执行，宿主任务交给相应成员。遇到已提交的媒体请求，沿用原派工和回执接续。[模型选择与恢复](docs/usage.md#按任务选用模型供应商)
 4. 宿主协调者或执行端使用 `--host-report` 回写里程碑、阻塞和完成情况。工作流用 `write_paths` 声明确切写入路径，未知范围按整个项目安排。Pioneers 在干净且已提交的 Git 项目上自动分配工作区及分支。工程师在返回的分支本地提交后回报，将测试证据写到运行目录或项目外的交付文件。需要接续代码的任务用 `depends_on`，并行修复安排下游集成及独立 QA。集成工作区领取时会合入相应依赖的已交接提交。最后向用户提供集成分支、工作区和验证结果。
 5. QA 用 [review.schema.json](review.schema.json) 逐项报告验收证据。实现问题用 `changes_requested` 和 `repair_task` 退回。Pioneers 会重新排队实现任务和受影响的下游，保留上一轮证据。领取后按照返回的 `attempt` 上报修复和复验。需求歧义交回产品负责人，环境、依赖或证据缺失交回 LD。

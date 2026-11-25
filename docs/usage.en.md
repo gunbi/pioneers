@@ -259,6 +259,10 @@ Each ready task eligible for automatic selection lists candidates in `model_cand
 
 #### Built-in SiliconFlow quality preset
 
+Starting a project saves this preset as its default. All later sessions and iterations share it. Older projects with no preset and an empty preference inherit it. Automatic claims and host candidate choices try eligible SiliconFlow models first, then other configured providers. Project pins, named configurations and explicit preferences such as free-only still apply.
+
+When an authenticated provider rejects a request for insufficient account credit, the project disables that provider and shows the reason in Model Management. Safe retries use another eligible provider, or the host when none qualify. Accepted or ambiguous media submissions retain their receipts for reconciliation. Rate limits, timeouts and per-request budgets do not disable the account. After topping up, manually restore the provider in Model Management.
+
 After connecting SiliconFlow, choose “SiliconFlow first, quality first” when the host asks how to select models. For an existing project, open Model Management → Dispatch Policy → Built-in Preset (内置策略), select it and click Apply. Expand the recommendations to preview the model order before applying.
 
 | Task type | Preferred SiliconFlow models, in order |
@@ -325,6 +329,8 @@ python3 pioneers.py --configure-provider-env "$HOME/env/apikey.env" --workspace 
 The dashboard and new dispatch commands read the project's provider credentials from the bound file. Only its path is saved in the local user's configuration. Update the keys in the file or repeat the binding command to switch files. Refresh the catalog in Model Management to verify the result. When upgrading a dashboard started with an older release, restart that service once on the original port with the same project and run records. Use `python3 pioneers.py --clear-provider-env --workspace PROJECT` to remove the binding and resume using process environment variables.
 
 On the dashboard's model management page (模型管理), search the account's full catalog, filter by capability, pin models, ban or unban them, and save selection preferences. Iterations of the same project share these settings. The single-run dashboard also has a read-only link to the project's models page.
+
+To pause a provider for the whole project, click Disable Provider (禁用提供商) on its catalog card or use the corresponding button under Dispatch Policy → Provider Dispatch (派工策略 → 提供商派工). This covers current models and any models the provider adds later. Automatic dispatch tries other eligible providers, then falls back to the host. Claimed model calls are checked again before execution. Restoring the provider makes its saved pins available again and preserves individual model bans.
 
 SiliconFlow's catalog starts with `GET /v1/models` without a type filter. Category queries annotate capabilities. Dispatch checks the particular capability required, such as `sub_type=chat` for text and `sub_type=text-to-video` for text-to-video. If refreshing fails, the dashboard retains the last successful catalog and its timestamp. [Official catalog API](https://api-docs.siliconflow.cn/docs/api/models-get)
 

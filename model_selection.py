@@ -11,7 +11,8 @@ import sqlite3
 import time
 from uuid import uuid4
 
-from model_policy import MODEL_ID, MODEL_PRESETS, MODE_KINDS, banned
+from model_policy import MODEL_ID, MODE_KINDS, active_preset, ban_insufficient_credit, banned, read_policy
+from provider_errors import InsufficientCreditError
 from provider_credentials import catalog_path, project_credentials
 from skill_sources import read_json, write_json
 
@@ -67,7 +68,12 @@ def _load_provider(registry, name, provider):
         try:
             cached = _fresh(path)
             if cached is None:
-                cached = provider.list_catalog()
+                revision = read_policy(registry)["revision"]
+                try:
+                    cached = provider.list_catalog()
+                except InsufficientCreditError:
+                    ban_insufficient_credit(registry, name, revision)
+                    return []
                 if not isinstance(cached, list):
                     raise ValueError("Invalid model directory")
                 write_json(path, {"models": cached, "updated_at": datetime.now(timezone.utc).isoformat()})
@@ -91,7 +97,10 @@ def _catalogs(registry, cached_only):
     from model_plugins import PROVIDERS  # The dispatch module also consumes this shortlist.
 
     connected = {}
+    disabled = read_policy(registry)["banned_providers"]
     for name, provider in PROVIDERS.items():
+        if name in disabled:
+            continue
         try:
             provider.api_key()
         except ValueError:
@@ -261,7 +270,7 @@ def rank_candidates(catalogs, task, mode, policy, profiles=(), *, limit=MAX_CAND
         return []
     preference = policy.get("preference") if isinstance(policy.get("preference"), str) else ""
     only_free = requires_free(preference)
-    preset = MODEL_PRESETS.get(policy.get("preset"))
+    preset = active_preset(policy)
     preferred_models = preset["models"].get(mode, []) if preset else []
     if preferred_models:
         preference += "，优先质量"
@@ -290,7 +299,7 @@ def rank_candidates(catalogs, task, mode, policy, profiles=(), *, limit=MAX_CAND
             score, candidate = _score(row, provider, mode, level, preference, task_traits, labels.get((provider, name), []))
             # Apply the preset after eligibility checks, before the shortlist limit.
             priority = len(preferred_models) + 1
-            if preferred_models and provider == preset["provider"]:
+            if preset and provider == preset["provider"]:
                 if name in preferred_models:
                     priority = preferred_models.index(name)
                     candidate["reason"] += f"；内置策略推荐（第 {priority + 1} 选择）"

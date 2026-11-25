@@ -8,7 +8,7 @@ from time import monotonic
 
 from iterations import registered_run
 from model_plugins import PROVIDERS, public_profiles
-from model_policy import MEDIA_MODES, MODE_KINDS, MODEL_PRESETS, banned, read_policy, update_policy
+from model_policy import MEDIA_MODES, MODE_KINDS, MODEL_PRESETS, active_preset, banned, read_policy, update_policy
 from provider_credentials import catalog_path, project_credentials
 from skill_sources import read_json, write_json
 
@@ -129,12 +129,14 @@ class ModelBoard:
 
     def snapshot(self):
         policy = read_policy(self.registry)
+        preset = active_preset(policy)
         providers = self.providers()
         for provider in providers:
             for model in provider["models"]:
                 if banned(policy, provider["id"], model["id"]):
                     model["blocked"] = True
         return {"project": self.name, "providers": providers, "policy": policy, "model_presets": list(MODEL_PRESETS.values()),
+                "effective_preset": preset["id"] if preset else None,
                 "profiles": public_profiles(self.workspace) if self.workspace else [], "usage": run_usage(self.registry)}
 
     def apply(self, request):

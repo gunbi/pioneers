@@ -171,7 +171,6 @@ def bind_project(workspace):
         status = "bound"
     if git_root(workspace):
         worktree_git(workspace, "config", "--local", "pioneers.framework", str(ROOT), check=False)
-    initialize_model_policy(project_registry(workspace))
     return {"status": status, "project_rules": str(path)}
 
 
@@ -1361,6 +1360,7 @@ def start_host(workflow_path, output_dir, workspace, require_release):
     binding = bind_project(workspace)
     git_base = host_worktree_base(workspace)
     registry = project_registry(workspace)
+    initialize_model_policy(registry)
     if not has_delivery_history(registry):
         prepare_provider_setup(registry)
     run_dir, progress = create_run(output_dir, goal, tasks, order, "host", require_release)
@@ -1986,6 +1986,9 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
                 if model_choice and model_choice.partition("/")[0] in policy["banned_providers"]:
                     raise ValueError("--model-choice 指定的模型提供商已被项目禁用")
                 options, fixed, fallback = routing_options(run_dir, data, task, workspace, config, policy, profile, load)
+                # An authenticated catalog refresh can suspend a provider while ranking.
+                if policy["banned_providers"] != read_policy(registry)["banned_providers"]:
+                    continue
                 try:
                     route, reason = select_claim(options, fixed, fallback, model_choice, reuse_only, active_preset(policy))
                     break

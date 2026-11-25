@@ -159,6 +159,16 @@ class ModelCatalogTest(unittest.TestCase):
         write_json(self.root / f"model-catalog-{provider}.json",
                    {"updated_at": (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat(), "models": models})
 
+    def test_authenticated_catalog_billing_error_disables_provider_for_future_discovery(self):
+        from model_policy import read_policy
+        from provider_errors import InsufficientCreditError
+        env = patch.dict(os.environ, SILICONFLOW_API_KEY="catalog-test", OPENROUTER_API_KEY="")
+        with env, patch.object(SiliconFlow, "list_catalog", side_effect=InsufficientCreditError("HTTP 402")) as failed:
+            self.assertEqual(load_catalogs(self.root), {"siliconflow": []})
+            self.assertEqual(read_policy(self.root)["provider_ban_reasons"], {"siliconflow": "insufficient_credit"})
+            self.assertEqual(load_catalogs(self.root), {})
+            failed.assert_called_once()
+
     def test_fresh_dashboard_cache_needs_configured_valid_key(self):
         self.save("openrouter", [chat("o/a")], 30)
         self.save("siliconflow", [chat("s/a")], 30)

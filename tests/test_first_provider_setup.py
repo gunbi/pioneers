@@ -161,6 +161,19 @@ class FirstProviderSetupTest(unittest.TestCase):
         self.assertNotIn(preset, offer.get("presets", []))
         self.assertNotIn(preset["label"], offer["question"])
 
+    def test_initialization_persists_project_default_and_later_runs_keep_override(self):
+        self.start()
+        registry = project_registry(self.project)
+        with closing(sqlite3.connect(registry / "model-policy.sqlite3")) as db:
+            stored = json.loads(db.execute("SELECT data FROM policy WHERE id=1").fetchone()[0])
+        self.assertEqual(stored["default_preset"], "siliconflow-quality")
+        board = ModelBoard(registry, "Example", self.project)
+        self.assertEqual(board.snapshot()["effective_preset"], "siliconflow-quality")
+        update_policy(registry, {"action": "preset", "value": None, "revision": stored["revision"]})
+        self.start()
+        self.start()
+        self.assertIsNone(board.snapshot()["effective_preset"])
+
     def test_existing_policy_default_and_stale_reply(self):
         registry = project_registry(self.project)
         board = ModelBoard(registry, "test", self.project)
