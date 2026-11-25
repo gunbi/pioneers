@@ -12,6 +12,8 @@
 
 [agent.md](../agent.md) 定义了角色、能力分配、交接和进度汇报规则。pioneers 负责登记、调度和验收，平台提供实际执行能力。无法启动 pioneers 时，报告阻塞并暂停派工。[examples/todo.json](../examples/todo.json) 展示了产品负责人、交付工程师和独立验证如何交接。
 
+新项目首次由宿主启动时，若未配置 SiliconFlow 或 OpenRouter，宿主会在首次派工前询问一次是否配置 API Key。回复运行机器上的密钥文件路径即可绑定；回复「跳过」，团队就用宿主继续。重开会话或开始下一轮都不会再问。以后想接入提供商，仍可主动提供文件路径。[密钥文件与派工设置](#按任务选用模型供应商)
+
 首次真实运行会在目标项目的 `AGENTS.md` 登记持续使用 Pioneers 的规则，保留项目原有说明。已完成的项目可以用 `python3 pioneers.py --bind-project --workspace PROJECT` 补登记。后续从项目根目录开始会话，能读取项目规则的 Agent 会沿用 Pioneers。将这段说明随项目版本保留，可让其他检出目录也获得同样的规则。
 
 ## 本地 CLI 快速开始

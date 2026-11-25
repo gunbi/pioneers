@@ -33,7 +33,9 @@
 
 先确认交付项目的独立工作目录。维护已有产品时用项目仓库根目录或它的专用 Git worktree。创建新产品时，在平台授权的可写目录下新建项目，例如与 pioneers 并列的 `todo-app/`，并用 `git init` 初始化。为这次运行显式传入 `--workspace PROJECT`。启动协调命令可以在 pioneers 检出目录执行，开发、测试和预览都在交付项目目录执行。
 
-如果用户在对话中给出提供商密钥文件，先在运行看板和派工的机器上执行 `python3 pioneers.py --configure-provider-env "$HOME/env/apikey.env" --workspace PROJECT`，将示例路径换成用户给出的路径。启动或复用看板后，在「模型管理」核对提供商连接状态并刷新目录；只向用户报告状态。宿主与用户机器不共享文件时，请用户把文件提供给执行机器。
+用户已在对话中给出提供商密钥文件时，先执行 `python3 pioneers.py --configure-provider-env FILE --workspace PROJECT`，将 `FILE` 换成用户给出的路径。用户已明确说本项目跳过时，执行 `python3 pioneers.py --skip-provider-setup --workspace PROJECT`，直接用宿主派工。密钥文件须在运行 Pioneers 的机器上可读；只接收文件路径，不让用户在聊天中粘贴密钥。
+
+首次 `--host-start` 返回 `provider_setup.action` 为 `ask` 时，在首次派工前随看板地址把 `provider_setup.question` 问给用户一次，等用户明确选择。收到路径就执行绑定，在「模型管理」核对连接；路径有误时让用户更正或跳过。收到跳过就登记并继续派工。重开会话时沿用已给出的答复。启动结果没有这项提示时，直接按现有配置派工。
 
 为项目复用一个运营看板。先用 `--project-history --workspace PROJECT` 查询运行和上一轮已交付摘要，LD 规划时核对当前代码、决策、验收和遗留事项。若项目看板尚未启动，用 `--project-dashboard --workspace PROJECT --detach` 独立启动，保留命令返回的地址和 PID，默认端口 8790。已使用其他固定端口或云端私有预览时，复用现有入口。仅恢复或介入已有迭代时保留原运行目录。
 

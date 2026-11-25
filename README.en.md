@@ -44,6 +44,8 @@ Open your project in a coding assistant that can read the repository and run loc
 
 > Use the team from https://github.com/gunbi/pioneers for this delivery. First read the team coordination guide in agent.en.md at the repository root. Use my current project as the workspace and give me the project dashboard URL before assigning tasks. This iteration should fix the to-do page so it rejects blank titles and still accepts valid ones.
 
+When a new project starts without a configured model provider, the host asks once whether you want to configure an API key. Give it a credential file path, or say “skip” to use the host. You can add a provider later.
+
 Pioneers records the plan, assignments, handoffs and acceptance results. The host provides the agents, tools and permissions that perform the work. The first real run records the collaboration rules in the target project's `AGENTS.md`. A later session in that project can continue from the earlier delivery records. [Host coordination guide](agent.en.md)
 
 ## Local CLI quick start

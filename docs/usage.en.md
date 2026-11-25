@@ -12,6 +12,8 @@ Give the repository's Git URL to an agent that can read it, along with this inst
 
 The [coordination guide](../agent.en.md) defines roles, capability assignments, handoffs, and progress reporting. Pioneers registers work, schedules tasks, and records acceptance. The platform provides the agents and tools that do the work. If Pioneers cannot start, report the blocker and pause assignments. The [to-do example](../examples/todo.json) shows the handoff from the product owner to a delivery engineer and then to independent QA.
 
+On the first host-coordinated run of a new project, the host asks once whether to configure an API key if neither SiliconFlow nor OpenRouter is configured. Reply with a credential file path on the execution machine to bind it, or say “skip” to continue with the host. Later sessions and iterations do not repeat the question. You can still supply a file later. [Provider credentials and dispatch](#model-providers-by-task)
+
 The first live run adds a rule to the target project's `AGENTS.md` directing future sessions to use Pioneers. It preserves existing project instructions. To bind a project after a completed delivery, run `python3 pioneers.py --bind-project --workspace PROJECT`. Start subsequent sessions in the project root so agents that read project rules can follow Pioneers. Commit this rule with the project to make it available in other checkouts.
 
 ## Local CLI quick start
