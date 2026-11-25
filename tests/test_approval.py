@@ -98,9 +98,12 @@ class ApprovalTest(unittest.TestCase):
         path.write_text(json.dumps(snapshot), encoding="utf-8")
         return path, source
 
-    def expire(self, key):
+    def expire_supervised(self, key):
+        # Model a stopped command supervisor whose last lease has elapsed.
         with Progress.locked(self.run_dir) as current:
-            current.data["tasks"][key]["lease_expires_at"] = time.time() - 1
+            job = current.data["tasks"][key]
+            job["executors"][str(job["attempt"])]["supervised"] = True
+            job["lease_expires_at"] = time.time() - 1
 
     @unittest.skipIf(os.name == "nt", "requires POSIX process groups")
     def test_host_exec_cleans_owned_children_on_exit_and_interrupt(self):
@@ -177,7 +180,7 @@ class ApprovalTest(unittest.TestCase):
         self.assertIn("dependency part-b", adopt(self.git(project, "rev-parse", "HEAD")))
         self.git(project, "merge", "--no-ff", "-m", "Manual merge part B", commits[1])
         self.claim("integration")
-        self.expire("integration")
+        self.expire_supervised("integration")
         self.cli("--host-ready", self.run_dir)
 
         (project / "module/a.txt").write_text("unexpected change", encoding="utf-8")
@@ -213,6 +216,34 @@ class ApprovalTest(unittest.TestCase):
         self.assertEqual(qa["git"]["base"], merged)
         self.assertEqual(self.git(Path(qa["workspace"]), "rev-parse", "HEAD"), merged)
 
+    def test_quiet_native_session_keeps_ownership_until_host_confirms_its_status(self):
+        self.host([self.task("draft"), self.task("other")])
+        self.claim("draft")
+        self.claim("other")
+        with Progress.locked(self.run_dir) as progress:
+            for job in progress.data["tasks"].values():
+                job["lease_expires_at"] = time.time() - 180
+        ready = self.cli("--host-ready", self.run_dir, "--wait", 5)
+        self.assertFalse(ready["ready"])
+        self.assertEqual([item["execution_phase"] for item in ready["active"]], ["awaiting_host"] * 2)
+        old = self.state()["tasks"]["draft"]["lease_expires_at"]
+        self.assertIn("current state", self.claim("draft", code=1))
+        self.assertEqual(self.state()["tasks"]["draft"]["lease_expires_at"], old)
+        result = self.cli("--host-ready", self.run_dir, "--observed-active", "draft:2", "--observed-active", "draft:1")
+        self.assertEqual([row["renewed"] for row in result["observations"]], [False, True])
+        self.assertEqual([item["execution_phase"] for item in result["active"]], ["running", "awaiting_host"])
+        self.assertEqual(self.state()["tasks"]["other"]["attempt"], 1)
+        self.submit("other", "宿主的迟到交付")
+        self.assertEqual(self.state()["tasks"]["other"]["state"], "judging")
+        with Progress.locked(self.run_dir) as progress:
+            progress.data["tasks"]["draft"]["lease_expires_at"] = time.time() - 1
+        self.checkpoint("draft", 1, type="checkpoint", summary="原会话已接续")
+        self.cli("--host-report", self.run_dir, "--task", "draft", "--attempt", 1,
+                 "--state", "lost", "--activity", "已确认原宿主退出")
+        self.assertEqual(self.claim("draft")["attempt"], 2)
+        self.assertIn("active --attempt 2", self.cli("--host-heartbeat", self.run_dir, "--task", "draft",
+                                                     "--attempt", 1, code=1))
+
     def test_host_recovery_fences_old_attempt_and_keeps_worktree(self):
         project = self.git_project()
         self.host([
@@ -224,7 +255,7 @@ class ApprovalTest(unittest.TestCase):
         self.assertGreater(heartbeat["lease_expires_at"], old["lease_expires_at"])
         draft = Path(old["workspace"]) / "module/a.txt"
         draft.write_text("old executor draft", encoding="utf-8")
-        self.expire("fix")
+        self.expire_supervised("fix")
         self.assertIn("expired lease", self.cli("--host-heartbeat", self.run_dir, "--task", "fix", "--attempt", 1, code=1))
         dispatch = self.cli("--host-ready", self.run_dir, "--wait", 1)
         self.assertEqual([(row["task"], row["attempt"]) for row in dispatch["ready"]], [("fix", 2)])
@@ -242,7 +273,7 @@ class ApprovalTest(unittest.TestCase):
                           "--state", "lost", "--activity", "执行端进程退出")
         self.assertEqual((failed["state"], failed["attempt"]), ("pending", 3))
         self.claim("fix")
-        self.expire("fix")
+        self.expire_supervised("fix")
         board = self.cli("--host-ready", self.run_dir)
         lost = next(row for row in board["waiting"] if row["task"] == "fix")
         self.assertEqual(lost["state"], "recovery_required")
@@ -290,7 +321,7 @@ class ApprovalTest(unittest.TestCase):
         self.checkpoint("analysis", 1, type="checkpoint", summary="已定位到解析器", session_id="private-session")
         self.checkpoint("analysis", 1, type="operation", id="inspect", kind="read", status="completed", summary="已检查配置")
         self.checkpoint("analysis", 1, type="operation", id="query", kind="tool", status="started", summary="结果尚未回报")
-        self.expire("analysis")
+        self.expire_supervised("analysis")
         ready = self.cli("--host-ready", self.run_dir)["ready"]
         assignment = next(job for job in ready if job["task"] == "analysis")
         self.assertEqual(assignment["preferred_member"]["id"], "alice")
@@ -329,7 +360,7 @@ class ApprovalTest(unittest.TestCase):
         self.claim("send")
         self.checkpoint("send", 1, type="operation", id="mail", kind="external", status="started",
                         summary="已调用发送，回执未返回")
-        self.expire("send")
+        self.expire_supervised("send")
         self.cli("--host-ready", self.run_dir)
         self.assertIn("Verify unresolved external operations", self.cli("--recover", self.run_dir, "--task", "send",
                                                                          "--attempt", 1, "--reason", "查看回执", code=1))
@@ -437,8 +468,8 @@ class ApprovalTest(unittest.TestCase):
         self.claim("writer")
         self.cli("--approve", self.run_dir, "--all", "--reason", "授权执行发送")
         self.claim("send")
-        self.expire("writer")
-        self.expire("send")
+        self.expire_supervised("writer")
+        self.expire_supervised("send")
         self.cli("--host-ready", self.run_dir)
         self.assertIn("shared workspace", self.claim("next-writer", code=1))
         self.assertIn("waiting for: send", self.claim("publish", code=1))
@@ -459,7 +490,7 @@ class ApprovalTest(unittest.TestCase):
         self.assertEqual(self.state()["tasks"]["publish"]["state"], "awaiting_confirmation")
         self.cli("--approve", self.run_dir, "--all", "--reason", "授权发布")
         self.claim("publish")
-        self.expire("publish")
+        self.expire_supervised("publish")
         self.cli("--host-ready", self.run_dir)
         previous = self.state()["tasks"]["publish"]["authorization"]
         self.cli("--recover", self.run_dir, "--task", "publish", "--attempt", 1, "--reason", "已核对发布未发生")

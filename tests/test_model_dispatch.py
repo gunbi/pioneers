@@ -12,7 +12,7 @@ import model_worker
 from dashboard import dashboard_snapshot
 from model_plugins import InsufficientCreditError, OpenRouter, ProviderError
 from model_policy import read_policy, update_policy
-from pioneers import create_run, execute_host, handle_judgment, host_ready, project_registry, update_host, validate_workflow
+from pioneers import control_run, create_run, execute_host, handle_judgment, host_ready, project_registry, update_host, validate_workflow
 from progress import Progress
 
 
@@ -136,12 +136,68 @@ class ModelDispatchTest(unittest.TestCase):
         self.assertEqual(policy["selected"]["text"]["model"], "org/pinned")
 
     @patch("pioneers.check_available")
+    def test_remote_start_is_actionable_and_a_delayed_claim_cannot_be_reported_as_work(self, _preflight):
+        assignment = self.claim()
+        self.assertEqual(assignment["execution_phase"], "awaiting_start")
+        self.assertNotIn("lease_expires_at", assignment)
+        # Earlier releases wrote an execution deadline even before a worker started.
+        with Progress.locked(self.run) as progress:
+            progress.data["tasks"]["spec"]["lease_expires_at"] = 1
+        ready = host_ready(self.run, wait=3, observed_active=[("spec", 1)])
+        self.assertFalse(ready["observations"][0]["renewed"])
+        row = ready["active"][0]
+        self.assertEqual(row["execution_phase"], "awaiting_start")
+        self.assertIsNone(row["lease_expires_at"])
+        self.assertEqual(row["start_command"], assignment["start_command"])
+        self.assertEqual(row["start_command"][-4:], ["--task", "spec", "--attempt", "1"])
+        for state in ("running", "checkpoint", "completed", "failed", "blocked"):
+            with self.subTest(state=state), self.assertRaisesRegex(ValueError, "--host-exec"):
+                update_host(self.run, "spec", state, None, None, 1)
+        def run_worker(*args, **kwargs):
+            started = host_ready(self.run)["active"][0]
+            self.assertEqual(started["execution_phase"], "running")
+            self.assertGreater(started["lease_expires_at"], 1)
+            self.assertNotIn("start_command", started)
+            with self.assertRaisesRegex(ValueError, "still active"):
+                update_host(self.run, "spec", "lost", "late coordinator", None, 1)
+            with Progress.locked(self.run) as progress:
+                progress.data["tasks"]["spec"]["lease_expires_at"] = 1
+            with self.assertRaisesRegex(ValueError, "still active"):
+                control_run(self.run, {"action": "recover", "task": "spec", "attempt": 1, "reason": "check worker"})
+            self.assertEqual(host_ready(self.run)["active"][0]["attempt"], 1)
+            with self.assertRaisesRegex(ValueError, "already active"):
+                execute_host(self.run, "spec", 1, None)
+            return self.invoke_worker(*args, **kwargs)
+
+        with (redirect_stdout(StringIO()), patch("pioneers.supervise_host_executor", run_worker),
+              patch("model_worker.complete", return_value=("result", {})) as generate):
+            self.assertEqual(execute_host(self.run, "spec", 1, None), 0)
+            generate.assert_called_once()
+        with self.assertRaisesRegex(ValueError, "claimed and running"):
+            execute_host(self.run, "spec", 1, None)
+
+    @patch("pioneers.check_available")
+    def test_release_unstarted_attempt_fences_its_old_command(self, _preflight):
+        self.claim()
+        result = control_run(self.run, {"action": "recover", "task": "spec", "attempt": 1, "reason": "release reservation"})
+        self.assertEqual(result["attempt"], 2)
+        self.claim()
+        with patch("pioneers.supervise_host_executor") as worker:
+            with self.assertRaisesRegex(ValueError, "active --attempt 2"):
+                execute_host(self.run, "spec", 1, None)
+            worker.assert_not_called()
+        self.assertEqual(host_ready(self.run)["active"][0]["execution_phase"], "awaiting_start")
+
+    @patch("pioneers.check_available")
     def test_credit_failure_with_checkpoint_requires_reconciliation(self, _preflight):
         self.claim()
         event = self.run / "checkpoint.json"
         event.write_text(json.dumps({"type": "checkpoint", "summary": "original work"}))
-        update_host(self.run, "spec", "checkpoint", None, event, 1)
-        with (redirect_stdout(StringIO()), patch("pioneers.supervise_host_executor", self.invoke_worker),
+        def checkpoint_then_run(*args, **kwargs):
+            update_host(self.run, "spec", "checkpoint", None, event, 1)
+            return self.invoke_worker(*args, **kwargs)
+
+        with (redirect_stdout(StringIO()), patch("pioneers.supervise_host_executor", checkpoint_then_run),
               patch("model_worker.complete", side_effect=InsufficientCreditError("account empty"))):
             self.assertEqual(execute_host(self.run, "spec", 1, None), 1)
         job = Progress.open(self.run).data["tasks"]["spec"]

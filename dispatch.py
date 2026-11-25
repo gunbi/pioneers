@@ -1,4 +1,27 @@
 from graphlib import TopologicalSorter
+import time
+
+
+def current_executor(job):
+    return job.get("executors", {}).get(str(job.get("attempt", 1)), {})
+
+
+def native_session(job):
+    executor = current_executor(job)
+    return executor.get("provider", "host") == "host" and not executor.get("supervised")
+
+
+def execution_phase(job, now=None):
+    """Derive the current host assignment phase, including for runs created before handoff tracking."""
+    if job["state"] != "running":
+        return None
+    executor = current_executor(job)
+    if executor.get("provider", "host") != "host" and not executor.get("started_at"):
+        return "awaiting_start"
+    expires = job.get("lease_expires_at")
+    if native_session(job) and (expires is None or expires <= (time.time() if now is None else now)):
+        return "awaiting_host"
+    return "running"
 
 
 def waiting_on(data, task):
@@ -121,8 +144,11 @@ def dispatch_summary(data, tasks):
         item = {"task": key, "role": job["role"], "state": job["state"], "attempt": job.get("attempt", 1),
                 "scope": tasks[key].get("prompt", ""), "write_paths": tasks[key].get("write_paths", [])}
         if job["state"] in ("running", "judging"):
+            if data["mode"] == "host" and job["state"] == "running":
+                item["execution_phase"] = execution_phase(job)
+            lease = None if item.get("execution_phase") == "awaiting_start" else job.get("lease_expires_at")
             active.append({**item, "member": job.get("member"), "decision": job.get("decision"),
-                           "branch": job.get("git", {}).get("branch"), "lease_expires_at": job.get("lease_expires_at")})
+                           "branch": job.get("git", {}).get("branch"), "lease_expires_at": lease})
         elif job["state"] in ("pending", "awaiting_confirmation", "blocked", "recovery_required"):
             if can_adopt_merged(data, tasks, key):
                 item["can_adopt_merged"] = True
@@ -156,4 +182,5 @@ def dispatch_can_continue(summary):
     if summary["paused"]:
         return False
     return bool(summary["ready"] or summary.get("replan", {}).get("ready") or summary.get("release_ready")
-                or any(item["state"] == "judging" for item in summary["active"]))
+                or any(item["state"] == "judging" or item.get("execution_phase") in ("awaiting_start", "awaiting_host")
+                       for item in summary["active"]))

@@ -1,5 +1,5 @@
 import argparse
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from graphlib import CycleError, TopologicalSorter
@@ -26,8 +26,8 @@ from continuity import (
 from progress import Progress, artifact_name, codex_activity, print_board, show_progress
 from dashboard import announce, dashboard_is_running, live_dashboard, preview_origin, request_browser_open, serve_dashboard
 from dispatch import (
-    can_adopt_merged, claim_blockers, design_only, dispatch_can_continue, dispatch_summary, path_is_within, pending_replan,
-    preapproval_required, replan_ready, waiting_on, workflow_path, writes_workspace,
+    can_adopt_merged, claim_blockers, design_only, dispatch_can_continue, dispatch_summary, execution_phase,
+    native_session, path_is_within, pending_replan, preapproval_required, replan_ready, waiting_on, workflow_path, writes_workspace,
 )
 from iterations import has_delivery_history, latest_delivery, project_snapshot, register_run
 from skill_sources import SNAPSHOT, read_json, refresh_run, write_json
@@ -874,7 +874,7 @@ MAX_AUTOMATIC_RECOVERIES = 2
 
 def expired_assignment(job, now):
     expires = job.get("lease_expires_at")
-    return job["state"] == "running" and expires is not None and expires <= now
+    return expires is not None and expires <= now and execution_phase(job, now) == "running"
 
 
 def queue_recovery(progress, task_id, reason):
@@ -943,6 +943,21 @@ def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True, 
         progress.task(task_id, "recovery_required", "需要人工核对旧执行结果 · " + reason, announce=False)
 
 
+def executor_is_active(run_dir, task_id, attempt):
+    """A live --host-exec owns this SQLite writer lock; process exit releases it."""
+    path = run_dir / f"executor-{task_id}-{attempt}.db"
+    if not path.exists():
+        return False
+    with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True, timeout=0)) as lock:
+        try:
+            lock.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as error:
+            if str(error) == "database is locked":
+                return True
+            raise
+    return False
+
+
 def reap_host_assignments(run_dir, data):
     now = time.time()
     if data["state"] != "running" or not any(expired_assignment(job, now) for job in data["tasks"].values()):
@@ -952,7 +967,7 @@ def reap_host_assignments(run_dir, data):
             _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
             now = time.time()
             for task_id, job in progress.data["tasks"].items():
-                if expired_assignment(job, now):
+                if expired_assignment(job, now) and not executor_is_active(run_dir, task_id, job.get("attempt", 1)):
                     record_assignment_loss(progress, tasks, task_id, "执行端心跳超时")
         return progress.data
 
@@ -1128,8 +1143,35 @@ def select_claim(options, fixed, fallback, model_choice, receipt, preset=None):
     return None, "" if fixed else fallback
 
 
-def host_ready(run_dir, wait=0):
+def start_command(run_dir, task, attempt):
+    return [sys.executable, str(ROOT / "pioneers.py"), "--host-exec", str(run_dir),
+            "--task", task, "--attempt", str(attempt)]
+
+
+def observe_native_sessions(run_dir, observed_active):
+    """Renew exactly the attempts for which the host has supplied fresh positive observations."""
+    results = []
+    with Progress.locked(run_dir) as progress:
+        if progress.data["mode"] != "host":
+            raise ValueError("Host observations require a run created with --host-start")
+        expires = time.time() + HOST_LEASE_SECONDS
+        for task, attempt in dict.fromkeys(observed_active):
+            job = progress.data["tasks"].get(task)
+            result = {"task": task, "attempt": attempt, "renewed": False}
+            if not job or job.get("attempt", 1) != attempt or job["state"] != "running":
+                result["reason"] = "inactive_attempt"
+            elif not native_session(job):
+                result["reason"] = "not_native_session"
+            else:
+                job["lease_expires_at"] = expires
+                result.update(renewed=True, lease_expires_at=expires)
+            results.append(result)
+    return results
+
+
+def host_ready(run_dir, wait=0, *, observed_active=()):
     run_dir = run_dir.resolve(strict=True)
+    observations = observe_native_sessions(run_dir, observed_active) if observed_active else []
     deadline = time.monotonic() + wait
     current_workflow = None
     while True:
@@ -1151,11 +1193,16 @@ def host_ready(run_dir, wait=0):
             summary["timed_out"] = True
             break
         time.sleep(min(0.35, remaining))
+    if observations:
+        summary["observations"] = observations
     return host_routing_summary(run_dir, data, tasks, summary, project_registry(Path(data["workspace"])))
 
 
 def host_routing_summary(run_dir, data, tasks, summary, registry, load=None):
     workspace = Path(data["workspace"])
+    for item in summary["active"]:
+        if item.get("execution_phase") == "awaiting_start":
+            item["start_command"] = start_command(run_dir, item["task"], item["attempt"])
     summary.update(dispatch_models(registry, workspace))
     if not summary["ready"]:
         return summary
@@ -1636,26 +1683,31 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
             write_json(run_dir / f".model-{task_id}-{assignment['attempt']}.json", request)
         job.setdefault("executors", {})[str(assignment["attempt"])] = execution
         assignment["executor"] = dict(execution)
-        expires = time.time() + HOST_LEASE_SECONDS
-        tasks[task_id]["lease_expires_at"] = expires
-        assignment.update(lease_expires_at=expires, lease_seconds=HOST_LEASE_SECONDS)
+        if route:
+            job.pop("lease_expires_at", None)
+            assignment.update(execution_phase="awaiting_start", start_command=start_command(run_dir, task_id, assignment["attempt"]))
+        else:
+            expires = time.time() + HOST_LEASE_SECONDS
+            job["lease_expires_at"] = expires
+            assignment.update(execution_phase="running", lease_expires_at=expires, lease_seconds=HOST_LEASE_SECONDS)
     planned_skills = list(dict.fromkeys(task.get("skills", [])))
     # Media workers receive only the creative brief. Other assignments carry the Skill text.
     loaded_skills = [] if route and route["mode"] in ("video", *MEDIA_MODES) else planned_skills
     job.setdefault("skill_attempts", {})[str(assignment["attempt"])] = {
         "planned": planned_skills, "loaded": loaded_skills, "reported": [],
     }
-    progress.task(task_id, "running", "LD 已领取任务，等待执行端反馈", announce=False)
+    activity = "已领取远端任务，等待启动模型执行器" if route else "LD 已领取任务，等待执行端反馈"
+    progress.task(task_id, "running", activity, announce=False)
     return assignment
 
 
-def active_assignment(job, task_id, attempt):
+def active_assignment(job, task_id, attempt, *, owns_executor=False):
     current_attempt = job.get("attempt", 1)
     if (attempt is None and current_attempt > 1) or (attempt is not None and attempt != current_attempt):
         raise ValueError(f"Report must match the active --attempt {current_attempt}")
     if job["state"] != "running":
         raise ValueError(f"Task {task_id} must be claimed and running before reporting")
-    if expired_assignment(job, time.time()):
+    if not owns_executor and expired_assignment(job, time.time()):
         raise ValueError(f"Task {task_id} has an expired lease; check --host-ready for recovery")
 
 
@@ -2014,10 +2066,14 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
                     or (profile != "host" and models_config(workspace) != config)):
                 raise ValueError("Task or model profile changed during preflight; claim again")
             return claim_task(progress, tasks, task_id, member_id, member_name, route=route, fallback_reason=reason)
+        job = progress.data["tasks"][task_id]
+        active_assignment(job, task_id, attempt)
+        if state == "lost" and executor_is_active(run_dir, task_id, job.get("attempt", 1)):
+            raise ValueError("The executor is still active; stop it before reporting loss")
+        if execution_phase(job) == "awaiting_start" and state != "lost":
+            raise ValueError("Remote assignment awaits --host-exec; a native host cannot report work for an unstarted model")
         result = artifact.read_text(encoding="utf-8") if artifact else None
         if state == "checkpoint":
-            job = progress.data["tasks"][task_id]
-            active_assignment(job, task_id, attempt)
             record_execution(job, json.loads(result))
             job["lease_expires_at"] = time.time() + HOST_LEASE_SECONDS
             return {"task": task_id, "attempt": attempt, "lease_expires_at": job["lease_expires_at"]}
@@ -2134,6 +2190,7 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
             return 1
         observed_revision = policy["revision"]
         executor["started_at"] = timestamp()
+        job["lease_expires_at"] = time.time() + HOST_LEASE_SECONDS
         progress.task(task_id, "running", f"正在调用 {executor['provider']} · {executor['model']}", announce=False)
     start = time.monotonic()
     result = {}
@@ -2166,7 +2223,8 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
         result["error"] = f"{provider_id} 账户余额不足，{state}"
     with Progress.locked(run_dir) as progress:
         job = progress.data["tasks"][task_id]
-        active_assignment(job, task_id, attempt)
+        active_assignment(job, task_id, attempt, owns_executor=True)
+        job["lease_expires_at"] = time.time() + HOST_LEASE_SECONDS
         executor = job["executors"][str(attempt)]
         executor.update(elapsed_seconds=round(time.monotonic() - start, 3), usage=result.get("usage", {}))
         if result.get("actual_model"):
@@ -2193,6 +2251,8 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
 def execute_host(run_dir, task_id, attempt, command):
     run_dir = run_dir.resolve(strict=True)
     progress = Progress.open(run_dir)
+    if progress.data["mode"] != "host":
+        raise ValueError("Host execution requires a run created with --host-start")
     job = progress.data["tasks"].get(task_id)
     if job is None:
         raise ValueError(f"Unknown workflow task: {task_id}")
@@ -2200,7 +2260,11 @@ def execute_host(run_dir, task_id, attempt, command):
     workspace = checkout["workspace"] if checkout and checkout["attempt"] == attempt else progress.data["workspace"]
 
     def renew():
-        update_host(run_dir, task_id, "running", None, None, attempt)
+        # This callback runs only while this supervisor holds the attempt's executor lock.
+        with Progress.locked(run_dir) as progress:
+            current = progress.data["tasks"][task_id]
+            active_assignment(current, task_id, attempt, owns_executor=True)
+            current["lease_expires_at"] = time.time() + HOST_LEASE_SECONDS
 
     with sqlite3.connect(run_dir / f"executor-{task_id}-{attempt}.db", timeout=0) as lock:
         try:
@@ -2209,7 +2273,6 @@ def execute_host(run_dir, task_id, attempt, command):
             if str(error) == "database is locked":
                 raise ValueError(f"An executor is already active for task {task_id}, attempt {attempt}") from error
             raise
-        renew()
         provider = job.get("executors", {}).get(str(attempt), {}).get("provider", "host")
         if provider != "host":
             if command:
@@ -2217,6 +2280,11 @@ def execute_host(run_dir, task_id, attempt, command):
             return execute_model(run_dir, task_id, attempt, workspace, renew)
         if not command:
             raise ValueError("Native host assignments require --exec-command")
+        with Progress.locked(run_dir) as progress:
+            job = progress.data["tasks"][task_id]
+            active_assignment(job, task_id, attempt)
+            job.setdefault("executors", {}).setdefault(str(attempt), {"provider": "host"})["supervised"] = True
+            job["lease_expires_at"] = time.time() + HOST_LEASE_SECONDS
         return supervise_host_executor(command, workspace, renew, env=project_environment())
 
 
@@ -2317,7 +2385,10 @@ def resolve_recovery(progress, tasks, request, reason):
     if content is not None and (not isinstance(content, str) or not content.strip()):
         raise ValueError("Recovered deliverable must be non-empty text")
     if progress.data["mode"] == "host" and job["state"] == "running":
-        if job.get("lease_expires_at") is None or expired_assignment(job, time.time()):
+        if executor_is_active(progress.path.parent, task_id, attempt):
+            raise ValueError("The executor is still active; stop it before recovery")
+        if (execution_phase(job) in ("awaiting_start", "awaiting_host")
+                or job.get("lease_expires_at") is None or expired_assignment(job, time.time())):
             record_assignment_loss(progress, tasks, task_id, "人工确认旧执行端已停止", automatic=False)
     missing_receipt = missing_recorded_receipt(progress.path.parent, tasks[task_id], job)
     legacy_pending = job["state"] == "pending" and job.get("continuity_from") and missing_receipt
@@ -2529,6 +2600,13 @@ def report_release(run_dir, state, activity, url):
         return release
 
 
+def observed_attempt(value):
+    match = re.fullmatch(r"([a-z0-9][a-z0-9_-]*):([1-9][0-9]*)", value)
+    if not match:
+        raise argparse.ArgumentTypeError("expected TASK:ATTEMPT with a positive attempt number")
+    return match[1], int(match[2])
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plan and run a pioneers team workflow.")
     parser.add_argument("workflow", type=Path, nargs="?", help="Workflow JSON file.")
@@ -2595,6 +2673,8 @@ def main():
     parser.add_argument("--commit", help="Git commit SHA to adopt with --host-adopt.")
     parser.add_argument("--revision", type=int, help="Revision returned by --replan, required when submitting its plan.")
     parser.add_argument("--wait", type=int, metavar="SECONDS", help="With --host-ready, wait for actionable work or a terminal state.")
+    parser.add_argument("--observed-active", action="append", type=observed_attempt, metavar="TASK:ATTEMPT",
+                        help="With --host-ready, renew an independently observed active native session; repeat for multiple tasks.")
     parser.add_argument("--require-release", action="store_true", help="Wait for publication to finish after QA acceptance.")
     parser.add_argument("--url", help="Visit URL required when reporting published.")
     parser.add_argument("--port", type=int, help="Dashboard port (default: 8790 for the project board, otherwise automatic).")
@@ -2635,6 +2715,8 @@ def main():
         args.open_browser = bool(serves_dashboard and desktop and not args.dashboard_origin)
     if args.approver is not None and not args.approve:
         parser.error("--approver is only used with --approve")
+    if args.observed_active and not args.host_ready:
+        parser.error("--observed-active requires --host-ready")
     if args.wait is not None and (not args.host_ready or not 1 <= args.wait <= 60):
         parser.error("--wait requires --host-ready and a duration from 1 to 60 seconds")
     if args.member is not None and (not args.host_claim or not args.member):
@@ -2805,7 +2887,7 @@ def main():
             print(json.dumps(host_replan(args.replan, args.revision, args.artifact), ensure_ascii=False))
             return 0
         if args.host_ready:
-            print(json.dumps(host_ready(args.host_ready, args.wait or 0), ensure_ascii=False))
+            print(json.dumps(host_ready(args.host_ready, args.wait or 0, observed_active=args.observed_active), ensure_ascii=False))
             return 0
         if args.host_start is not None:
             result = start_host(args.host_start, args.output_dir, workspace, args.require_release)
