@@ -254,6 +254,22 @@ python3 pioneers.py --host-claim RUN_DIR --task requirements
 
 每个可自动选型的就绪项在 `model_candidates` 列出候选的 `provider`、`model` 和 `reason`。宿主可以结合任务说明、复杂度和项目的 `model_policy.preference` 决定用哪个。例如需求是提炼短文，且下列型号出现在该任务的候选里，领取时可用 `--model-choice siliconflow/Qwen/Qwen3.5-35B-A3B`。第一个斜杠前是提供商，其余部分是完整模型 ID。这只决定本次领取，项目策略保持原值。用 `--profile host` 可明确交给本机成员。
 
+#### 内置策略「SiliconFlow 优先、质量优先」
+
+接入 SiliconFlow 后，宿主首次询问选模倾向时，可以直接回复「用 SiliconFlow 质量优先策略」。已有项目可在「模型管理 → 派工策略 → 内置策略」选中后点「应用」。展开「查看推荐型号和备选顺序」可以在应用前预览。
+
+| 任务类型 | 优先尝试的 SiliconFlow 型号 |
+| --- | --- |
+| 文本，例如需求、方案和任务拆解 | `deepseek-ai/DeepSeek-V4-Pro` |
+| 代码补丁 | `zai-org/GLM-5.3`，其次是 `moonshotai/Kimi-K2.7-Code` |
+| 文生图 | `OpenMOSS-Team/MOSS-Image` |
+| 文生视频 | `MiniMaxAI/MiniMax-H3` |
+| 语音旁白 | `FunAudioLLM/CosyVoice2-0.5B` |
+
+策略允许收费模型。自动派工按账号目录和任务能力筛选，再尝试推荐型号、其他可用的 SiliconFlow 型号和其他已配置提供商。候选全部不可用时交回宿主。音乐和音效沿用已有的自动选模。项目禁用清单和「仅免费」仍生效。远端补丁仍需要项目提供可信测试命令和隔离工作区，浏览器任务和独立 QA 由宿主执行。
+
+要改某一类任务，在「项目指定模型」选择型号并应用，从下次领取时生效。要停用整套策略，在「内置策略」选「通用自动选模」并应用，原有的项目指定型号、禁用项和用户偏好会保留。
+
 #### 选型顺序
 
 1. 独立 QA、浏览器或 MCP 等工具调用、外部操作由宿主执行。代码补丁只有在隔离 Git 工作区中、写入范围明确且项目提供沙箱测试命令时才能派往远端。

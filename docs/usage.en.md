@@ -254,6 +254,22 @@ python3 pioneers.py --host-claim RUN_DIR --task requirements
 
 Each ready task eligible for automatic selection lists candidates in `model_candidates`, including `provider`, `model`, and `reason`. The host can use the task description, complexity, and `model_policy.preference` to choose one. For example, when condensing a short article, claim with `--model-choice siliconflow/Qwen/Qwen3.5-35B-A3B` if that model is listed for the task. Everything before the first slash identifies the provider. The remainder is the complete model ID. The choice applies to this claim only and leaves project policy intact. Use `--profile host` to assign the task explicitly to a local member.
 
+#### Built-in SiliconFlow quality preset
+
+After connecting SiliconFlow, choose “SiliconFlow first, quality first” when the host asks how to select models. For an existing project, open Model Management → Dispatch Policy → Built-in Preset (内置策略), select it and click Apply. Expand the recommendations to preview the model order before applying.
+
+| Task type | Preferred SiliconFlow models, in order |
+| --- | --- |
+| Text, including requirements, design and task breakdown | `deepseek-ai/DeepSeek-V4-Pro` |
+| Code patches | `zai-org/GLM-5.3`, then `moonshotai/Kimi-K2.7-Code` |
+| Text to image | `OpenMOSS-Team/MOSS-Image` |
+| Text to video | `MiniMaxAI/MiniMax-H3` |
+| Narration | `FunAudioLLM/CosyVoice2-0.5B` |
+
+The preset allows paid models. Automatic dispatch filters by the account catalog and task capability, then tries the recommended models, other eligible SiliconFlow models, and other configured providers. If all candidates are unavailable, the host takes the task. Music and sound effects retain their existing automatic routing. Project bans and “free models only” still apply. Remote patches require a trusted project test command and an isolated worktree. The host runs browser tasks and independent QA.
+
+To override one task type, pick a model under Project Model Selections and apply it. The next claim uses the new selection. To turn the preset off, select general automatic routing (通用自动选模) and click Apply. Project pins, bans and user preferences are preserved.
+
 #### Selection order
 
 1. The host executes independent QA, browser and MCP tool calls, and external actions. Remote code patches require an isolated Git workspace, a specific write scope, and a sandboxed test command supplied by the project.

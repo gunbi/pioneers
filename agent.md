@@ -39,6 +39,8 @@
 
 在 `--configure-provider-env` 和 `--host-start` 的结果中检查 `model_preference_setup`。若 `action` 为 `ask`，在派工前用用户的语言询问 `question`。如果用户给密钥路径时已经说了选模倾向，直接使用原话。用 `python3 pioneers.py --set-model-preference "仅免费" --policy-revision N --workspace PROJECT` 保存答复，将示例文字换成用户的倾向，`N` 取提示中的 `revision`。明确回复「默认」或「跳过偏好」时，传入空字符串 `""`，这会允许免费和收费模型。若提示版本冲突，先核对看板中较新的选择，再和用户确认是否修改。项目已有答复时沿用，后续可在「模型管理 → 派工策略 → 用户偏好」更新。
 
+如果 `model_preference_setup.presets` 提供「SiliconFlow 优先、质量优先」，将它作为一个可直接选择的回答。用户选中这套策略时，运行 `python3 pioneers.py --set-model-preset siliconflow-quality --policy-revision N --workspace PROJECT`。这会让派工按任务类型优先尝试推荐型号，允许使用收费模型。用户另给的「仅免费」等限制可继续保存为项目偏好，后续写入使用上次保存结果中的新版本号。
+
 为项目复用一个运营看板。先用 `--project-history --workspace PROJECT` 查询运行和上一轮已交付摘要，LD 规划时核对当前代码、决策、验收和遗留事项。若项目看板尚未启动，用 `--project-dashboard --workspace PROJECT --detach` 独立启动，保留命令返回的地址和 PID，默认端口 8790。已使用其他固定端口或云端私有预览时，复用现有入口。仅恢复或介入已有迭代时保留原运行目录。
 
 宿主启动执行端时，用领取结果中的 `workspace` 设置工作目录，并按 `sandbox` 落实访问权限。宿主无法指定执行目录时，报告阻塞并暂停派工。

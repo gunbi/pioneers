@@ -122,7 +122,18 @@ dl.metrics { display:flex; flex-wrap:wrap; gap:1.2rem 2rem; padding:.65rem 0; ma
       <div class="pager"><span id="range" class="muted"></span><button id="prev">上一页</button><button id="next">下一页</button></div>
     </section>
     <section id="policy" hidden><h2>派工策略</h2>
-      <div class="section-heading"><h3>项目指定模型</h3></div><p class="hint">按任务类型指定型号，或保留「自动选择」。设置从下次领取相应任务时生效。</p>
+      <div id="preset-controls" hidden>
+        <div class="rule">
+          <label for="model-preset">内置策略</label>
+          <select id="model-preset" data-write></select>
+          <button type="button" id="apply-preset" aria-label="应用内置策略" data-write>应用</button>
+        </div>
+        <details id="preset-preview" hidden><summary>查看推荐型号和备选顺序</summary>
+          <div class="table-wrap"><table><thead><tr><th>任务类型</th><th>首选型号</th><th>备选型号</th></tr></thead><tbody id="preset-models"></tbody></table></div>
+          <p class="hint">推荐型号可以收费。项目指定的型号优先，自动派工会过滤已禁用或不符合费用限制的型号。推荐型号不可用时会尝试其他候选。</p>
+        </details>
+      </div>
+      <div class="section-heading"><h3>项目指定模型</h3></div><p class="hint">可以为某类任务指定型号，其余类型沿用当前策略。更改从下次领取相应任务时生效。</p>
       <div id="rules"></div>
       <div class="section-heading"><h3>用户偏好</h3></div>
       <label for="preference">选型倾向</label><textarea id="preference" maxlength="1000" placeholder="例如：日常文案优先快速模型，或仅免费。"></textarea>
@@ -353,13 +364,41 @@ function buildRules() {
   }
 }
 buildRules();
+function drawPresetPreview() {
+  const preset=data.model_presets?.find(item=>item.id===el("model-preset").value);
+  el("preset-preview").hidden=!preset;
+  const rows=Object.entries(preset?.models || {}).map(([mode,models])=>{
+    const row=node("tr");
+    textCell(row,modes[mode] || mode);
+    textCell(row,models[0],"model");
+    textCell(row,models.slice(1).join(" → ") || "自动选择","muted");
+    return row;
+  });
+  el("preset-models").replaceChildren(...rows);
+}
+el("model-preset").onchange=()=>{
+  drafts.set("preset",{value:el("model-preset").value,revision:data.policy.revision});
+  drawPresetPreview();
+};
+el("apply-preset").onclick=()=>{
+  const revision=drafts.get("preset")?.revision ?? data.policy.revision;
+  return post({action:"preset",value:el("model-preset").value || null,revision},
+    ()=>drafts.delete("preset"),()=>{if (drafts.has("preset")) drafts.get("preset").revision=data.policy.revision;});
+};
 function drawRules() {
   const items=inventory();
+  const presets=data.model_presets || [], active=presets.find(item=>item.id===data.policy.preset);
+  const picker=el("model-preset");
+  el("preset-controls").hidden=!presets.length;
+  picker.replaceChildren(new Option("通用自动选模",""),...presets.map(item=>new Option(item.label,item.id)));
+  picker.value=drafts.get("preset")?.value ?? (active?.id || "");
+  drawPresetPreview();
   for (const mode of Object.keys(modes)) {
     const select=el("select-"+mode), chosen=data.policy.selected[mode];
     const value=drafts.get(mode)?.value ?? (chosen ? identity(chosen) : "");
     const options=items.filter(item=>!forbidden(item)&&capabilities(item).includes(mode));
-    select.replaceChildren(new Option("自动选择",""));
+    const recommended=active?.models[mode]?.[0];
+    select.replaceChildren(new Option(recommended ? "按策略优先 · "+recommended : "自动选择",""));
     for (const opt of options) select.add(new Option(providerName(opt.provider)+" · "+opt.model,identity(opt)));
     if (value && !options.some(item=>identity(item)===value)) {
       const [p,m]=JSON.parse(value);
@@ -463,7 +502,7 @@ function draw() {
   el("credential").hidden=data.read_only || !data.cloud_control || Boolean(key);
   const catalog=JSON.stringify([data.providers,data.policy.banned,data.read_only]);
   if (catalog!==catalogStamp) {drawProviders();renderCatalog();catalogStamp=catalog;}
-  const rules=JSON.stringify([catalog,data.policy,data.profiles]);
+  const rules=JSON.stringify([catalog,data.policy,data.profiles,data.model_presets]);
   if (rules!==rulesStamp) {drawRules();rulesStamp=rules;}
   const usage=JSON.stringify(data.usage);
   if (usage!==usageStamp) {drawUsage();usageStamp=usage;}
