@@ -16,7 +16,7 @@ class MediaPlanningTests(unittest.TestCase):
                       "制作约 10 秒的活动宣传片", "制作风格和海报一致的视频"],
         }
         for kind, prompts in examples.items():
-            registration = {"video_prompt": "brief"} if kind == "video" else {"media": {"type": "image", "prompt": "brief"}}
+            registration = {"video_prompt": "brief", "video_settings": {"duration": 10}} if kind == "video" else {"media": {"type": "image", "prompt": "brief"}}
             for prompt in prompts:
                 with self.subTest(prompt=prompt):
                     task = self.task(prompt, role="pm")

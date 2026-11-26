@@ -12,6 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from dispatch import writes_workspace
+from media_planning import video_plan_issue
 from model_policy import MEDIA_MODES, MODEL_ID, MODES, banned, read_policy
 from model_stream import read_completion, response_lines
 from model_timeouts import seconds
@@ -374,7 +375,10 @@ def resolve_route(workspace, task, profile=None, *, isolated, policy=None, requi
         raise ValueError("Only patch profiles can run a test_command")
     video_fields = {"duration", "resolution", "ratio"} & spec.keys()
     if mode == "video":
-        route.update(PROVIDERS[provider].video.settings(spec))
+        if issue := video_plan_issue(task):
+            raise ValueError(f"请 LD 重新规划，{issue}")
+        # The task describes the deliverable; profiles supply only omitted options.
+        route.update(PROVIDERS[provider].video.settings({**spec, **task.get("video_settings", {})}))
     elif video_fields:
         raise ValueError("Video generation settings require a video profile")
     if require_key:
