@@ -55,7 +55,7 @@ class SiliconFlowVideoTest(unittest.TestCase):
         self.assertEqual(self.provider.request.call_count, 0)
 
     def test_worker_submits_once_and_resumes_known_job(self):
-        self.provider.request.side_effect = [self.submission, {"status": "InQueue"}, TimeoutError("timeout"),
+        self.provider.request.side_effect = [self.submission, {"status": "InQueue"}, *[TimeoutError("timeout")] * 4,
                                              {"status": "InProgress"}, self.completed]
         with patch("model_video.time.sleep"):
             failed = self.execute(1)
@@ -67,7 +67,7 @@ class SiliconFlowVideoTest(unittest.TestCase):
         self.assertIn("约一小时", result["content"])
         self.assertEqual(self.execute(0), result)
         self.assertEqual([c.args[0] for c in self.provider.request.call_args_list],
-                         ["/video/submit"] + ["/video/status"] * 4)
+                         ["/video/submit"] + ["/video/status"] * 7)
         self.assertEqual(self.provider.request.call_args_list[0].kwargs["payload"]["prompt"], self.request["video_prompt"])
 
     def test_uncertain_submission_is_never_replayed(self):
@@ -78,7 +78,7 @@ class SiliconFlowVideoTest(unittest.TestCase):
         self.assertEqual(self.provider.request.call_count, 1)
 
     def test_mismatched_or_invalid_jobs_are_rejected(self):
-        self.provider.request.side_effect = [self.submission, TimeoutError("timeout")]
+        self.provider.request.side_effect = [self.submission, {"status": "invalid"}]
         self.execute(1)
         self.request["route"]["model"] = "different-video"
         self.assertIn("参数不一致", self.execute(1)["error"])

@@ -6,6 +6,7 @@ import re
 import time
 
 from model_policy import MODEL_ID
+from model_timeouts import seconds
 
 
 CATALOG_FILTERS = {
@@ -77,7 +78,7 @@ class Video:
 
     @staticmethod
     def submit(provider, payload):
-        body = provider.request("/video/submit", payload=payload, timeout=45)
+        body = provider.request("/video/submit", payload=payload, timeout=seconds("PIONEERS_MODEL_FIRST_RESPONSE_SECONDS"))
         return body.get("requestId") if isinstance(body, dict) else None
 
     @staticmethod

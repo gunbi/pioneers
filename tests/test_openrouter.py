@@ -118,7 +118,6 @@ class OpenRouterTest(unittest.TestCase):
         replies = [{"id":job,"polling_url":"https://other.test/api"}, {"id":job,"status":"in_progress"},
                    TimeoutError("timeout"), {"id":job,"status":"completed","unsigned_urls":[content]}]
         with patch.object(OpenRouter,"request",side_effect=replies) as api, patch("model_video.time.sleep"):
-            self.assertEqual(run(request,self.root,self.out),1)
             self.assertEqual(run(request,self.root,self.out),0)
             self.assertEqual(run(request,self.root,self.out),0)
             result=json.loads(self.out.read_text())

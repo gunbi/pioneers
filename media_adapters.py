@@ -3,12 +3,14 @@
 import base64
 from email.message import Message
 import io
-import json
 from http.client import HTTPException
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, build_opener
 import wave
+
+from model_stream import sse_events
+from model_timeouts import seconds
 
 import openrouter_media
 import siliconflow_media
@@ -91,15 +93,20 @@ def download_siliconflow_image(url):
         valid = False
     if not valid:
         raise ValueError("Untrusted SiliconFlow image delivery host")
-    try:
-        with build_opener(NoRedirect()).open(Request(url), timeout=45) as response:
-            content = response.read(MAX_MEDIA_BYTES + 1)
-    except HTTPError as exc:
-        code = exc.code
-        exc.close()
-        raise ValueError(f"Image delivery returned HTTP {code}") from None
-    except (OSError, HTTPException, ValueError):
-        raise ValueError("Could not read the delivered image") from None
+    timeout = seconds("PIONEERS_MEDIA_RESPONSE_SECONDS")
+    for attempt in range(2):
+        try:
+            with build_opener(NoRedirect()).open(Request(url), timeout=timeout) as response:
+                content = response.read(MAX_MEDIA_BYTES + 1)
+            break
+        except HTTPError as exc:
+            code = exc.code
+            exc.close()
+            if attempt or (code not in (408, 429) and not 500 <= code < 600):
+                raise ValueError(f"Image delivery returned HTTP {code}") from None
+        except (OSError, HTTPException):
+            if attempt:
+                raise ValueError("Could not read the delivered image") from None
     if len(content) > MAX_MEDIA_BYTES:
         raise ValueError("Image exceeds size limit")
     return content
@@ -122,11 +129,12 @@ def first_result(body, name):
 
 def image_result(provider, model, prompt, options):
     payload = {"model": model, "prompt": prompt, **options}
+    timeout = seconds("PIONEERS_MEDIA_RESPONSE_SECONDS")
     if provider.name == "OpenRouter":
-        body = provider.request("/images", payload=payload, timeout=180, max_bytes=MAX_JSON_BYTES)
+        body = provider.request("/images", payload=payload, timeout=timeout, max_bytes=MAX_JSON_BYTES)
         content = decode_media(first_result(body, "data").get("b64_json"))
     else:
-        body = provider.request("/images/generations", payload=payload, timeout=180)
+        body = provider.request("/images/generations", payload=payload, timeout=timeout)
         content = download_siliconflow_image(first_result(body, "images").get("url"))
     return content, {"images": 1, **usage_counts(body)}
 
@@ -168,8 +176,8 @@ def speech_result(provider, model, prompt, options):
             voice = model + ":" + voice
         options = {"voice": voice, "response_format": "mp3"}
     payload = {"model": model, "input": prompt, **options}
-    data, header = provider.request("/audio/speech", payload=payload, timeout=180, raw=True,
-                                    with_content_type=True, max_bytes=MAX_MEDIA_BYTES)
+    data, header = provider.request("/audio/speech", payload=payload, timeout=seconds("PIONEERS_MEDIA_RESPONSE_SECONDS"),
+                                    raw=True, with_content_type=True, max_bytes=MAX_MEDIA_BYTES)
     if options["response_format"] == "pcm":
         data = pcm_to_wav(data, header, model)
     return data, {"audio_files": 1}
@@ -179,24 +187,17 @@ def music_result(provider, model, prompt):
     payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
                "modalities": ["text", "audio"], "audio": {"format": "mp3", "voice": "alloy"},
                "stream": True, "stream_options": {"include_usage": True}}
-    data = provider.request("/chat/completions", payload=payload, timeout=300, raw=True, max_bytes=MAX_JSON_BYTES)
+    timeout = seconds("PIONEERS_MEDIA_RESPONSE_SECONDS")
+    return provider.request("/chat/completions", payload=payload, timeout=timeout, max_bytes=MAX_JSON_BYTES,
+                            stream_reader=read_music, stream_idle=timeout,
+                            stream_total=seconds("PIONEERS_MEDIA_TOTAL_SECONDS"))
+
+
+def read_music(lines):
     audio_bytes = bytearray()
     remainder = ""
     counts = {}
-    done = False
-    for line in io.BytesIO(data):
-        if not line.startswith(b"data:"):
-            continue
-        value = line[5:].strip()
-        if value == b"[DONE]":
-            done = True
-            break
-        try:
-            event = json.loads(value)
-        except (UnicodeError, ValueError):
-            raise ValueError("Invalid OpenRouter music stream") from None
-        if not isinstance(event, dict) or "error" in event:
-            raise ValueError("OpenRouter music generation failed")
+    for event in sse_events(lines):
         counts.update(usage_counts(event))
         for choice in event.get("choices", []):
             if choice.get("finish_reason") not in (None, "stop"):
@@ -213,8 +214,6 @@ def music_result(provider, model, prompt):
                     if len(audio_bytes) > MAX_MEDIA_BYTES:
                         raise ValueError("Decoded media exceeds size limit")
                 remainder = encoded[boundary:]
-    if not done:
-        raise ValueError("OpenRouter music stream ended before completion")
     if remainder or not audio_bytes:
         raise ValueError("Invalid or incomplete OpenRouter music audio")
     return bytes(audio_bytes), {"audio_files": 1, **counts}

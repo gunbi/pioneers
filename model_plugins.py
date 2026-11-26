@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import json
 import re
+import socket
+import time
 from http.client import HTTPException
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -11,8 +13,12 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from dispatch import writes_workspace
 from model_policy import MEDIA_MODES, MODEL_ID, MODES, banned, read_policy
+from model_stream import read_completion, response_lines
+from model_timeouts import seconds
 from provider_credentials import provider_key
-from provider_errors import InsufficientCreditError, ProviderError, RequestRejectedError, account_credit_rejected
+from provider_errors import (
+    InsufficientCreditError, ProviderError, RateLimitedError, RequestRejectedError, TransientProviderError, account_credit_rejected,
+)
 import openrouter_media
 import siliconflow_media
 
@@ -38,6 +44,7 @@ def shared_preflight():
 class ChatProvider:
     public_catalog = False
     report_actual_model = False
+    stream_options = {}
 
     @classmethod
     def api_key(cls):
@@ -48,7 +55,7 @@ class ChatProvider:
 
     @classmethod
     def request(cls, path, *, payload=None, timeout, public=False, raw=False, max_bytes=8 * 1024 * 1024,
-                with_content_type=False):
+                with_content_type=False, stream_reader=None, stream_total=None, stream_idle=None):
         cache = _preflight_reads.get() if payload is None and not raw else None
         key = (cls, path, public, timeout, max_bytes)
         if cache is not None and key in cache:
@@ -57,7 +64,8 @@ class ChatProvider:
                 raise result
             return result
         try:
-            result = cls._request(path, payload, timeout, public, raw, max_bytes, with_content_type)
+            result = cls._request(path, payload, timeout, public, raw, max_bytes, with_content_type,
+                                  stream_reader, stream_total, stream_idle)
         except ProviderError as error:
             if cache is not None:
                 cache[key] = error
@@ -67,14 +75,22 @@ class ChatProvider:
         return result
 
     @classmethod
-    def _request(cls, path, payload, timeout, public, raw, max_bytes, with_content_type):
+    def _request(cls, path, payload, timeout, public, raw, max_bytes, with_content_type,
+                 stream_reader, stream_total, stream_idle):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"}
         if not public:
             headers["Authorization"] = f"Bearer {cls.api_key()}"
         request = Request(cls.base_url + path, data=data, headers=headers)
+        started = time.monotonic()
+        if stream_reader:
+            timeout = min(timeout, stream_total)
         try:
             with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
+                if stream_reader:
+                    lines = response_lines(response, max_bytes, started=started, first=timeout,
+                                           idle=stream_idle, total=stream_total)
+                    return stream_reader(lines)
                 body = response.read(max_bytes + 1)
                 if raw and with_content_type:
                     content_type = response.headers.get("Content-Type", "")
@@ -90,21 +106,29 @@ class ChatProvider:
                     raise InsufficientCreditError(f"{cls.name} HTTP {code}: insufficient credits") from None
             hint = {401: "invalid credential", 402: "payment required", 403: "access denied",
                     404: "model or endpoint unavailable", 408: "request timed out", 429: "rate limited",
+                    500: "server error", 502: "bad gateway", 503: "service unavailable",
                     504: "gateway timed out"}.get(code, "request rejected")
             error_type = RequestRejectedError if code in (400, 401, 402, 403, 404, 405, 413, 415, 422, 429) else ProviderError
+            if code == 429:
+                error_type = RateLimitedError
+            elif code == 408 or 500 <= code < 600:
+                error_type = TransientProviderError
             raise error_type(f"{cls.name} HTTP {code}: {hint}") from None
         except (OSError, HTTPException) as error:
-            timed_out = isinstance(error, TimeoutError) or (
-                isinstance(error, URLError) and isinstance(error.reason, TimeoutError))
+            timed_out = isinstance(error, (TimeoutError, socket.timeout)) or (
+                isinstance(error, URLError) and isinstance(error.reason, (TimeoutError, socket.timeout)))
             detail = "timed out" if timed_out else "connection failed"
-            raise ProviderError(f"{cls.name} {detail}") from None
+            raise TransientProviderError(f"{cls.name} {detail}") from None
         except ValueError:
             raise ProviderError(f"{cls.name} returned invalid JSON") from None
 
     @classmethod
     def complete(cls, model, prompt):
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False}
-        body = cls.request("/chat/completions", payload=payload, timeout=120)
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": True}
+        payload.update(cls.stream_options)
+        body = cls.request("/chat/completions", payload=payload, timeout=seconds("PIONEERS_MODEL_FIRST_RESPONSE_SECONDS"),
+                           stream_reader=read_completion, stream_total=seconds("PIONEERS_MODEL_TOTAL_SECONDS"),
+                           stream_idle=seconds("PIONEERS_MODEL_STREAM_IDLE_SECONDS"))
         choices = body.get("choices") if isinstance(body, dict) else None
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
             raise ProviderError(f"{cls.name} returned no completion")
@@ -154,6 +178,7 @@ class OpenRouter(ChatProvider):
     base_url = "https://openrouter.ai/api/v1"
     public_catalog = True
     report_actual_model = True
+    stream_options = {"stream_options": {"include_usage": True}}
 
     video = openrouter_media.Video
 

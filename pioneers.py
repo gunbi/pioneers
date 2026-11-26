@@ -36,6 +36,7 @@ from model_plugins import (
     project_pin, public_profiles, resolve_route, shared_preflight, task_mode,
 )
 import generated_media
+import model_timeouts
 from media_planning import media_plan_issue, required_media_types
 from model_policy import (MEDIA_MODES, MODEL_PRESETS, active_preset, ban_insufficient_credit,
                           initialize_model_policy, offer_model_preference, read_policy, update_policy)
@@ -1264,7 +1265,7 @@ def model_supervisor_environment(provider_id):
     allowed = {"PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SYSTEMROOT", "WINDIR", "COMSPEC",
                "PATHEXT", "TMP", "TEMP", "TMPDIR", "LANG", "LANGUAGE", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "APPDATA", "LOCALAPPDATA",
-               PROVIDERS[provider_id].key_env}
+               PROVIDERS[provider_id].key_env, *model_timeouts.DEFAULTS}
     return {key: value for key, value in os.environ.items() if key.upper() in allowed or key.startswith("LC_")}
 
 
@@ -2461,7 +2462,7 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
             output = Path(temporary) / "response.json"
             command = [sys.executable, "-E", "-s", str(ROOT / "model_worker.py"), str(request), str(output)]
             # Bound a slow HTTP stream as well as the subsequent local test.
-            limit = 900 if executor["mode"] in ("video", *MEDIA_MODES) else 360
+            limit = model_timeouts.worker_limit(executor["mode"])
             env = model_supervisor_environment(executor["provider"])
             provider = PROVIDERS[executor["provider"]]
             env.pop(provider.key_env, None)

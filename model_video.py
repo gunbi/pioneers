@@ -5,10 +5,11 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import time
 from urllib.parse import urlsplit
 
-from provider_errors import InsufficientCreditError
+from provider_errors import InsufficientCreditError, RateLimitedError, TransientProviderError
 from skill_sources import write_json
 
 
@@ -77,8 +78,17 @@ def video_job(provider, route, prompt, receipt_path, result):
     if not valid_job_id(request_id):
         raise ValueError("Invalid video receipt request ID")
     result["video"] = {"request_id": request_id, "state": receipt["state"]}
+    poll_failures = 0
     while receipt["state"] not in ("Succeed", "Failed"):
-        state, body = adapter.poll(provider, request_id)
+        try:
+            state, body = adapter.poll(provider, request_id)
+        except (TransientProviderError, RateLimitedError, TimeoutError, socket.timeout):
+            if poll_failures >= 3:
+                raise
+            time.sleep(5 * 2 ** poll_failures)
+            poll_failures += 1
+            continue
+        poll_failures = 0
         if state not in VIDEO_STATES:
             raise ValueError(f"{provider.name} returned an invalid video job status")
         result["video"]["state"] = state

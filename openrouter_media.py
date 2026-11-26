@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import re
 
 from model_policy import MODEL_ID
+from model_timeouts import seconds
 
 
 def rows(provider, path, *, public):
@@ -216,7 +217,7 @@ class Video:
 
     @staticmethod
     def submit(provider, payload):
-        body = provider.request("/videos", payload=payload, timeout=45)
+        body = provider.request("/videos", payload=payload, timeout=seconds("PIONEERS_MODEL_FIRST_RESPONSE_SECONDS"))
         return body.get("id") if isinstance(body, dict) else None
 
     @staticmethod

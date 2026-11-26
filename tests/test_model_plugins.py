@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import socket
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -174,7 +175,7 @@ class SiliconFlowAPI(unittest.TestCase):
                 with self.assertRaisesRegex(ProviderError, hint) as error:
                     complete(self.route, "test")
                 self.assertNotIn("test-only", str(error.exception))
-        self.open.side_effect = URLError(TimeoutError())
+        self.open.side_effect = URLError(socket.timeout())
         with self.assertRaisesRegex(ProviderError, "timed out"):
             complete(self.route, "test")
         self.open.side_effect = URLError("test-only")

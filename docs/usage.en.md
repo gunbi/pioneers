@@ -293,6 +293,22 @@ When a claim selects a remote model, Pioneers launches its executor in the backg
 
 The executor renews the heartbeat and archives artifacts. The project's run usage view (运行用量) shows the actual model, selection rationale, elapsed time, and usage reported in the receipt. Once a request has been sent, failure or timeout enters recovery for the original task. An accepted media request resumes with the original provider and model, using its receipt to check status or reuse the artifact. If acceptance is uncertain, reconcile it first to prevent duplicate generation and charges.
 
+#### Remote generation timeouts
+
+SiliconFlow and OpenRouter text and code patch requests accept streaming responses. By default, Pioneers waits up to five minutes for the first model data and two minutes between subsequent reads. Early keepalive comments retain the initial wait budget. Text inference has a 15-minute overall limit. Patch workers reserve another two minutes for project tests. A completion must be complete before Pioneers delivers the text or applies a patch.
+
+Image, narration and sound effect requests allow ten minutes per blocking network operation. Music streams allow ten minutes for both initial data and subsequent idle reads. Media workers have a 30-minute overall limit. Video submission allows five minutes. After receiving a job ID, Pioneers waits up to 30 seconds per status query and retries transient network or service errors up to three consecutive times against that ID. A SiliconFlow signed image download can retry the same URL once after a transient connection or service failure. An uncertain paid submission still requires reconciliation.
+
+Set these environment variables before starting Pioneers to override the defaults for new executors. Values are integer seconds from 1 to 86400.
+
+| Environment variable | Default seconds | Applies to |
+| --- | ---: | --- |
+| `PIONEERS_MODEL_FIRST_RESPONSE_SECONDS` | 300 | First data for text and patches, video submission |
+| `PIONEERS_MODEL_STREAM_IDLE_SECONDS` | 120 | Idle reads for text and patches |
+| `PIONEERS_MODEL_TOTAL_SECONDS` | 900 | Text and patch inference |
+| `PIONEERS_MEDIA_RESPONSE_SECONDS` | 600 | Image, speech and sound effect calls, image download, music stream reads |
+| `PIONEERS_MEDIA_TOTAL_SECONDS` | 1800 | Entire media worker |
+
 #### Named profiles and catalogs
 
 To set a default for a task type, specify video parameters, or provide a trusted patch test command, define named profiles in the project's `.pioneers/models.json`. Use the provider ID `siliconflow` or `openrouter` and copy the model ID from the project dashboard.

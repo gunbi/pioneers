@@ -8,8 +8,16 @@ class ProviderError(RuntimeError):
     """A diagnostic safe to record on a task attempt."""
 
 
+class TransientProviderError(ProviderError):
+    """Transport or temporary upstream failure. Submitted inference may have run."""
+
+
 class RequestRejectedError(ProviderError):
     """The provider explicitly rejected the request before inference."""
+
+
+class RateLimitedError(RequestRejectedError):
+    """The endpoint rejected this request because of its current rate limit."""
 
 
 class InsufficientCreditError(RequestRejectedError):

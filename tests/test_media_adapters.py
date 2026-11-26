@@ -5,6 +5,7 @@ import unittest
 import wave
 from unittest.mock import Mock, patch
 
+from provider_errors import ProviderError
 from media_adapters import check_available, download_siliconflow_image, file_type, generate
 import openrouter_media
 import siliconflow_media
@@ -31,7 +32,8 @@ def fixture(name, catalog=None, replies=None):
     provider.name = name
     def request(path, **kw):
         if kw.get("payload") is not None:
-            return replies[path]
+            reply = replies[path]
+            return kw["stream_reader"](reply.splitlines()) if kw.get("stream_reader") else reply
         return {"data": (catalog or {}).get(path, [])}
     provider.request.side_effect = request
     return provider
@@ -129,14 +131,16 @@ class MediaAdaptersTest(unittest.TestCase):
         replies = {api: chunks + b"data: [DONE]\n\n"}
         provider = fixture("OpenRouter", {"/models?output_modalities=all": [MUSIC]}, replies)
         self.assertEqual(execute(provider, "music", MUSIC["id"]), (MP3, "audio/mpeg", {"audio_files": 1, "total_tokens": 40}))
-        self.assertTrue(provider.request.call_args.kwargs["payload"]["stream"])
+        options = provider.request.call_args.kwargs
+        self.assertTrue(options["payload"]["stream"])
+        self.assertEqual((options["timeout"], options["stream_idle"], options["stream_total"]), (600, 600, 1800))
         independent = [base64.b64encode(block).decode() for block in (MP3[:5], MP3[5:])]
         replies[api] = b"".join(b"data: " + json.dumps({"choices": [{"delta": {"audio": {"data": part}}}]}).encode()
                                 + b"\n\n" for part in independent) + b"data: [DONE]\n\n"
         self.assertEqual(execute(provider, "music", MUSIC["id"])[0], MP3)
         for ending in [b"", b'data: {"error":{"message":"injected details"}}\n\ndata: [DONE]\n']:
             replies[api] = chunks + ending
-            with self.assertRaisesRegex(ValueError, "ended|failed"):
+            with self.assertRaisesRegex(ProviderError, "ended|failed"):
                 execute(provider, "music", MUSIC["id"])
 
     def test_siliconflow_subtypes_and_anonymous_signed_image_download(self):
@@ -150,8 +154,11 @@ class MediaAdaptersTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unavailable"):
             check_available(provider, edit, "image", {})
         with patch("media_adapters.build_opener") as factory:
-            factory.return_value.open.return_value = io.BytesIO(PNG)
+            factory.return_value.open.side_effect = [TimeoutError(), io.BytesIO(PNG)]
             self.assertEqual(execute(provider, "image", model), (PNG, "image/png", {"images": 1}))
+            self.assertEqual(factory.return_value.open.call_count, 2)
+            self.assertEqual(factory.return_value.open.call_args.kwargs["timeout"], 600)
+            self.assertEqual(sum(call.args[0] == "/images/generations" for call in provider.request.call_args_list), 1)
             self.assertIsNone(factory.return_value.open.call_args.args[0].get_header("Authorization"))
             self.assertIsNone(factory.call_args.args[0].redirect_request(None, None, None, None, None, None))
         for url in ["https://localhost/token", "https://s3.siliconflow.cn:8443/img",
