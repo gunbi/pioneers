@@ -191,7 +191,13 @@ class Progress:
             for task_id in order
         }
         if preserve:
-            self.data["tasks"].update(records)
+            for key, record in records.items():
+                previous = self.data["tasks"].get(key)
+                if previous:
+                    # A replanned, unclaimed retry keeps its attempt and past execution evidence.
+                    previous.update({field: value for field, value in record.items() if field != "attempt"})
+                else:
+                    self.data["tasks"][key] = record
         else:
             self.data["tasks"] = records
         self.save()

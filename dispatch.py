@@ -1,6 +1,8 @@
 from graphlib import TopologicalSorter
 import time
 
+from media_planning import media_plan_issue
+
 
 def current_executor(job):
     return job.get("executors", {}).get(str(job.get("attempt", 1)), {})
@@ -72,7 +74,7 @@ def can_adopt_merged(data, tasks, task_id):
     job = data["tasks"][task_id]
     return (data["mode"] == "host" and data["state"] == "running" and bool(data.get("git_base"))
             and job["state"] in ("pending", "recovery_required")
-            and writes_workspace(task) and not task.get("review") and not preapproval_required(task)
+            and not media_plan_issue(task) and writes_workspace(task) and not task.get("review") and not preapproval_required(task)
             and not job.get("authorization") and not waiting_on(data, task)
             and not write_conflicts(data, tasks, task_id)
             and not any(operation["kind"] == "external"
@@ -100,6 +102,8 @@ def claim_blockers(data, workflow_tasks, task_id):
     task = workflow_tasks[task_id]
     if job["state"] == "recovery_required":
         return [{"code": "recovery_required", "message": job["activity"]}]
+    if job["state"] == "pending" and (issue := media_plan_issue(task)):
+        return [{"code": "media_replan", "message": issue}]
     if data.get("paused"):
         return [{"code": "paused", "message": "Run is paused"}]
     if pending_replan(data):

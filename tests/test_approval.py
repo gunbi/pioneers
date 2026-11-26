@@ -216,6 +216,80 @@ class ApprovalTest(unittest.TestCase):
         self.assertEqual(qa["git"]["base"], merged)
         self.assertEqual(self.git(Path(qa["workspace"]), "rev-parse", "HEAD"), merged)
 
+    def test_media_registration_returns_both_demo_tasks_to_ld_before_claim(self):
+        poster = self.task("poster", role="engineer", write_paths=["media/poster"],
+                           prompt="按已确认的活动信息与视觉设计制作手机群宣传海报。保存最终图片。")
+        video = self.task("video", ["poster"], role="engineer", write_paths=["media/video"],
+                          prompt="以已完成海报作为视觉参考制作约10秒宣传短片。输出实际可播放视频。")
+        qa = self.task("verify", ["poster", "video"], role="qa", review=True)
+        self.host([poster, video, qa])
+        self.assertEqual(self.started["replan"]["media_tasks"], {"poster": ["image"], "video": ["video"]})
+        self.assertEqual(self.cli("--host-ready", self.run_dir)["ready"], [])
+        self.assertIn("media.type=image", self.claim("poster", code=1))
+        self.assertIn("video_prompt", self.cli("--host-claim", self.run_dir, "--task", "video",
+                                               "--profile", "host", code=1))
+        state = self.state()
+        self.assertFalse(any(job.get("member") or job.get("executors") for job in state["tasks"].values()))
+        self.assertFalse(list(self.run_dir.glob(".model-*")))
+        plan = self.cli("--replan", self.run_dir)
+        self.assertEqual(plan["role"], "ld")
+
+        def revise(tasks, code=0):
+            self.artifact.write_text(json.dumps({"tasks": tasks}))
+            return self.cli("--replan", self.run_dir, "--revision", plan["revision"], "--artifact", self.artifact, code=code)
+
+        fixed = {**poster, "write_paths": [], "deliverable_type": "image", "media": {"type": "image", "prompt": "草地飞盘活动"}}
+        self.assertIn("video_prompt", revise([fixed], code=1))
+        self.assertIn("video_prompt", revise([fixed, {**video, "write_paths": [],
+                                                    "media": {"type": "video", "prompt": "飞盘"}}], code=1))
+        self.assertIn("须保留 video", revise([fixed, {**video, "prompt": "Write a note."}], code=1))
+        self.assertIsNotNone(self.cli("--host-ready", self.run_dir)["replan"])
+        revise([fixed, {**video, "write_paths": [], "deliverable_type": "video", "video_prompt": "草坪上的飞盘，10 秒"}])
+        self.assertEqual([x["task"] for x in self.cli("--host-ready", self.run_dir)["ready"]], ["poster"])
+        self.assertIn("媒体模型", self.cli("--host-claim", self.run_dir, "--task", "poster", "--profile", "host", code=1))
+
+    def test_legacy_media_retry_returns_to_ld_and_keeps_previous_attempt(self):
+        history = self.task("poster")
+        video = self.task("video", ["poster"])
+        self.host([history, video])
+        self.claim("poster")
+        self.judge(self.submit("poster", "original poster evidence"))
+        file = self.run_dir / "workflow.json"
+        draft = json.loads(file.read_text())
+        draft["tasks"][0]["prompt"] = "制作一张团建海报"
+        bad = draft["tasks"][1]
+        bad.update(prompt="生成宣传视频", write_paths=["media/video"])
+        file.write_text(json.dumps(draft))
+        old = {"1": {"provider": "host"}}
+        with Progress.locked(self.run_dir) as current:
+            current.data["tasks"]["video"].update(attempt=2, executors=old, recoveries=[{"attempt": 1}])
+        self.assertIn("LD", self.cli("--host-claim", self.run_dir, "--task", "video", "--profile", "host", code=1))
+        ready = self.cli("--host-ready", self.run_dir)
+        self.assertEqual(ready["replan"]["media_tasks"], {"video": ["video"]})
+        self.assertEqual(ready["ready"], [])
+        revision = self.cli("--replan", self.run_dir)["revision"]
+        fixed = {**bad, "write_paths": [], "video_prompt": "飞盘活动宣传片。"}
+        self.artifact.write_text(json.dumps({"tasks": [fixed]}))
+        self.cli("--replan", self.run_dir, "--revision", revision, "--artifact", self.artifact)
+        state = self.state()["tasks"]
+        self.assertEqual(state["video"]["attempt"], 2)
+        self.assertEqual(state["video"]["executors"], old)
+        self.assertEqual(state["video"]["recoveries"], [{"attempt": 1}])
+        self.assertEqual(state["poster"]["state"], "completed")
+        self.assertTrue((self.run_dir / state["poster"]["evidence"]).exists())
+        self.assertNotIn("member", state["video"])
+
+    def test_missing_generation_task_must_be_added_by_ld(self):
+        self.host([self.task("notes")], goal="为团建生成一张宣传海报。")
+        self.assertEqual(self.started["replan"]["missing_media"], ["image"])
+        revision = self.cli("--replan", self.run_dir)["revision"]
+        self.artifact.write_text(json.dumps({"tasks": [self.task("other")]}))
+        self.assertIn("未拆分", self.cli("--replan", self.run_dir, "--revision", revision,
+                                        "--artifact", self.artifact, code=1))
+        self.artifact.write_text(json.dumps({"tasks": [self.task("art", media={"type": "image", "prompt": "飞盘日"})]}))
+        self.cli("--replan", self.run_dir, "--revision", revision, "--artifact", self.artifact)
+        self.assertIn("媒体模型", self.cli("--host-claim", self.run_dir, "--task", "art", "--profile", "host", code=1))
+
     def test_quiet_native_session_keeps_ownership_until_host_confirms_its_status(self):
         self.host([self.task("draft"), self.task("other")])
         self.claim("draft")

@@ -7,7 +7,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -225,6 +225,22 @@ class DeliveryLoopTest(unittest.TestCase):
             snapshot = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
             self.assertEqual(snapshot["state"], "completed")
             self.assertEqual({d["state"] for d in snapshot["decisions"].values()}, {"auto"})
+
+    def test_planner_returns_misregistered_video_to_ld(self):
+        with TemporaryDirectory() as temp, redirect_stdout(StringIO()):
+            root = Path(temp)
+            goal = "制作团建宣传短片"
+            task = {"id": "clip", "role": "pm", "prompt": goal, "acceptance": ["交付成片"],
+                    "complexity": {"level": "low", "reason": "短文生视频"}, "tools": []}
+            runner = Mock(workspace=root)
+            drafts = [{"tasks": [task]}, {"tasks": [{**task, "video_prompt": "公园里的飞盘活动"}]}]
+            runner.run.side_effect = [json.dumps(d) for d in drafts]
+            run_dir, progress = create_run(root / "runs", goal, {}, (), "live")
+            _, tasks, _ = plan_workflow(goal, runner, run_dir, progress)
+            self.assertEqual(tasks["clip"]["video_prompt"], "公园里的飞盘活动")
+            self.assertEqual([call.args[0] for call in runner.run.call_args_list], ["ld", "ld"])
+            self.assertIn("video_prompt", runner.run.call_args_list[1].args[1])
+            self.assertNotIn("executors", progress.data["tasks"]["clip"])
 
     def test_live_executor_applies_operator_replan_before_completion(self):
         goal, tasks, _ = load_workflow(ROOT / "examples/todo.json")

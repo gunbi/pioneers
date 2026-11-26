@@ -11,6 +11,7 @@
           "id": {"type": "string"},
           "role": {"enum": ["ld", "pm", "engineer", "qa"]},
           "prompt": {"type": "string"},
+          "deliverable_type": {"enum": ["image", "video", null], "description": "Final generated poster/image or video. Use media.type=image plus media.prompt, or video_prompt, respectively."},
           "video_prompt": {"type": ["string", "null"], "minLength": 1, "maxLength": 10000},
           "media": {
             "type": ["object", "null"],

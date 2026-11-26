@@ -51,6 +51,15 @@ class AutomaticDispatchTest(unittest.TestCase):
     def claim(self, task="low", **kwargs):
         return update_host(self.run, task, None, None, None, None, **kwargs)
 
+    def test_declared_generation_claim_selects_video_plugin(self):
+        self.setup_run(deliverable_type="video", prompt="生成活动视频", video_prompt="A frisbee in flight")
+        self.policy("select", provider="openrouter", model="org/video", mode="video")
+        with self.assertRaisesRegex(ValueError, "媒体模型"):
+            self.claim(profile="host")
+        self.assertNotIn("executors", Progress.open(self.run).data["tasks"]["low"])
+        executor = self.claim()["executor"]
+        self.assertEqual((executor["provider"], executor["mode"]), ("openrouter", "video"))
+
     def test_ready_shares_catalog_and_cli_selects_from_ranked_candidates(self):
         self.setup_run(skills=["requirements-design"])
         ready = host_ready(self.run)

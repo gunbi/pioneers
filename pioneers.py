@@ -36,6 +36,7 @@ from model_plugins import (
     project_pin, public_profiles, resolve_route, shared_preflight, task_mode,
 )
 import generated_media
+from media_planning import media_plan_issue, required_media_types
 from model_policy import (MEDIA_MODES, MODEL_PRESETS, active_preset, ban_insufficient_credit,
                           initialize_model_policy, offer_model_preference, read_policy, update_policy)
 from provider_credentials import (
@@ -249,10 +250,37 @@ def create_team(path, model):
 
 
 def load_workflow(path):
-    return validate_workflow(json.loads(path.read_text(encoding="utf-8")))
+    # Loading history must also work for plans created before media validation.
+    return validate_workflow(json.loads(path.read_text(encoding="utf-8")), check_media=False)
 
 
-def validate_workflow(workflow, generated=False):
+class MediaPlanError(ValueError):
+    """The LD can correct the media declaration before any executor receives work."""
+
+
+def missing_media_types(goal, tasks):
+    missing = required_media_types({"prompt": goal})
+    for task in tasks:
+        if not missing:
+            break
+        missing.difference_update(required_media_types(task))
+        missing.discard(task_mode(task))
+    return sorted(missing)
+
+
+def missing_media_note(kinds):
+    return "请 LD 重新规划：需求包含未拆分的媒体交付，请补充独立生成任务 · " + "、".join(kinds)
+
+
+def validate_media_plan(tasks, missing=()):
+    issues = [issue for task in tasks if (issue := media_plan_issue(task))]
+    if missing:
+        issues.append(missing_media_note(missing))
+    if issues:
+        raise MediaPlanError("\n".join(issues))
+
+
+def validate_workflow(workflow, generated=False, *, check_media=True):
     if not isinstance(workflow, dict):
         raise ValueError("Workflow must be a JSON object")
     goal = workflow.get("goal")
@@ -301,20 +329,15 @@ def validate_workflow(workflow, generated=False):
         if task.get("media") is not None:
             media = task["media"]
             if (not isinstance(media, dict) or set(media) - {"type", "prompt", "voice"}
-                    or media.get("type") not in MEDIA_MODES or not isinstance(media.get("prompt"), str)
+                    or media.get("type") not in (*MEDIA_MODES, "video") or not isinstance(media.get("prompt"), str)
                     or not media["prompt"].strip() or len(media["prompt"]) > 10000):
-                raise ValueError(f"{task_id}: media needs a supported type and a creative prompt of 1–10000 characters")
+                raise MediaPlanError(f"{task_id}: LD 重新规划：media needs a supported type and a creative prompt of 1–10000 characters")
             if "voice" in media and (media["type"] != "speech" or not isinstance(media["voice"], str)
                                      or not media["voice"].strip() or not media["voice"].isprintable()
                                      or len(media["voice"]) > 256):
                 raise ValueError(f"{task_id}: only speech media accepts a voice of 1–256 printable characters")
-            if video_prompt is not None or task.get("tools") or task.get("write_paths") or review or task.get("effect") or design_only(task):
-                raise ValueError(f"{task_id}: media needs a dedicated task without video_prompt, tools, writes, review or external effects")
-        if video_prompt is not None:
-            if (not isinstance(video_prompt, str) or not video_prompt.strip() or len(video_prompt) > 10000
-                    or task.get("tools") or task.get("write_paths") or review or task.get("effect")
-                    or design_only(task)):
-                raise ValueError(f"{task_id}: video_prompt needs a plain creative brief and a task without tools, file writes, review or external effects")
+        if video_prompt is not None and (not isinstance(video_prompt, str) or not video_prompt.strip() or len(video_prompt) > 10000):
+            raise MediaPlanError(f"{task_id}: LD 重新规划：video_prompt needs a plain creative brief of 1–10000 characters")
         if task.get("effect") is not None and (not isinstance(task["effect"], str) or task["effect"] not in EFFECTS):
             raise ValueError(f"{task_id}: invalid effect")
         if task.get("impact") is not None and (not isinstance(task["impact"], str) or task["impact"] not in IMPACTS):
@@ -358,6 +381,9 @@ def validate_workflow(workflow, generated=False):
             raise ValueError(f"{task_id}: write_paths must be project-relative file or directory paths")
         tasks[task_id] = task
         graph.add(task_id, *dependencies)
+
+    if check_media:
+        validate_media_plan(tasks.values(), missing_media_types(goal, tasks.values()))
 
     unknown = {
         dependency
@@ -612,6 +638,8 @@ def plan_workflow(goal, executor, run_dir, progress):
         "可以查阅当前项目，规划阶段仅做只读分析。"
         "在满足验收标准、控制返工和合并冲突的前提下，尽量缩短从开工到独立验收通过的时间。"
         f"{ITERATION_PLANNING}"
+        "生成海报或成片应声明 deliverable_type=image 或 video，分别填写 media.type=image 与 media.prompt、"
+        "或 video_prompt，tools 和 write_paths 留空；创作和代码实现、后期归档或独立验收分开派工。"
         "先理出关键路径，优先安排会阻塞多个后续任务的决定、共享契约或环境准备。"
         "depends_on 只列开工前确实需要的产物。多个独立任务需要同一产物时分别依赖它，完全独立的任务可立即启动。"
         "能独立修改、测试并交接的工作尽早并行。共享契约确定后，前端可用 Mock 开发，后端可实现接口，QA 可准备验收。"
@@ -619,7 +647,6 @@ def plan_workflow(goal, executor, run_dir, progress):
         "为写入任务在 write_paths 声明相对项目根目录的文件或目录。只读任务或范围尚不明确时填空数组。"
         "生成图片、旁白、配乐、音效时分别单列 media 任务，type 为 image、speech、music、sound_effect，"
         "prompt 仅写交给供应商的创作说明；speech 可选 voice。tools 和 write_paths 留空，独立 QA 另派。"
-        "明确要生成视频时，用 video_prompt 单列交给视频模型的创作提示，tools 和 write_paths 留空。"
         "同一根因合并修复，同一段实现需要连续修改时用 depends_on 传递已验收的提交。并行修复安排依赖它们的集成与回归验收。"
         "任务提示写清真正等待的产物和可独立交付的边界。实现任务要有下游独立 qa 验收任务，只有实际验收填写 review=true。"
         f"{PRODUCT_EXPERIENCE_PLANNING}"
@@ -639,12 +666,20 @@ def plan_workflow(goal, executor, run_dir, progress):
                    f"\n目标：{summary['goal']}\n{results[:4000]}")
     progress.planning("running", "正在选择角色和任务依赖")
     try:
-        raw = executor.run("ld", prompt, lambda text: progress.planning("running", text),
-                           phase="plan", schema=schema)
-        workflow = json.loads(raw)
-        if isinstance(workflow, dict):
-            workflow["goal"] = goal
-        result = validate_workflow(workflow, generated=True)
+        for attempt in range(2):
+            raw = executor.run("ld", prompt, lambda text: progress.planning("running", text),
+                               phase="plan", schema=schema)
+            workflow = json.loads(raw)
+            if isinstance(workflow, dict):
+                workflow["goal"] = goal
+            try:
+                result = validate_workflow(workflow, generated=True)
+                break
+            except MediaPlanError as error:
+                if attempt:
+                    raise
+                progress.planning("running", f"媒体登记退回 LD 重新规划 · {error}")
+                prompt += f"\n上一份计划：{raw}\n媒体登记校验：{error}\n请修正并返回完整计划。"
         path = run_dir / "workflow.json"
         _, tasks, order = result
         with Progress.locked(run_dir) as current:
@@ -1268,6 +1303,9 @@ def host_ready(run_dir, wait=0, *, observed_active=(), launch_models=False):
         if path != current_workflow:
             _, tasks, _ = load_workflow(path)
             current_workflow = path
+        data = sync_media_replan(run_dir, data, tasks)
+        if workflow_path(run_dir, data) != path:
+            continue
         if launch_models and data["state"] == "running" and not data.get("paused"):
             retry_before = time.time() - MODEL_START_GRACE_SECONDS
             awaiting = [(key, job.get("attempt", 1)) for key, job in data["tasks"].items()
@@ -1292,6 +1330,10 @@ def host_ready(run_dir, wait=0, *, observed_active=(), launch_models=False):
     return host_routing_summary(run_dir, data, tasks, summary, project_registry(Path(data["workspace"])))
 
 
+def requires_media_executor(task, job):
+    return task_mode(task) in ("video", "image") and (job.get("remote_media_required") or bool(required_media_types(task)))
+
+
 def host_routing_summary(run_dir, data, tasks, summary, registry, load=None):
     workspace = Path(data["workspace"])
     summary.update(dispatch_models(registry, workspace))
@@ -1310,14 +1352,79 @@ def host_routing_summary(run_dir, data, tasks, summary, registry, load=None):
                 options, _, reason = routing_options(run_dir, data, task, workspace, config, summary["model_policy"], None, load)
                 item["model_candidates"] = [candidate for candidate, _ in options[:8]]
                 if not options:
-                    item["model_routing_reason"] = reason
+                    item["model_routing_reason"] = ("此任务须由对应的媒体模型执行，请检查提供商、模型策略或凭据"
+                                                   if requires_media_executor(task, data["tasks"][item["task"]]) else reason)
             except (ValueError, OSError, RuntimeError) as error:
                 item["model_routing_reason"] = str(error)
     return summary
 
 
+def pending_media_issues(data, tasks):
+    if data["state"] != "running":
+        return {}, []
+    plan = pending_replan(data) or {}
+    recorded = plan.get("media_tasks", {})
+    issues = {}
+    for key, task in tasks.items():
+        job = data["tasks"][key]
+        unclaimed = job["state"] == "pending" or (
+            job["state"] == "awaiting_confirmation" and job.get("authorization") and not job.get("evidence"))
+        if key in recorded or not unclaimed:
+            continue
+        if issue := media_plan_issue(task):
+            issues[key] = issue
+    missing = [] if plan.get("missing_media") else missing_media_types(data["goal"], tasks.values())
+    return issues, missing
+
+
+def return_media_to_ld(progress, tasks, issues, missing):
+    data = progress.data
+    plan = pending_replan(data)
+    if plan is None:
+        revision = data.get("replan", {}).get("revision", 0) + 1
+        plan = data["replan"] = {"revision": revision, "state": "pending", "notes": []}
+    elif plan.pop("started", None):
+        plan["revision"] += 1
+    rejected = plan.setdefault("media_tasks", {})
+    for key, reason in issues.items():
+        kinds = required_media_types(tasks[key])
+        if not kinds:
+            task = tasks[key]
+            if task.get("video_prompt"):
+                kinds.add("video")
+            declared = (task.get("media") or {}).get("type")
+            if declared in ("image", "video"):
+                kinds.add(declared)
+        rejected[key] = sorted(kinds)
+        plan["notes"].append(reason)
+        job = data["tasks"][key]
+        if job.get("authorization"):
+            # A revised definition needs a fresh authorization for its actual scope.
+            supersede(progress, job.pop("authorization"))
+        progress.task(key, "pending", reason, announce=False, persist=False)
+    if missing:
+        plan["missing_media"] = missing
+        plan["notes"].append(missing_media_note(missing))
+    progress.event("ld", None, "running", "媒体登记退回 LD 重新规划 · " + "、".join([*issues, *missing]))
+
+
+def sync_media_replan(run_dir, data, tasks):
+    # The queue and direct claim can race another coordinator or an LD revision.
+    if any(pending_media_issues(data, tasks)):
+        with Progress.locked(run_dir) as current:
+            if current.data.get("workflow_revision") == data.get("workflow_revision"):
+                issues, missing = pending_media_issues(current.data, tasks)
+                if issues or missing:
+                    return_media_to_ld(current, tasks, issues, missing)
+            return current.data
+    return data
+
+
 def reconcile(progress, tasks):
     data = progress.data
+    issues, missing = pending_media_issues(data, tasks)
+    if issues or missing:
+        return_media_to_ld(progress, tasks, issues, missing)
     if data["state"] != "running" or pending_replan(data):
         return
     for task_id, task in tasks.items():
@@ -1492,7 +1599,7 @@ def refresh_run_skills(progress):
 def start_host(workflow_path, output_dir, workspace, require_release):
     workspace = project_workspace(workspace)
     workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
-    goal, tasks, order = validate_workflow(workflow, generated=True)
+    goal, tasks, order = validate_workflow(workflow, generated=True, check_media=False)
     if require_release:
         validate_release_workflow(tasks)
     binding = bind_project(workspace)
@@ -1509,7 +1616,8 @@ def start_host(workflow_path, output_dir, workspace, require_release):
     if git_base:
         progress.data["git_base"] = git_base
     reconcile(progress, tasks)
-    progress.event("ld", None, "completed", "工作流已登记，启动看板后可领取依赖就绪的任务")
+    if not pending_replan(progress.data):
+        progress.event("ld", None, "completed", "工作流已登记，启动看板后可领取依赖就绪的任务")
     register_run(registry, run_dir)
     refresh_run_skills(progress)
     port = active_project_port(registry, run_dir)
@@ -1517,7 +1625,8 @@ def start_host(workflow_path, output_dir, workspace, require_release):
     return {"run_dir": str(run_dir), "project_dashboard_url": project_url,
             "project_run_url": f"{project_url}runs/{run_dir.name}/" if project_url else None,
             "workspace": str(workspace), "project_rules": binding["project_rules"],
-            "tasks": progress.data["tasks"], "skill_sources": progress.data["skill_sources"]}
+            "tasks": progress.data["tasks"], "skill_sources": progress.data["skill_sources"],
+            **({"replan": progress.data["replan"]} if pending_replan(progress.data) else {})}
 
 
 def print_with_model_preference(registry, result):
@@ -1698,6 +1807,8 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
         previous = job["recoveries"][-1].get("member")
         if previous:
             member_id = previous["id"]
+    if progress.data["mode"] == "host" and not route and requires_media_executor(task, job):
+        raise ValueError(f"{task_id}: 此任务须由对应的媒体模型执行，请检查提供商、模型策略或凭据后重新领取")
     assign_member(progress, job, member_id, member_name)
     review = task.get("review", False)
     workspace, checkout = task_worktree(progress, workflow_tasks, task_id)
@@ -1871,7 +1982,7 @@ def run_live(tasks, order, executor, progress, *, reopen=False, refresh_skills=F
                 path = workflow_path(run_dir, current.data)
                 if path.is_file():
                     workflow = json.loads(path.read_text(encoding="utf-8"))
-                    _, tasks, order = validate_workflow(workflow)
+                    _, tasks, order = validate_workflow(workflow, check_media=bool(current.data.get("plan_only")))
                     if "title" in workflow:
                         current.data["title"] = workflow["title"].strip()
                     if not current.data["tasks"]:
@@ -1904,8 +2015,8 @@ def run_live(tasks, order, executor, progress, *, reopen=False, refresh_skills=F
         return execute_live(tasks, order, executor, progress)
 
 
-def editable_task(job):
-    return (job["state"] == "pending" and job.get("attempt", 1) == 1
+def editable_task(job, media_rejected=False):
+    return (job["state"] == "pending" and (job.get("attempt", 1) == 1 or media_rejected)
             and not any(job.get(field) for field in ("authorization", "decision", "member")))
 
 
@@ -1917,17 +2028,19 @@ def replan_assignment(progress, tasks):
     items = []
     for key, task in tasks.items():
         job = data["tasks"][key]
-        items.append({"definition": task, "state": job["state"], "editable": editable_task(job),
+        items.append({"definition": task, "state": job["state"], "editable": editable_task(job, key in plan.get("media_tasks", {})),
                       "evidence": job.get("evidence")})
     roles = {role: {"skills": list(assigned_capabilities(role)["skills"]), "tools": tool_ids(role)}
              for role in TEAM_ROLES}
-    context = {"goal": data["goal"], "operator_instructions": plan["notes"], "tasks": items, "roles": roles}
+    context = {"goal": data["goal"], "replan_notes": plan["notes"], "tasks": items, "roles": roles}
     prompt = (
-        "你是本次 Pioneers 运行的 LD。根据用户补充的指令和看板当前任务状态重新规划。"
+        "你是本次 Pioneers 运行的 LD。根据退回原因、用户指令和当前任务状态重新规划。"
         "查阅项目与相关证据时，交付物在运行目录下。已有任务和证据是供分析的资料。"
         "保留已开始或已审批的任务与既有结果。"
         "对新工作按下面的默认规则安排，结合已有任务和已经完成的验收结果。"
         f"{ITERATION_PLANNING}"
+        "生成海报或成片应声明 deliverable_type=image 或 video，分别填写 media.type=image 与 media.prompt、"
+        "或 video_prompt，tools 和 write_paths 留空；创作和代码实现、后期归档或独立验收分开派工。"
         "只在 tasks 中返回新增任务与需要改动且标为 editable 的任务，以 ID 为准，未列出的任务会保留。"
         "设置准确的依赖，让写入范围独立的任务并行，各实现任务安排下游独立 QA。"
         "用 write_paths 声明可写的相对文件或目录。只读任务或范围不明确填空数组。"
@@ -1961,7 +2074,7 @@ def apply_replan(progress, tasks, revision, raw):
         if not isinstance(task, dict) or not isinstance(task.get("id"), str) or task["id"] in changed:
             raise ValueError("Each updated task needs a unique ID")
         key = task["id"]
-        if key in tasks and not editable_task(data["tasks"][key]):
+        if key in tasks and not editable_task(data["tasks"][key], key in plan.get("media_tasks", {})):
             raise ValueError(f"Cannot change task {key}: it was started or authorized")
         role = task.get("role")
         if (not isinstance(role, str) or role not in TEAM_ROLES or not task.get("acceptance")
@@ -1972,7 +2085,23 @@ def apply_replan(progress, tasks, revision, raw):
     workflow = {"goal": data["goal"], "tasks": list({**tasks, **changed}.values())}
     if "title" in data:
         workflow["title"] = data["title"]
-    _, updated, order = validate_workflow(workflow)
+    _, updated, order = validate_workflow(workflow, check_media=False)
+    validate_media_plan((task for key, task in updated.items()
+                         if key in changed or data["tasks"][key]["state"] == "pending"),
+                        missing_media_types(data["goal"], updated.values()))
+    required_remote = {key for key, task in changed.items() if task_mode(task) in plan.get("missing_media", [])}
+    for key, kinds in plan.get("media_tasks", {}).items():
+        lineage = {key, *task_ancestors(updated, key)}
+        if key not in changed:
+            raise MediaPlanError(f"{key}: LD 必须修正已退回的媒体任务")
+        for field in ("effect", "impact"):
+            if preapproval_required(tasks[key]) and tasks[key].get(field) != updated[key].get(field):
+                raise MediaPlanError(f"{key}: 请保留原任务的审批范围，将媒体生成拆为独立依赖")
+        for kind in kinds:
+            producers = {item for item in lineage if task_mode(updated[item]) == kind}
+            if not producers:
+                raise MediaPlanError(f"{key}: LD 重新规划须保留 {kind} 生成任务；拆分时请用 depends_on 接续其产物")
+            required_remote.update(item for item in producers if item in changed or data["tasks"][item]["state"] == "pending")
     covered = set().union(*(task_ancestors(updated, key) for key in updated if updated[key].get("review")))
     missing = [key for key in changed if changed[key]["role"] == "engineer" and key not in covered]
     if missing:
@@ -1986,6 +2115,8 @@ def apply_replan(progress, tasks, revision, raw):
     workflow_path(progress.path.parent, data).write_text(json.dumps(workflow, ensure_ascii=False, indent=2) + "\n",
                                                          encoding="utf-8")
     progress.set_tasks(updated, [key for key in order if key in changed], preserve=True)
+    for key in required_remote:
+        data["tasks"][key]["remote_media_required"] = True
     plan.pop("error", None)
     plan.update(state="applied", tasks=list(changed))
     progress.event("ld", None, "completed", "已更新任务计划 · " + "、".join(changed))
@@ -2112,6 +2243,10 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
         _, before, _ = load_workflow(workflow_path(run_dir, data))
         if task_id not in before:
             raise ValueError(f"Unknown workflow task: {task_id}")
+        revision = data.get("workflow_revision")
+        data = sync_media_replan(run_dir, data, before)
+        if data.get("workflow_revision") != revision:
+            raise ValueError("LD 已更新计划，请按新计划领取任务")
         before_attempt = data["tasks"][task_id].get("attempt", 1)
         workspace = project_workspace(data.get("workspace"))
         registry = project_registry(workspace)
@@ -2648,6 +2783,10 @@ def control_run(run_dir, request):
                 revision = data.get("replan", {}).get("revision", 0) + 1
                 data["replan"] = {"revision": revision, "state": "pending",
                                   "notes": [*(pending["notes"] if pending else []), reason]}
+                if pending:
+                    for field in ("media_tasks", "missing_media"):
+                        if field in pending:
+                            data["replan"][field] = pending[field]
                 data.pop("paused")
                 progress.set_outcome("running")
         else:
@@ -3043,7 +3182,7 @@ def main():
         workflow = None
         if args.goal is None:
             workflow = json.loads(args.workflow.read_text(encoding="utf-8"))
-            goal, tasks, order = validate_workflow(workflow)
+            goal, tasks, order = validate_workflow(workflow, check_media=not args.live or args.plan_only)
         else:
             goal, tasks, order = args.goal.strip(), {}, ()
         executor = None
