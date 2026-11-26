@@ -8,13 +8,14 @@ from generated_media import media_job
 from model_policy import MEDIA_MODES
 from model_patch import apply_patch_result, check_checkout
 from model_plugins import PROVIDERS, complete
-from provider_errors import InsufficientCreditError
+from provider_errors import InsufficientCreditError, RequestRejectedError
 from model_video import video_job
 from skill_sources import write_json
 
 
 def run(request, workspace, output):
     result = {}
+    error_code = "outcome_unknown"
     try:
         route = request["route"]
         if route["mode"] in MEDIA_MODES:
@@ -25,8 +26,11 @@ def run(request, workspace, output):
             video_job(PROVIDERS[route["provider"]], route, request["video_prompt"], request["video_receipt"], result)
         else:
             if route["mode"] == "patch":
+                error_code = "not_submitted"
                 check_checkout(workspace, request["checkout"])
+                error_code = "outcome_unknown"
             content, result["usage"] = complete(route, request["prompt"])
+            error_code = "invalid_delivery"
             if "actual_model" in result["usage"]:
                 result["actual_model"] = result["usage"].pop("actual_model")
             if route["mode"] == "patch":
@@ -36,7 +40,11 @@ def run(request, workspace, output):
     except InsufficientCreditError as error:
         result["error_code"] = "insufficient_credit"
         result["error"] = str(error)
+    except RequestRejectedError as error:
+        result["error_code"] = "request_rejected"
+        result["error"] = str(error)
     except (ValueError, RuntimeError, OSError) as error:
+        result["error_code"] = error_code
         result["error"] = str(error)[:500]
     write_json(output, result)
     return int("error" in result)

@@ -61,8 +61,10 @@ class AutomaticDispatchTest(unittest.TestCase):
         self.assertEqual(high["model_candidates"][0]["model"], "org/deep/reasoner:free")
         argv = ["pioneers.py", "--host-claim", str(self.run), "--task", "low",
                 "--model-choice", "openrouter/org/deep/reasoner:free"]
-        with patch("sys.argv", argv), redirect_stdout(io.StringIO()) as output:
+        with (patch("sys.argv", argv), patch("pioneers.schedule_model", return_value="scheduled") as launch,
+              redirect_stdout(io.StringIO()) as output):
             self.assertEqual(main(), 0)
+        launch.assert_called_once_with(self.run, "low", 1)
         chosen = json.loads(output.getvalue())["executor"]
         request = json.loads((self.run / ".model-low-1.json").read_text())
         self.assertIn("本任务的 Skill requirements-design", request["prompt"])

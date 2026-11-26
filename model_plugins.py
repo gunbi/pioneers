@@ -12,7 +12,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from dispatch import writes_workspace
 from model_policy import MEDIA_MODES, MODEL_ID, MODES, banned, read_policy
 from provider_credentials import provider_key
-from provider_errors import InsufficientCreditError, ProviderError, account_credit_rejected
+from provider_errors import InsufficientCreditError, ProviderError, RequestRejectedError, account_credit_rejected
 import openrouter_media
 import siliconflow_media
 
@@ -91,7 +91,8 @@ class ChatProvider:
             hint = {401: "invalid credential", 402: "payment required", 403: "access denied",
                     404: "model or endpoint unavailable", 408: "request timed out", 429: "rate limited",
                     504: "gateway timed out"}.get(code, "request rejected")
-            raise ProviderError(f"{cls.name} HTTP {code}: {hint}") from None
+            error_type = RequestRejectedError if code in (400, 401, 402, 403, 404, 405, 413, 415, 422, 429) else ProviderError
+            raise error_type(f"{cls.name} HTTP {code}: {hint}") from None
         except (OSError, HTTPException) as error:
             timed_out = isinstance(error, TimeoutError) or (
                 isinstance(error, URLError) and isinstance(error.reason, TimeoutError))

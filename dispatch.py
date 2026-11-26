@@ -182,5 +182,5 @@ def dispatch_can_continue(summary):
     if summary["paused"]:
         return False
     return bool(summary["ready"] or summary.get("replan", {}).get("ready") or summary.get("release_ready")
-                or any(item["state"] == "judging" or item.get("execution_phase") in ("awaiting_start", "awaiting_host")
+                or any(item["state"] == "judging" or item.get("execution_phase") == "awaiting_host"
                        for item in summary["active"]))

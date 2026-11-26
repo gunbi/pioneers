@@ -26,7 +26,7 @@ from continuity import (
 from progress import Progress, artifact_name, codex_activity, print_board, show_progress
 from dashboard import announce, dashboard_is_running, live_dashboard, preview_origin, request_browser_open, serve_dashboard
 from dispatch import (
-    can_adopt_merged, claim_blockers, design_only, dispatch_can_continue, dispatch_summary, execution_phase,
+    can_adopt_merged, claim_blockers, current_executor, design_only, dispatch_can_continue, dispatch_summary, execution_phase,
     native_session, path_is_within, pending_replan, preapproval_required, replan_ready, waiting_on, workflow_path, writes_workspace,
 )
 from iterations import has_delivery_history, latest_delivery, project_snapshot, register_run
@@ -902,7 +902,17 @@ def record_assignment_loss(progress, tasks, task_id, reason, *, automatic=True, 
     git = job.get("git")
     isolated = git and git["attempt"] == attempt
     history = job.setdefault("recoveries", [])
-    error_code = job.get("executors", {}).get(str(attempt), {}).get("error_code")
+    executor = current_executor(job)
+    error_code = executor.get("error_code")
+    if (executor.get("provider") in PROVIDERS and executor.get("started_at")
+            and (error_code == "outcome_unknown" or not executor.get("error"))):
+        receipt = generation_receipt(progress.path.parent, task, job)
+        if not (receipt and os.path.lexists(receipt)):
+            # A timeout or dead supervisor cannot tell us whether a paid POST
+            # was accepted. An operator can resume with a verified deliverable.
+            executor["error_code"] = "outcome_unknown"
+            reason += "；无法确认上游请求结果，请核对后接续"
+            automatic = False
     reroute = error_code in ("insufficient_credit", "provider_disabled")
     prior_interruptions = sum(entry["automatic"] and not entry.get("reroute") for entry in history)
     within_budget = reroute or prior_interruptions < MAX_AUTOMATIC_RECOVERIES
@@ -1144,8 +1154,81 @@ def select_claim(options, fixed, fallback, model_choice, receipt, preset=None):
 
 
 def start_command(run_dir, task, attempt):
-    return [sys.executable, str(ROOT / "pioneers.py"), "--host-exec", str(run_dir),
+    return [sys.executable, "-E", "-s", str(ROOT / "pioneers.py"), "--host-exec", str(run_dir),
             "--task", task, "--attempt", str(attempt)]
+
+
+# A coordinator can disappear between the durable claim and process creation, or
+# a child can die before taking its executor lock. Only retry that narrow window.
+MODEL_START_GRACE_SECONDS = 15
+MAX_MODEL_STARTS = 3
+
+
+def model_launch_gate(progress, task_id):
+    data = progress.data
+    if data.get("paused") or data["state"] != "running":
+        return "deferred"
+    _, tasks, _ = load_workflow(workflow_path(progress.path.parent, data))
+    job = data["tasks"][task_id]
+    authorization = job.get("authorization")
+    if authorization or preapproval_required(tasks[task_id]):
+        if data.get("decisions", {}).get(authorization, {}).get("state") != "approved":
+            record_assignment_loss(progress, tasks, task_id, "模型启动前人工授权已失效", automatic=False)
+            return job["state"]
+    if pending_replan(data):
+        record_assignment_loss(progress, tasks, task_id, "模型启动前收到重新规划请求")
+        return job["state"]
+    return None
+
+
+def schedule_model(run_dir, task_id, attempt):
+    """Wake the executor after the claim is durable. Both CLI coordinators and the
+    compatibility --host-exec runner are fenced by the same execution attempt."""
+    with Progress.locked(run_dir) as progress:
+        job = progress.data["tasks"][task_id]
+        executor = job.get("executors", {}).get(str(attempt), {})
+        if executor.get("started_at"):
+            return "already_started"
+        if (job.get("attempt", 1) != attempt or execution_phase(job) != "awaiting_start"
+                or executor.get("provider") not in PROVIDERS):
+            return "inactive"
+        if gate := model_launch_gate(progress, task_id):
+            return gate
+        now = time.time()
+        if (now - executor.get("launch_requested_at", 0) < MODEL_START_GRACE_SECONDS
+                or executor_is_active(run_dir, task_id, attempt)):
+            return "scheduled"
+        launches = executor.get("launch_count", 0)
+        if launches < MAX_MODEL_STARTS:
+            env = model_supervisor_environment(executor["provider"])
+            options = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+                       if os.name == "nt" else {"start_new_session": True})
+            try:
+                process = subprocess.Popen(start_command(run_dir, task_id, attempt), cwd=ROOT, env=env,
+                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL, close_fds=True, **options)
+            except OSError as error:
+                message = f"无法启动模型执行器（{error.__class__.__name__}，errno {error.errno}）"
+            else:
+                executor.update(launch_requested_at=now, launch_count=launches + 1)
+                Thread(target=process.wait, daemon=True).start()
+                return "scheduled"
+        else:
+            message = f"模型执行器连续 {launches} 次未能开始，请检查本机运行环境"
+        executor["error"] = message
+        _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
+        record_assignment_loss(progress, tasks, task_id, message, automatic=False)
+        return job["state"]
+
+
+def model_supervisor_environment(provider_id):
+    # A bound file is opened by the supervisor at execution time. Also support a
+    # key supplied only to the claiming shell, without forwarding other secrets.
+    allowed = {"PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SYSTEMROOT", "WINDIR", "COMSPEC",
+               "PATHEXT", "TMP", "TEMP", "TMPDIR", "LANG", "LANGUAGE", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
+               "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "APPDATA", "LOCALAPPDATA",
+               PROVIDERS[provider_id].key_env}
+    return {key: value for key, value in os.environ.items() if key.upper() in allowed or key.startswith("LC_")}
 
 
 def observe_native_sessions(run_dir, observed_active):
@@ -1169,7 +1252,7 @@ def observe_native_sessions(run_dir, observed_active):
     return results
 
 
-def host_ready(run_dir, wait=0, *, observed_active=()):
+def host_ready(run_dir, wait=0, *, observed_active=(), launch_models=False):
     run_dir = run_dir.resolve(strict=True)
     observations = observe_native_sessions(run_dir, observed_active) if observed_active else []
     deadline = time.monotonic() + wait
@@ -1185,6 +1268,17 @@ def host_ready(run_dir, wait=0, *, observed_active=()):
         if path != current_workflow:
             _, tasks, _ = load_workflow(path)
             current_workflow = path
+        if launch_models and data["state"] == "running" and not data.get("paused"):
+            retry_before = time.time() - MODEL_START_GRACE_SECONDS
+            awaiting = [(key, job.get("attempt", 1)) for key, job in data["tasks"].items()
+                        if execution_phase(job) == "awaiting_start"
+                        and (pending_replan(data) or current_executor(job).get("launch_requested_at", 0) <= retry_before)]
+            if awaiting:
+                for key, attempt in awaiting:
+                    schedule_model(run_dir, key, attempt)
+                data = Progress.open(run_dir).data
+                if workflow_path(run_dir, data) != path:
+                    continue
         summary = dispatch_summary(data, tasks)
         if recovered or not wait or dispatch_can_continue(summary):
             break
@@ -1200,9 +1294,6 @@ def host_ready(run_dir, wait=0, *, observed_active=()):
 
 def host_routing_summary(run_dir, data, tasks, summary, registry, load=None):
     workspace = Path(data["workspace"])
-    for item in summary["active"]:
-        if item.get("execution_phase") == "awaiting_start":
-            item["start_command"] = start_command(run_dir, item["task"], item["attempt"])
     summary.update(dispatch_models(registry, workspace))
     if not summary["ready"]:
         return summary
@@ -1685,7 +1776,7 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
         assignment["executor"] = dict(execution)
         if route:
             job.pop("lease_expires_at", None)
-            assignment.update(execution_phase="awaiting_start", start_command=start_command(run_dir, task_id, assignment["attempt"]))
+            assignment["execution_phase"] = "awaiting_start"
         else:
             expires = time.time() + HOST_LEASE_SECONDS
             job["lease_expires_at"] = expires
@@ -1696,7 +1787,7 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
     job.setdefault("skill_attempts", {})[str(assignment["attempt"])] = {
         "planned": planned_skills, "loaded": loaded_skills, "reported": [],
     }
-    activity = "已领取远端任务，等待启动模型执行器" if route else "LD 已领取任务，等待执行端反馈"
+    activity = "已领取远端任务，等待框架自动启动模型执行器" if route else "LD 已领取任务，等待执行端反馈"
     progress.task(task_id, "running", activity, announce=False)
     return assignment
 
@@ -2071,7 +2162,7 @@ def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=
         if state == "lost" and executor_is_active(run_dir, task_id, job.get("attempt", 1)):
             raise ValueError("The executor is still active; stop it before reporting loss")
         if execution_phase(job) == "awaiting_start" and state != "lost":
-            raise ValueError("Remote assignment awaits --host-exec; a native host cannot report work for an unstarted model")
+            raise ValueError("Remote assignment awaits its model executor; a native host cannot report work for an unstarted model")
         result = artifact.read_text(encoding="utf-8") if artifact else None
         if state == "checkpoint":
             record_execution(job, json.loads(result))
@@ -2173,6 +2264,11 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
         executor = job["executors"][str(attempt)]
         if executor.get("started_at"):
             raise ValueError("Model request already started; check its attempt before reassigning")
+        if gate := model_launch_gate(progress, task_id):
+            # An administrative pause can race the detached child before it starts.
+            if gate == "deferred" and executor.pop("launch_requested_at", None):
+                executor["launch_count"] = max(0, executor.get("launch_count", 1) - 1)
+            return 0
         policy = read_policy(registry)
         message = None
         if executor["provider"] in policy["banned_providers"]:
@@ -2195,17 +2291,20 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
     start = time.monotonic()
     result = {}
     signal_exit = None
+    worker_invoked = False
     try:
         with tempfile.TemporaryDirectory(dir=run_dir) as temporary:
             output = Path(temporary) / "response.json"
             command = [sys.executable, "-E", "-s", str(ROOT / "model_worker.py"), str(request), str(output)]
             # Bound a slow HTTP stream as well as the subsequent local test.
             limit = 900 if executor["mode"] in ("video", *MEDIA_MODES) else 360
-            env = project_environment()
+            env = model_supervisor_environment(executor["provider"])
             provider = PROVIDERS[executor["provider"]]
+            env.pop(provider.key_env, None)
             if executor["mode"] == "video" or not executor.get("reuse_only"):
                 with project_credentials(registry):
                     env[provider.key_env] = provider.api_key()
+            worker_invoked = True
             code = supervise_host_executor(command, workspace, renew, deadline_seconds=limit, env=env)
             result = read_json(output)
             if code or not result.get("content"):
@@ -2235,8 +2334,7 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
             executor["video"] = {key: result["video"][key] for key in ("request_id", "state") if key in result["video"]}
         _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
         if "error" in result:
-            if credit_rejection:
-                executor["error_code"] = "insufficient_credit"
+            executor["error_code"] = result.get("error_code") or ("outcome_unknown" if worker_invoked else "not_submitted")
             executor["error"] = result["error"]
             report = report_task(progress, tasks, task_id, "lost", result["error"], None, attempt)
         else:
@@ -2627,7 +2725,7 @@ def main():
     action.add_argument("--project-dashboard", action="store_true", help="Serve all iterations for the selected project.")
     action.add_argument("--project-history", action="store_true", help="Show iteration history and the latest delivery summary as JSON.")
     action.add_argument("--host-start", type=Path, metavar="WORKFLOW", help="Register a validated workflow for a native execution host.")
-    action.add_argument("--host-ready", type=Path, metavar="RUN_DIR", help="List ready, active and blocked host tasks as JSON.")
+    action.add_argument("--host-ready", type=Path, metavar="RUN_DIR", help="Resume unstarted model assignments and list ready, active and blocked tasks as JSON.")
     action.add_argument("--host-claim", type=Path, metavar="RUN_DIR", help="Claim a dependency-ready task and return its assignment as JSON.")
     action.add_argument("--host-checkpoint", type=Path, metavar="RUN_DIR", help="Record a checkpoint or operation for a running host assignment.")
     action.add_argument("--host-heartbeat", type=Path, metavar="RUN_DIR", help="Renew the lease of a running host assignment.")
@@ -2887,7 +2985,8 @@ def main():
             print(json.dumps(host_replan(args.replan, args.revision, args.artifact), ensure_ascii=False))
             return 0
         if args.host_ready:
-            print(json.dumps(host_ready(args.host_ready, args.wait or 0, observed_active=args.observed_active), ensure_ascii=False))
+            print(json.dumps(host_ready(args.host_ready, args.wait or 0, observed_active=args.observed_active,
+                                        launch_models=True), ensure_ascii=False))
             return 0
         if args.host_start is not None:
             result = start_host(args.host_start, args.output_dir, workspace, args.require_release)
@@ -2905,6 +3004,8 @@ def main():
             result = update_host(args.host_claim or args.host_report or args.host_heartbeat or args.host_checkpoint, args.task, state,
                                  activity, args.artifact, args.attempt,
                                  args.member, args.member_name, args.profile, args.model_choice, used_skills=args.used_skill)
+            if args.host_claim and result.get("execution_phase") == "awaiting_start":
+                result["launch_status"] = schedule_model(Path(result["run_dir"]), result["task"], result["attempt"])
             print(json.dumps(result, ensure_ascii=False))
             return 0
         if args.release is not None:

@@ -8,7 +8,11 @@ class ProviderError(RuntimeError):
     """A diagnostic safe to record on a task attempt."""
 
 
-class InsufficientCreditError(ProviderError):
+class RequestRejectedError(ProviderError):
+    """The provider explicitly rejected the request before inference."""
+
+
+class InsufficientCreditError(RequestRejectedError):
     """An authenticated provider rejected the request for lack of account credit."""
 
 
