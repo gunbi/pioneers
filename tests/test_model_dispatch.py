@@ -49,8 +49,8 @@ class ModelDispatchTest(unittest.TestCase):
             mock.start()
             self.addCleanup(mock.stop)
 
-    def claim(self, profile=None):
-        return update_host(self.run, "spec", None, None, None, None, profile=profile)
+    def claim(self, profile=None, **kwargs):
+        return update_host(self.run, "spec", None, None, None, None, profile=profile, **kwargs)
 
     def invoke_worker(self, command, workspace, renew, *, deadline_seconds, env):
         self.assertGreater(deadline_seconds, 0)
@@ -214,7 +214,8 @@ class ModelDispatchTest(unittest.TestCase):
             with self.assertRaisesRegex(ProviderError, "catalog unavailable"):
                 self.claim()
         self.assertEqual(Progress.open(self.run).data["tasks"]["spec"]["state"], "pending")
-        self.assertEqual(self.claim("host")["executor"], {"provider": "host"})
+        host = self.claim("host", host_reason="用户要求在本机处理")["executor"]
+        self.assertEqual(host, {"provider": "host", "reason": "本轮指定宿主执行 · 用户要求在本机处理"})
 
     @patch("pioneers.check_available")
     def test_plugin_handoff_and_dashboard(self, catalog):
@@ -411,7 +412,7 @@ class ModelDispatchTest(unittest.TestCase):
         self.assertEqual(job["executors"]["1"]["error_code"], "outcome_unknown")
         control_run(self.run, {"action": "recover", "task": "spec", "attempt": 1, "reason": "verified at provider"})
         self.assertEqual(read_policy(project_registry(self.project))["banned_providers"], [])
-        retry = self.claim("host")
+        retry = self.claim("host", host_reason="用户核对后选择本机接续")
         self.assertEqual(retry["attempt"], 2)
         with self.assertRaisesRegex(ValueError, "active --attempt 2"):
             execute_host(self.run, "spec", 1, None)

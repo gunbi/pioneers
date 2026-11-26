@@ -135,6 +135,34 @@ class AutomaticDispatchTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "候选"):
             self.claim("high", model_choice="openrouter/unknown")
 
+    @patch.dict(os.environ, SILICONFLOW_API_KEY="test-only")
+    def test_host_cannot_silently_bypass_the_project_text_model(self):
+        model = "deepseek-ai/DeepSeek-V4-Pro"
+        self.catalogs["siliconflow"] = [{"id": model, "kinds": ["chat"]}]
+        self.setup_run(skills=["requirements-design"])
+        self.policy("preset", value="siliconflow-quality")
+        argv = ["pioneers.py", "--host-claim", str(self.run), "--task", "low"]
+        with (patch("sys.argv", [*argv, "--profile", "host"]), redirect_stdout(io.StringIO()),
+              patch("sys.stderr", new_callable=io.StringIO) as error):
+            self.assertNotEqual(main(), 0)
+            self.assertIn("--reason", error.getvalue())
+        self.assertNotIn("executors", Progress.open(self.run).data["tasks"]["low"])
+        self.lookup.assert_not_called()
+        self.check.assert_not_called()
+        with (patch("sys.argv", argv), patch("pioneers.schedule_model", return_value="scheduled") as launch,
+              redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(main(), 0)
+        launch.assert_called_once_with(self.run, "low", 1)
+        executor = json.loads(output.getvalue())["executor"]
+        self.assertEqual((executor["provider"], executor["model"]), ("siliconflow", model))
+        self.assertTrue(executor["reason"])
+        with (patch("sys.argv", [*argv[:4], "high", "--profile", "host", "--reason", "用户要求离线处理"]),
+              patch("pioneers.schedule_model") as launch, redirect_stdout(io.StringIO())):
+            self.assertEqual(main(), 0)
+        launch.assert_not_called()
+        host = Progress.open(self.run).data["tasks"]["high"]["executors"]["1"]
+        self.assertEqual(host, {"provider": "host", "reason": "本轮指定宿主执行 · 用户要求离线处理"})
+
     def test_auto_checks_past_visible_shortlist_and_shares_account_request(self):
         self.catalogs["openrouter"] = [{"id": f"org/{i:02}", "kinds": ["chat"]} for i in range(12)]
         self.setup_run()
@@ -285,18 +313,18 @@ class AutomaticDispatchTest(unittest.TestCase):
         self.policy("preset", value="siliconflow-quality")
         self.policy("select", mode="text", provider="openrouter", model="org/flash")
         self.assertEqual(host_ready(self.run)["ready"][0]["model_candidates"], [])
-        self.assertEqual(self.claim()["executor"], {"provider": "host"})
+        self.assertEqual(self.claim()["executor"], {"provider": "host", "reason": "独立验收由宿主执行"})
         self.lookup.assert_not_called()
         self.check.assert_not_called()
 
     def test_checkpoint_stays_with_original_host(self):
         self.setup_run()
-        self.claim(profile="host")
+        self.claim(profile="host", host_reason="本轮留在本机")
         event = self.root / "event.json"
         event.write_text(json.dumps({"type": "checkpoint", "summary": "Notes prepared", "session_id": "old"}))
         update_host(self.run, "low", "checkpoint", None, event, 1)
         update_host(self.run, "low", "lost", "worker gone", None, 1)
-        self.assertEqual(self.claim()["executor"], {"provider": "host"})
+        self.assertEqual(self.claim()["executor"], {"provider": "host", "reason": "沿原宿主接续检查点"})
         self.lookup.assert_not_called()
 
     def test_video_continues_prior_receipt_even_if_selection_changed(self):

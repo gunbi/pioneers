@@ -1086,7 +1086,7 @@ def cached_catalogs(registry):
     return load
 
 
-def routing_options(run_dir, data, task, workspace, config, policy, profile, load):
+def routing_options(run_dir, data, task, workspace, config, policy, profile, load, *, host_reason=None):
     """Return feasible local routes, whether the selection is fixed, and the native fallback reason."""
     from model_selection import rank_candidates, requires_free
 
@@ -1104,11 +1104,24 @@ def routing_options(run_dir, data, task, workspace, config, policy, profile, loa
             return [], True, "沿原宿主接续检查点"
         if profile == "host" or (profile and profile != previous.get("profile")):
             raise ValueError("已有模型回执或检查点，请沿原模型接续")
-    elif profile == "host" or (mode == "host" and not profile):
-        return [], True, "宿主原生执行"
+    elif mode == "host" and profile in (None, "host"):
+        if task.get("review"):
+            return [], True, "独立验收由宿主执行"
+        if task.get("effect"):
+            return [], True, "外部操作由宿主执行"
+        return [], True, "任务需要本地工具，由宿主执行"
+    elif profile == "host":
+        if requires_media_executor(task, job, data["mode"]):
+            raise ValueError(f"{task['id']}: 此任务须由对应的媒体模型执行，请检查提供商、模型策略或凭据后重新领取")
+        if host_reason:
+            return [], True, f"本轮指定宿主执行 · {host_reason}"
+        if configured_provider_ids().difference(policy["banned_providers"]):
+            raise ValueError("项目已配置模型提供商。请省略 --profile host 按项目策略领取；"
+                             "用户明确要求本轮只在本机执行时，使用 --profile host --reason 并填写用户要求。")
+        return [], True, "本轮指定宿主执行，当前无已配置且启用的提供商"
     elif fixed == "host" and not pinned:
         return [], True, "项目默认由宿主执行"
-    elif not profile and (fixed or pinned) and skipped_without_credentials():
+    elif not profile and skipped_without_credentials():
         return [], False, "已跳过 API Key 配置，由宿主执行"
 
     isolated = bool(data.get("git_base"))
@@ -1155,6 +1168,12 @@ def routing_options(run_dir, data, task, workspace, config, policy, profile, loa
         except (ValueError, OSError):
             continue
         options_list.append((item, route))
+    if not options_list:
+        configured = configured_provider_ids()
+        if not configured:
+            return [], False, "当前未读取到有效的模型提供商凭据，由宿主执行"
+        if configured.issubset(policy["banned_providers"]):
+            return [], False, "项目已禁用所有已配置的提供商，由宿主执行"
     return options_list, False, "没有符合任务能力、项目限制与凭据的可用模型，由宿主执行"
 
 
@@ -1188,7 +1207,7 @@ def select_claim(options, fixed, fallback, model_choice, receipt, preset=None):
         return route, ""
     if failed:
         fallback = f"{failed} 个候选模型预检全部失败，由宿主执行"
-    return None, "" if fixed else fallback
+    return None, fallback
 
 
 def start_command(run_dir, task, attempt):
@@ -2253,7 +2272,12 @@ def execute_live(tasks, order, executor, progress):
                 raise
 
 
-def claim_with_model_routing(run_dir, task_id, *, run_mode, member_id=None, member_name=None, profile=None, model_choice=None):
+def claim_with_model_routing(run_dir, task_id, *, run_mode, member_id=None, member_name=None, profile=None, model_choice=None,
+                             host_reason=None):
+    if host_reason is not None:
+        host_reason = host_reason.strip()
+        if profile != "host" or not host_reason or len(host_reason) > 240 or not host_reason.isprintable():
+            raise ValueError("宿主派工理由需与 --profile host 一起使用，并填写 1 至 240 个可显示字符")
     data = Progress.open(run_dir).data
     if data["mode"] != run_mode:
         raise ValueError("Host commands require a run created with --host-start")
@@ -2281,7 +2305,8 @@ def claim_with_model_routing(run_dir, task_id, *, run_mode, member_id=None, memb
             policy = read_policy(registry)
             if model_choice and model_choice.partition("/")[0] in policy["banned_providers"]:
                 raise ValueError("--model-choice 指定的模型提供商已被项目禁用")
-            options, fixed, fallback = routing_options(run_dir, data, task, workspace, config, policy, profile, load)
+            options, fixed, fallback = routing_options(run_dir, data, task, workspace, config, policy, profile, load,
+                                                      host_reason=host_reason)
             # An authenticated catalog refresh can suspend a provider while ranking.
             if policy["banned_providers"] != read_policy(registry)["banned_providers"]:
                 continue
@@ -2311,11 +2336,11 @@ def claim_with_model_routing(run_dir, task_id, *, run_mode, member_id=None, memb
 
 
 def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=None, member_name=None, profile=None, model_choice=None,
-                *, used_skills=()):
+                *, used_skills=(), host_reason=None):
     run_dir = run_dir.resolve(strict=True)
     if state is None:
         return claim_with_model_routing(run_dir, task_id, run_mode="host", member_id=member_id, member_name=member_name,
-                                        profile=profile, model_choice=model_choice)
+                                        profile=profile, model_choice=model_choice, host_reason=host_reason)
     with Progress.locked(run_dir) as progress:
         if progress.data["mode"] != "host":
             raise ValueError("Host commands require a run created with --host-start")
@@ -2932,7 +2957,7 @@ def main():
     parser.add_argument("--attempt", type=int, help="Attempt returned by --host-claim, required when reporting a retry.")
     parser.add_argument("--decision", action="append", help="Decision ID. Repeat for selective confirmation.")
     parser.add_argument("--all", action="store_true", help="Confirm all decisions currently waiting for a person.")
-    parser.add_argument("--reason", help="Reason or instructions for a human action.")
+    parser.add_argument("--reason", help="Reason for a human action or the user's request to override model dispatch with --profile host.")
     parser.add_argument("--approver", help="Optional operator display name for --approve.")
     parser.add_argument("--from", dest="rerun_from", help="Rerun this task and its dependents while paused.")
     parser.add_argument("--recovery-checks", type=Path, help="JSON list of verified external operation outcomes for --recover.")
@@ -3172,7 +3197,8 @@ def main():
             activity = None if args.host_heartbeat else (args.activity or "").strip()[:1000]
             result = update_host(args.host_claim or args.host_report or args.host_heartbeat or args.host_checkpoint, args.task, state,
                                  activity, args.artifact, args.attempt,
-                                 args.member, args.member_name, args.profile, args.model_choice, used_skills=args.used_skill)
+                                 args.member, args.member_name, args.profile, args.model_choice, used_skills=args.used_skill,
+                                 host_reason=args.reason if args.host_claim else None)
             if args.host_claim and result.get("execution_phase") == "awaiting_start":
                 result["launch_status"] = schedule_model(Path(result["run_dir"]), result["task"], result["attempt"])
             print(json.dumps(result, ensure_ascii=False))

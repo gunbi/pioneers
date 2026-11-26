@@ -255,7 +255,7 @@ python3 pioneers.py --host-ready RUN_DIR
 python3 pioneers.py --host-claim RUN_DIR --task requirements
 ```
 
-每个可自动选型的就绪项在 `model_candidates` 列出候选的 `provider`、`model` 和 `reason`。宿主可以结合任务说明、复杂度和项目的 `model_policy.preference` 决定用哪个。例如需求是提炼短文，且下列型号出现在该任务的候选里，领取时可用 `--model-choice siliconflow/Qwen/Qwen3.5-35B-A3B`。第一个斜杠前是提供商，其余部分是完整模型 ID。这只决定本次领取，项目策略保持原值。用 `--profile host` 可明确交给本机成员。
+每个可自动选型的就绪项在 `model_candidates` 列出候选的 `provider`、`model` 和 `reason`。宿主可以结合任务说明、复杂度和项目的 `model_policy.preference` 决定用哪个。例如需求是提炼短文，且下列型号出现在该任务的候选里，领取时可用 `--model-choice siliconflow/Qwen/Qwen3.5-35B-A3B`。第一个斜杠前是提供商，其余部分是完整模型 ID。这只决定本次领取，项目策略保持原值。如果用户明确要求某项任务只在本机执行，可在领取时传 `--profile host --reason "用户要求本轮在本机处理"`，填写实际要求。项目已有可用凭据并启用了提供商时，远端可执行任务的本机覆盖缺少理由会保留待领取状态；普通领取继续自动选型。独立 QA 和需要本地工具的任务直接领取即可。看板在每轮任务卡的「选型依据」显示实际派工原因。
 
 #### 内置策略「SiliconFlow 优先、质量优先」
 
