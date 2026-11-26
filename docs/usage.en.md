@@ -288,11 +288,8 @@ To override one task type, pick a model under Project Model Selections and apply
 
 With automatic selection, a normal claim preflights candidates in order. If the first is unavailable, it tries the next. If all fail or credentials are missing, the task goes to the host. If a model explicitly selected by the user fails preflight, the claim returns an error and leaves the task available. Selection and preflight read catalogs and check availability. Model calls occur during execution and are billed under the provider's terms.
 
-Inspect `executor.provider` in the claim result. If it is `host`, hand the task to the host member. For a remote model, execute using the returned `attempt`. The example below uses the first attempt.
+When a claim selects a remote model, Pioneers launches its executor in the background. The host can continue dispatching other work. If `executor.provider` is `host`, give the task to the relevant host member.
 
-```bash
-python3 pioneers.py --host-exec RUN_DIR --task requirements --attempt 1
-```
 
 The executor renews the heartbeat and archives artifacts. The project's run usage view (运行用量) shows the actual model, selection rationale, elapsed time, and usage reported in the receipt. Once a request has been sent, failure or timeout enters recovery for the original task. An accepted media request resumes with the original provider and model, using its receipt to check status or reuse the artifact. If acceptance is uncertain, reconcile it first to prevent duplicate generation and charges.
 
@@ -383,7 +380,7 @@ After claiming a task, use `--host-exec` to start a local executor, such as a br
 python3 pioneers.py --host-exec RUN_DIR --task verify --attempt 1 --exec-command python3 verify_browser.py
 ```
 
-**Remote models** show “Awaiting start” after a claim. A claim reserves the assignment and attempt. The 180-second execution lease begins at startup. If the coordinator exits between claiming and launching, reconnect to the same run, find `awaiting_start` under `--host-ready`'s `active` list and execute its `start_command` argument array. The framework serializes concurrent starts.
+**Remote models** run automatically after the framework persists the assignment. If the coordinator exits between saving the assignment and starting its executor, query `--host-ready RUN_DIR` on reconnect to resume that attempt. A per-attempt lock prevents repeated queries from duplicating an inference that has already started. The executor renews the 180-second lease throughout inference.
 
 **Native host agents** can spend long periods reasoning or operating a browser. Use the host platform to verify each member is active, then report those observations with your normal queue query, for example `--host-ready RUN_DIR --observed-active fix:1 --observed-active verify:2`. After 180 seconds without a fresh observation, the dashboard shows “Awaiting host verification” and retains the assigned member and workspace. Late heartbeats, checkpoints and delivery use the original attempt. A targeted heartbeat or a progress report also confirms liveness. Reading the queue or dashboard does not renew assignments. Report `--state lost` once the original executor is confirmed stopped, or reconcile existing artifacts before recovery. Use the supervised entry point above for foreground commands.
 

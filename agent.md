@@ -66,7 +66,7 @@
 2. 有可用运行器时启动 `pioneers.py ... --live`，由 CLI 派工。使用宿主原生 Agent 时，优先复用项目看板，用 `--host-start WORKFLOW --workspace PROJECT --register-only` 登记新迭代。JSON 返回 `run_dir`、`project_dashboard_url` 和 `project_run_url`。项目看板不可用时，可用 `--dashboard RUN_DIR` 启动单轮看板。看板停止后，先恢复看板服务再领取任务。
 3. 宿主协调者用 `--host-ready RUN_DIR` 查询 `ready`、`active` 和 `waiting`。有成员容量时，同批领取独立的任务并优先较长的依赖链。领取用 `--host-claim RUN_DIR --task TASK_ID --member MEMBER_ID --member-name DISPLAY_NAME`。若领取因写入冲突被阻塞，等关联任务交接后重查队列。领取成功后交给执行端返回的提示、角色、工作目录、分支、复杂度和回报方式。每次产物放行、审批通过、恢复或退回后重查队列。没有并发能力的宿主按队列顺序执行。
    - 从 `--host-ready` 读取就绪项的 `model_candidates`，结合任务说明、复杂度和 `model_policy.preference` 选型。默认可选免费和收费型号，项目要求「仅免费」时只选可确认免费的候选。项目已指定型号或有适用配置时沿用既定选择。无用户覆盖时直接领取，按项目有效策略先预检首选提供商，再尝试备选，也可结合交付要求从候选中选定一个，在领取时传 `--model-choice PROVIDER/MODEL_ID`。该选择只用于当前任务。用户希望仅在本机执行时用 `--profile host`，需要沿用项目命名配置时用 `--profile NAME`。
-   - 独立验收、浏览器、MCP 和外部操作交给宿主。远端补丁需要隔离工作区、明确的文件范围和项目测试命令。视频使用 `video_prompt`，图片、旁白、配乐、音效填写 `media.type` 和 `media.prompt`。核对领取返回的 `executor.provider`，远端任务用 `--host-exec RUN_DIR --task ID --attempt N` 执行，宿主任务交给相应成员。遇到已提交的媒体请求，沿用原派工和回执接续。[模型选择与恢复](docs/usage.md#按任务选用模型供应商)
+   - 独立验收、浏览器、MCP 和外部操作交给宿主。远端补丁需要隔离工作区、明确的文件范围和项目测试命令。视频使用 `video_prompt`，图片、旁白、配乐、音效填写 `media.type` 和 `media.prompt`。核对领取返回的 `executor.provider`，领取选中远端模型的任务后，Pioneers 自动在后台启动推理并回报产物。宿主任务交给相应成员。遇到已提交的媒体请求，沿用原派工和回执接续。[模型选择与恢复](docs/usage.md#按任务选用模型供应商)
 4. 宿主协调者或执行端使用 `--host-report` 回写里程碑、阻塞和完成情况。工作流用 `write_paths` 声明确切写入路径，未知范围按整个项目安排。Pioneers 在干净且已提交的 Git 项目上自动分配工作区及分支。工程师在返回的分支本地提交后回报，将测试证据写到运行目录或项目外的交付文件。需要接续代码的任务用 `depends_on`，并行修复安排下游集成及独立 QA。集成工作区领取时会合入相应依赖的已交接提交。最后向用户提供集成分支、工作区和验证结果。
 5. QA 用 [review.schema.json](review.schema.json) 逐项报告验收证据。实现问题用 `changes_requested` 和 `repair_task` 退回。Pioneers 会重新排队实现任务和受影响的下游，保留上一轮证据。领取后按照返回的 `attempt` 上报修复和复验。需求歧义交回产品负责人，环境、依赖或证据缺失交回 LD。
    - UI 还原验收用同一数据场景和视口，把确认的设计稿与候选版本的真实浏览器截图对照，核对布局、视觉层级、图标语义和操作路径。可接受的字体渲染或少量像素差异写进报告。关键偏差退回实现，或走设计确认后更新验收基线。通过时在 `visual_evidence` 附设计稿、实际截图、视口和场景。浏览器不可用或缺少截图时用 `blocked`，把相关项标为 `unverified`。
@@ -76,7 +76,7 @@
 9. 把 `--host-ready` 返回的 `replan` 当作待处理的 LD 任务。等 `replan.ready` 为真后，用 `--replan RUN_DIR` 获取用户指令、当前计划和状态，将返回的提示交给只读 LD。将 LD 返回的 JSON 用 `--replan RUN_DIR --revision N --artifact PLAN.json` 提交，随后重新查询并派发更新后的任务。
 10. 暂时无任务可执行且运行未结束时，告知用户在看板需要处理的事项，然后在同一协调会话运行 `--host-ready RUN_DIR --wait 25` 等待。收到 `timed_out` 后继续等待，阶段交付结束也先重查队列。状态就绪后直接领取任务、处理待判断的交付物、重规划，或在 `release_ready` 为真时按已审批范围开始发布。若用户手动暂停了新任务，等看板「继续领取新任务」再派发。宿主会话已关闭时，从同一运行目录重新接入。
 
-领取后保留任务 ID 和 `attempt`。协调会话首次派工或重新接入时，从 `--host-ready RUN_DIR` 读取 `active`。远端分配的 `execution_phase` 为 `awaiting_start` 时，立即运行该条目的 `start_command`（参数数组），启动原尝试。启动时会复查禁用和费用规则，模型调用期间由框架续约。同一轮只启动一次。
+领取后保留任务 ID 和 `attempt`。重新接入时查询 `--host-ready RUN_DIR`。如果此前领取已登记、执行器尚未启动，框架会接续原轮次。启动前再次核对项目的模型禁用和费用规则，推理期间由执行器续约。
 
 原生 Agent 由宿主观察存活。在宿主的成员状态接口或等待接口刚刚确认某轮仍活跃后，可在常规调度查询中附加 `--observed-active TASK:ATTEMPT`，多个活跃成员可重复传入。仅查询队列、查看看板或看到文件修改都不能证明成员存活。超过 180 秒缺少观测时，该轮显示「待宿主核实」并保留执行权。先查看原会话。仍在工作就登记观测，已交付就用原轮次回报。暂时无法核实时，等待成员的状态通知或人工核对。确认已停止才用 `--host-report ... --state lost` 或按现有流程核对产物后恢复。命令型执行端用 `--host-exec RUN_DIR --task ID --attempt N --exec-command COMMAND ...` 在前台运行，由框架自动续约并清理进程。CLI 调度进程退出后用 `--continue RUN_DIR` 接回原运行。
 

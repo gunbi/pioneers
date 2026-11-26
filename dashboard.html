@@ -1184,7 +1184,7 @@
       row.append(element("p", [data.roles[item.role], item.member?.name,
         item.remaining_steps ? "最长剩余依赖链 " + item.remaining_steps + " 步" : labels[item.execution_phase || item.state]].filter(Boolean).join(" · ")));
       if (item.execution_phase === "awaiting_start") {
-        row.append(element("p", "已选定模型，等待协调会话启动本轮执行器。", "reason"));
+        row.append(element("p", "已选定模型，框架会自动启动本轮推理。", "reason"));
       } else if (item.execution_phase === "awaiting_host") {
         row.append(element("p", "宿主尚未确认存活。核实原会话后可继续回报本轮进度或交付产物。", "reason"));
       }

@@ -288,11 +288,8 @@ python3 pioneers.py --host-claim RUN_DIR --task requirements
 
 自动选型时，普通领取会依次预检候选。首选不可用时尝试后续候选，全部不可用或没有凭据时交给宿主。显式指定的型号若预检失败，这次领取会返回错误，任务仍可领取。选型和预检只读取目录、核对可用性。真正调用模型发生在执行步骤，按供应商规则计费。
 
-查看领取结果中的 `executor.provider`。值为 `host` 时将任务交给宿主成员。远端模型按返回的 `attempt` 执行。以下示例使用首轮领取结果。
+领取选中远端模型后，Pioneers 会在后台启动执行器，宿主可以继续派发其他任务。`executor.provider` 为 `host` 时，由宿主把任务交给对应成员。
 
-```bash
-python3 pioneers.py --host-exec RUN_DIR --task requirements --attempt 1
-```
 
 执行器负责心跳续约和产物归档。项目看板的「运行用量」展示实际模型、选型依据、耗时与回执用量。请求已发出后，失败或超时进入原任务的恢复流程。已受理的媒体请求用原提供商和型号接续，按已有回执查询或复用产物。受理结果不明时先核对，避免重复生成和扣费。
 
@@ -383,7 +380,7 @@ python3 pioneers.py --release RUN_DIR --state published --activity "部署成功
 python3 pioneers.py --host-exec RUN_DIR --task verify --attempt 1 --exec-command python3 verify_browser.py
 ```
 
-**远端模型**领取后显示「待启动」。领取保留任务和轮次，开始调用时才启用 180 秒的执行租约。协调会话在领取后启动执行器；如果在两步之间退出，重新接入同一运行，在 `--host-ready` 的 `active` 里找到 `awaiting_start`，按返回的 `start_command` 参数启动同一轮。并发启动由框架加锁保护。
+**远端模型**的任务分配先写入运行记录，然后由框架自动启动该轮执行器。若协调进程恰好在两步之间退出，重新接入时查询 `--host-ready RUN_DIR` 即可接续。执行器按任务和轮次加锁，已开始的推理不会因重复查询而再调用一次。推理开始后启用 180 秒租约，执行器自动续约。
 
 **宿主原生 Agent** 可以安静地进行长时间推理或浏览器操作。协调者通过宿主平台确认某个成员仍活跃后，将这次观测随正常查询上报，例如 `--host-ready RUN_DIR --observed-active fix:1 --observed-active verify:2`。超过 180 秒没有新观测时显示「待宿主核实」，任务继续占用原有成员和工作区。迟到的存活回报、检查点和交付仍使用原轮次。单次心跳和实际进度回报也能确认存活。查看队列或看板不会续约。确认原执行端已停止时报告 `--state lost`，或检查已有产物后再恢复。可包装成前台命令的执行端使用上面的框架托管入口。
 
