@@ -244,7 +244,7 @@ class ApprovalTest(unittest.TestCase):
                                                     "media": {"type": "video", "prompt": "飞盘"}}], code=1))
         self.assertIn("须保留 video", revise([fixed, {**video, "prompt": "Write a note."}], code=1))
         self.assertIsNotNone(self.cli("--host-ready", self.run_dir)["replan"])
-        revise([fixed, {**video, "write_paths": [], "deliverable_type": "video", "video_prompt": "草坪上的飞盘，10 秒"}])
+        revise([fixed, {**video, "write_paths": [], "deliverable_type": "video", "video_settings": {"duration": 10}, "video_prompt": "草坪上的飞盘，10 秒"}])
         self.assertEqual([x["task"] for x in self.cli("--host-ready", self.run_dir)["ready"]], ["poster"])
         self.assertIn("媒体模型", self.cli("--host-claim", self.run_dir, "--task", "poster", "--profile", "host", code=1))
 

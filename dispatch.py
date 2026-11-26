@@ -102,7 +102,9 @@ def claim_blockers(data, workflow_tasks, task_id):
     task = workflow_tasks[task_id]
     if job["state"] == "recovery_required":
         return [{"code": "recovery_required", "message": job["activity"]}]
-    if job["state"] == "pending" and (issue := media_plan_issue(task)):
+    # Receipt-backed retries reuse the original request. The coordinator checks
+    # retries without a receipt against the current planning rules under lock.
+    if job["state"] == "pending" and not job.get("continuity_from") and (issue := media_plan_issue(task)):
         return [{"code": "media_replan", "message": issue}]
     if data.get("paused"):
         return [{"code": "paused", "message": "Run is paused"}]

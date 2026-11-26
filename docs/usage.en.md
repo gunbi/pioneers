@@ -358,6 +358,22 @@ OpenRouter's catalog is browsable without credentials. The dashboard combines th
 - **Image and audio tasks** set a `media` object in the workflow, for example `"media": {"type": "image", "prompt": "Paint a watercolor of a paper boat in a stream"}`. For narration, use `speech` with the script in `prompt` and, optionally, a supported `voice`. For music, use `music` and describe the style, instruments, or scene. For sound effects, use `sound_effect` and describe what the listener should hear. The project can pin a model or select a named profile for each of these four types. SiliconFlow and OpenRouter support image generation and narration. OpenRouter can also dispatch Lyria music and Seed Audio effects. Open or save the generated files from the task page. They reside under `media/` in the run directory.
 - **Run usage** is shown by project, model, and task attempt. It records the tokens, image and audio file counts, video counts, and video duration in seconds reported by the provider. A file or video request reused during recovery counts once. Independent acceptance, tools, and external operations continue to run on the host.
 
+**Handing approved inputs to media models**
+
+For a ten-second, 9:16 video, set `"video_settings": {"duration": 10, "ratio": "9:16"}` on the task. An optional `resolution` also overrides the model profile. When the user requires approval for this generation, set `"impact": "costly_change"` on the video task. The approval includes its settings and final creative prompt. Changing the proposal sends it back to the LD for an updated task and fresh approval.
+
+Place finished poster copy directly in `media.prompt`. When a direct dependency such as `requirements` delivers the copy, list it in `depends_on` and set `"media_copy_from": "requirements"`. Mark one block in its deliverable as approved public text. Keep internal discussion outside the block.
+
+````markdown
+```media-copy
+Friday Getaway
+Time and venue to be announced
+Registration link coming soon
+```
+````
+
+At dispatch, Pioneers verifies the accepted upstream artifact and sends the creative brief and that block to the image model. Missing copy, changed evidence and draft instructions go back to the LD. QA checks the text on the delivered poster and the duration, aspect ratio and content of the delivered video.
+
 ### Including release in delivery
 
 For container releases to Alibaba Cloud ECS, planning and acceptance tasks can load `aliyun-ecs-container-deployment`. Make deployment itself a separate engineering task following acceptance, set `"skills": ["aliyun-ecs-container-deployment"]` and `"effect": "publish"`, and schedule independent QA after deployment. Following approval, the host provides the tools and authorization for the target environment.

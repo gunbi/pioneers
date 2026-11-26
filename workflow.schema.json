@@ -13,6 +13,18 @@
           "prompt": {"type": "string"},
           "deliverable_type": {"enum": ["image", "video", null], "description": "Final generated poster/image or video. Use media.type=image plus media.prompt, or video_prompt, respectively."},
           "video_prompt": {"type": ["string", "null"], "minLength": 1, "maxLength": 10000},
+          "video_settings": {
+            "type": "object",
+            "description": "Video request overrides. Register each promised final duration (seconds), aspect ratio, or resolution.",
+            "properties": {
+              "duration": {"type": "integer", "minimum": 1},
+              "ratio": {"type": "string", "pattern": "^[1-9][0-9]?:[1-9][0-9]?$"},
+              "resolution": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,24}$"}
+            },
+            "minProperties": 1,
+            "additionalProperties": false
+          },
+          "media_copy_from": {"type": "string", "description": "Direct dependency whose accepted deliverable contains one fenced media-copy block of approved public poster text."},
           "media": {
             "type": ["object", "null"],
             "properties": {

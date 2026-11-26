@@ -3,6 +3,7 @@ from contextlib import closing, nullcontext
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from graphlib import CycleError, TopologicalSorter
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -37,7 +38,8 @@ from model_plugins import (
 )
 import generated_media
 import model_timeouts
-from media_planning import media_plan_issue, required_media_types
+from media_brief import MediaBriefError, poster_prompt
+from media_planning import media_plan_issue, required_media_types, video_confirmation_requested, video_plan_issue
 from model_policy import (MEDIA_MODES, MODEL_PRESETS, active_preset, ban_insufficient_credit,
                           initialize_model_policy, offer_model_preference, read_policy, update_policy)
 from provider_credentials import (
@@ -643,6 +645,10 @@ def plan_workflow(goal, executor, run_dir, progress):
         f"{ITERATION_PLANNING}"
         "生成海报或成片应声明 deliverable_type=image 或 video，分别填写 media.type=image 与 media.prompt、"
         "或 video_prompt，tools 和 write_paths 留空；创作和代码实现、后期归档或独立验收分开派工。"
+        "视频承诺的总秒数、画幅及分辨率分别写入 video_settings.duration、ratio、resolution；"
+        "需要用户确认本批生成时把生成任务的 impact 设为 costly_change，video_prompt 仅填写最终创作说明。"
+        "海报可直接填已确认终稿；依赖后续定稿时，以 media_copy_from 指向直接依赖，要求其产物用独立的"
+        " Markdown media-copy 围栏仅列对外文案。把已确认的待定文案当作终稿，勿转发内部说明或等候更新的草稿。"
         "先理出关键路径，优先安排会阻塞多个后续任务的决定、共享契约或环境准备。"
         "depends_on 只列开工前确实需要的产物。多个独立任务需要同一产物时分别依赖它，完全独立的任务可立即启动。"
         "能独立修改、测试并交接的工作尽早并行。共享契约确定后，前端可用 Mock 开发，后端可实现接口，QA 可准备验收。"
@@ -1037,33 +1043,39 @@ def missing_recorded_receipt(run_dir, task, job):
                for key, entry in job.get("executors", {}).items())
 
 
+def recorded_media_request(run_dir, task, job):
+    """Load the original provider inputs when resuming a durable generation."""
+    number = video_generation(job) if task.get("video_prompt") else generated_media.generation(job)
+    for attempt in range(job.get("attempt", 1) - 1, number - 1, -1):
+        path = run_dir / f".model-{task['id']}-{attempt}.json"
+        request = read_json(path) if not path.is_symlink() else {}
+        route = request.get("route") or {}
+        if not isinstance(route, dict) or route.get("mode") != task_mode(task) or route.get("provider") not in PROVIDERS:
+            continue
+        executor = job.get("executors", {}).get(str(attempt), {})
+        if any(k in executor and route.get(k) != executor[k] for k in ("mode", "provider", "model")):
+            raise ValueError("已有生成回执，原执行请求不匹配，请人工核对")
+        field = "video_prompt" if task.get("video_prompt") else "media_prompt"
+        if not isinstance(request.get(field), str) or not request[field].strip():
+            raise ValueError("已有生成回执，原创作提示缺失，请人工核对")
+        return request
+    raise ValueError("已有生成回执，找不到原执行记录，请人工核对")
+
+
 def retained_executor(run_dir, task, job, receipt):
     """Recover the exact old generation parameters or the worker that owns a checkpoint."""
     start = job.get("continuity_from", job.get("attempt", 1))
-    number = video_generation(job) if task.get("video_prompt") else generated_media.generation(job)
+    if receipt:
+        return recorded_media_request(run_dir, task, job)["route"]
     history = job.get("executors", {})
-    if not receipt and missing_recorded_receipt(run_dir, task, job):
+    if missing_recorded_receipt(run_dir, task, job):
         raise ValueError("原生成已登记提交，回执文件缺失，请人工核对后接续")
     for attempt in range(job.get("attempt", 1) - 1, start - 1, -1):
         executor = history.get(str(attempt), {})
-        if receipt:
-            if attempt < number:
-                continue
-            previous = run_dir / f".model-{task['id']}-{attempt}.json"
-            request = read_json(previous) if not previous.is_symlink() else {}
-            route = request.get("route") or {}
-            if (not isinstance(route, dict) or route.get("mode") != task_mode(task)
-                    or route.get("provider") not in PROVIDERS):
-                continue
-            if any(k in executor and route.get(k) != executor[k] for k in ("mode", "provider", "model")):
-                raise ValueError("已有生成回执，原执行请求不匹配，请人工核对")
-            return route
         if job.get("execution", {}).get(str(attempt), {}).get("checkpoint"):
             if executor.get("provider", "host") == "host":
                 return {"provider": "host"}
             return executor
-    if receipt:
-        raise ValueError("已有生成回执，找不到原执行记录，请人工核对")
     return None
 
 
@@ -1227,6 +1239,29 @@ def model_launch_gate(progress, task_id):
         return "deferred"
     _, tasks, _ = load_workflow(workflow_path(progress.path.parent, data))
     job = data["tasks"][task_id]
+    task = tasks[task_id]
+    run_dir = progress.path.parent
+    issue = media_input_issue(run_dir, data, task, job)
+    receipt = generation_receipt(run_dir, task, job)
+    if not issue and receipt and not os.path.lexists(receipt) and (
+            video_scope(task) or task.get("video_settings") or task.get("media_copy_from")):
+        path = run_dir / f".model-{task_id}-{job['attempt']}.json"
+        request = read_json(path) if not path.is_symlink() else {}
+        if task.get("video_prompt"):
+            route = request.get("route") or {}
+            if request.get("video_prompt") != task["video_prompt"] or any(
+                    route.get(k) != v for k, v in task.get("video_settings", {}).items()):
+                issue = f"{task_id}: 待提交的视频请求与本批生成规格不一致，请 LD 核对并重新派工"
+        elif request.get("media_prompt") != poster_prompt(task, data, run_dir):
+            issue = f"{task_id}: 待提交的海报请求与已放行文案不一致，请 LD 核对并重新派工"
+    if issue:
+        record_assignment_loss(progress, tasks, task_id, issue, executor_stopped=True)
+        if missing_recorded_receipt(run_dir, task, job):
+            return job["state"]
+        if job["state"] == "recovery_required":
+            queue_recovery(progress, task_id, issue)
+        return_media_to_ld(progress, tasks, {task_id: issue}, [])
+        return job["state"]
     authorization = job.get("authorization")
     if authorization or preapproval_required(tasks[task_id]):
         if data.get("decisions", {}).get(authorization, {}).get("state") != "approved":
@@ -1353,8 +1388,10 @@ def host_ready(run_dir, wait=0, *, observed_active=(), launch_models=False):
 
 
 def requires_media_executor(task, job, run_mode):
-    return (task_mode(task) in ("video", "image")
-            and (run_mode == "live" or job.get("remote_media_required") or bool(required_media_types(task))))
+    return task_mode(task) in ("video", "image") and any((
+        run_mode == "live", job.get("remote_media_required"), task.get("video_settings"),
+        task.get("media_copy_from"), required_media_types(task),
+    ))
 
 
 def host_routing_summary(run_dir, data, tasks, summary, registry, load=None):
@@ -1382,7 +1419,32 @@ def host_routing_summary(run_dir, data, tasks, summary, registry, load=None):
     return summary
 
 
-def pending_media_issues(data, tasks):
+def video_scope(task):
+    if task.get("video_prompt") and preapproval_required(task):
+        return {"video_prompt": task["video_prompt"], "video_settings": task.get("video_settings", {})}
+    return None
+
+
+def media_input_issue(run_dir, data, task, job):
+    receipt = generation_receipt(run_dir, task, job)
+    if receipt and os.path.lexists(receipt):
+        # A receipt restricts the next executor to the existing submission.
+        return None
+    if issue := media_plan_issue(task):
+        return issue
+    if task.get("media_copy_from") and not waiting_on(data, task):
+        try:
+            poster_prompt(task, data, run_dir)
+        except MediaBriefError as error:
+            return f"{task['id']}: 请 LD 核对海报公开文案并重新规划 · {error}"
+    scope = video_scope(task)
+    authorization = job.get("authorization")
+    if scope and authorization and data.get("decisions", {}).get(authorization, {}).get("media_scope") != scope:
+        return f"{task['id']}: 视频的生成规格或创作提示与原审批不符，请 LD 重新提交本批生成确认"
+    return None
+
+
+def pending_media_issues(run_dir, data, tasks):
     if data["state"] != "running":
         return {}, []
     plan = pending_replan(data) or {}
@@ -1394,7 +1456,7 @@ def pending_media_issues(data, tasks):
             job["state"] == "awaiting_confirmation" and job.get("authorization") and not job.get("evidence"))
         if key in recorded or not unclaimed:
             continue
-        if issue := media_plan_issue(task):
+        if issue := media_input_issue(run_dir, data, task, job):
             issues[key] = issue
     missing = [] if plan.get("missing_media") else missing_media_types(data["goal"], tasks.values())
     return issues, missing
@@ -1433,10 +1495,10 @@ def return_media_to_ld(progress, tasks, issues, missing):
 
 def sync_media_replan(run_dir, data, tasks):
     # The queue and direct claim can race another coordinator or an LD revision.
-    if any(pending_media_issues(data, tasks)):
+    if any(pending_media_issues(run_dir, data, tasks)):
         with Progress.locked(run_dir) as current:
             if current.data.get("workflow_revision") == data.get("workflow_revision"):
-                issues, missing = pending_media_issues(current.data, tasks)
+                issues, missing = pending_media_issues(run_dir, current.data, tasks)
                 if issues or missing:
                     return_media_to_ld(current, tasks, issues, missing)
             return current.data
@@ -1445,7 +1507,7 @@ def sync_media_replan(run_dir, data, tasks):
 
 def reconcile(progress, tasks):
     data = progress.data
-    issues, missing = pending_media_issues(data, tasks)
+    issues, missing = pending_media_issues(progress.path.parent, data, tasks)
     if issues or missing:
         return_media_to_ld(progress, tasks, issues, missing)
     if data["state"] != "running" or pending_replan(data):
@@ -1458,8 +1520,15 @@ def reconcile(progress, tasks):
             content = task["prompt"]
             if any(upstream):
                 content += "\n前置产物：" + "、".join(name for name in upstream if name)
+            scope = video_scope(task)
+            if scope:
+                settings = json.dumps(scope["video_settings"], ensure_ascii=False, sort_keys=True)
+                content += ("\n本批视频生成参数（未指定项沿用模型配置）：" + settings
+                            + "\n提交给模型的创作提示：\n" + scope["video_prompt"])
             decision = proposal(progress, "effect", task_id, content,
                                 effect=task.get("effect"), impact=task.get("impact"))
+            if scope:
+                decision["media_scope"] = scope
             decision["inputs"] = [name for name in upstream if name]
             decision["affected"] = [task_id, *affected_tasks(tasks, task_id)]
             job["authorization"] = decision["id"]
@@ -1521,6 +1590,8 @@ def stage_result(progress, tasks, task_id, result, activity):
     job = progress.data["tasks"][task_id]
     decision = proposal(progress, "result", task_id, content, evidence=evidence, impact=tasks[task_id].get("impact"),
                         note=job.pop("decision_note", None))
+    if not verdict and "media-copy" in result:
+        decision["evidence_sha256"] = hashlib.sha256(progress.path.with_name(evidence).read_bytes()).hexdigest()
     decision["activity"] = activity
     decision["affected"] = affected_tasks(tasks, task_id)
     job["decision"] = decision["id"]
@@ -1832,6 +1903,13 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
             member_id = previous["id"]
     if not route and requires_media_executor(task, job, progress.data["mode"]):
         raise ValueError(f"{task_id}: 此任务须由对应的媒体模型执行，请检查提供商、模型策略或凭据后重新领取")
+    if issue := media_input_issue(run_dir, progress.data, task, job):
+        raise ValueError(issue)
+    original = recorded_media_request(run_dir, task, job) if route and route.get("reuse_only") else {}
+    media = task.get("media")
+    if media and media["type"] == "image":
+        final_prompt = original.get("media_prompt") or poster_prompt(task, progress.data, run_dir)
+        media = {**media, "prompt": final_prompt}
     assign_member(progress, job, member_id, member_name)
     review = task.get("review", False)
     workspace, checkout = task_worktree(progress, workflow_tasks, task_id)
@@ -1858,10 +1936,10 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
     }
     if checkout:
         assignment["git"] = checkout
-    if task.get("media"):
-        assignment["media"] = task["media"]
+    if media:
+        assignment["media"] = media
     if task.get("video_prompt"):
-        assignment["video_prompt"] = task["video_prompt"]
+        assignment["video_prompt"] = original.get("video_prompt") or task["video_prompt"]
     if continuation := recovery_context(job, workspace, local_executor=progress.data["mode"] == "live"):
         if preapproval_required(task):
             continuation.pop("resume_session_id", None)
@@ -1890,7 +1968,7 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
                 number = generated_media.generation(job)
                 execution["media_generation"] = number
                 request = {"route": route, "run_dir": str(run_dir), "task": task_id,
-                           "media_generation": number, "media_prompt": task["media"]["prompt"]}
+                           "media_generation": number, "media_prompt": media["prompt"]}
                 path = generated_media.receipt_path(run_dir, task_id, number)
                 if os.path.lexists(path):
                     receipt = generated_media.read_receipt(path)
@@ -1900,7 +1978,8 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
             if route["mode"] == "video":
                 execution["video_generation"] = video_generation(job)
                 request["video_receipt"] = str(video_receipt_path(run_dir, task_id, job))
-                request["video_prompt"] = task["video_prompt"]
+                request["video_prompt"] = assignment["video_prompt"]
+                execution["video_settings"] = {k: route[k] for k in ("duration", "ratio", "resolution") if k in route}
             if route["mode"] == "patch":
                 from model_patch import patch_prompt
                 request["checkout"] = {key: checkout[key] for key in ("base", "branch")}
@@ -2064,6 +2143,10 @@ def replan_assignment(progress, tasks):
         f"{ITERATION_PLANNING}"
         "生成海报或成片应声明 deliverable_type=image 或 video，分别填写 media.type=image 与 media.prompt、"
         "或 video_prompt，tools 和 write_paths 留空；创作和代码实现、后期归档或独立验收分开派工。"
+        "视频承诺的总秒数、画幅及分辨率分别写入 video_settings.duration、ratio、resolution；"
+        "需要用户确认本批生成时把生成任务的 impact 设为 costly_change，video_prompt 仅填写最终创作说明。"
+        "海报可直接填已确认终稿；依赖后续定稿时，以 media_copy_from 指向直接依赖，要求其产物用独立的"
+        " Markdown media-copy 围栏仅列对外文案。把已确认的待定文案当作终稿，勿转发内部说明或等候更新的草稿。"
         "只在 tasks 中返回新增任务与需要改动且标为 editable 的任务，以 ID 为准，未列出的任务会保留。"
         "设置准确的依赖，让写入范围独立的任务并行，各实现任务安排下游独立 QA。"
         "用 write_paths 声明可写的相对文件或目录。只读任务或范围不明确填空数组。"
@@ -2124,6 +2207,19 @@ def apply_replan(progress, tasks, revision, raw):
             producers = {item for item in lineage if task_mode(updated[item]) == kind}
             if not producers:
                 raise MediaPlanError(f"{key}: LD 重新规划须保留 {kind} 生成任务；拆分时请用 depends_on 接续其产物")
+            if kind == "video":
+                targets = {key} if key in producers else producers
+                for item in targets:
+                    video = updated[item]
+                    if video_confirmation_requested(tasks[key]) and video.get("impact") != "costly_change":
+                        raise MediaPlanError(f"{key}: 须保留本批视频生成的人工确认，请在生成任务设置 impact=costly_change")
+                    # When correcting an invalid registration, retain promises from the original
+                    # task even if the LD rewrites its prose. A user revising a valid scope sets new terms.
+                    if video_plan_issue(tasks[key]):
+                        original = [tasks[key]["prompt"], tasks[key].get("video_prompt") or "",
+                                    *tasks[key].get("acceptance", [])]
+                        if issue := video_plan_issue({**video, "acceptance": original}):
+                            raise MediaPlanError(f"{key}: 更新的生成任务须满足原任务的规格 · {issue}")
             required_remote.update(item for item in producers if item in changed or data["tasks"][item]["state"] == "pending")
     covered = set().union(*(task_ancestors(updated, key) for key in updated if updated[key].get("review")))
     missing = [key for key in changed if changed[key]["role"] == "engineer" and key not in covered]
@@ -2631,10 +2727,15 @@ def revise_decision(progress, tasks, key, reason, content):
         replacement = decision["content"] if content is None else content.strip()
         if not replacement:
             raise ValueError("Replacement proposal must not be empty")
+        if not release and video_scope(tasks[task_id]) and replacement != decision["content"]:
+            note = f"{task_id}: 用户要求修改本批视频生成方案，请 LD 更新任务并重新提交审批。\n{replacement}\n{reason}"
+            return_media_to_ld(progress, tasks, {task_id: note}, [])
+            audit(progress, "revise", reason, decision=key)
+            return {"replan": progress.data["replan"]}
         supersede(progress, key)
         new = proposal(progress, decision["kind"], task_id, replacement,
                        effect=decision["effect"], impact=decision["impact"], note=reason)
-        for name in ("inputs", "affected"):
+        for name in ("inputs", "affected", "media_scope"):
             if name in decision:
                 new[name] = decision[name]
         new["replaces"] = key

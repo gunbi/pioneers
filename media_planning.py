@@ -2,6 +2,8 @@
 
 import re
 
+from media_brief import poster_plan_issue
+
 
 # Match an action and its object within one instruction. Mentions of an asset in
 # a path, dependency, provider brief, or UI specification do not declare output.
@@ -204,6 +206,8 @@ def video_plan_issue(task):
 def media_plan_issue(task):
     """Describe the correction for the LD, leaving unrelated planning rules alone."""
     task_id = task.get("id", "?")
+    if issue := poster_plan_issue(task):
+        return issue
     if (task.get("media") or {}).get("type") == "video":
         return f"{task_id}: 请 LD 重新规划，视频使用 video_prompt，移除 media 并清空 tools 和 write_paths。"
     if task.get("deliverable_type") not in (None, "video", "image"):

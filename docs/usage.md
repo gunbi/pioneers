@@ -358,6 +358,22 @@ OpenRouter 目录无需凭证即可浏览。看板合并 `GET /models?output_mod
 - **图像与音频**在工作流任务中填写 `media` 对象。例如 `"media": {"type": "image", "prompt": "画一张溪流中纸船的水彩图"}`。旁白用 `speech` 并在 `prompt` 填写朗读稿，可用 `voice` 指定该模型支持的音色。配乐用 `music` 描述曲风、乐器或场景，音效用 `sound_effect` 描述要听见的声音。项目可按这四种类型指定模型或选择命名配置。SiliconFlow 和 OpenRouter 提供文生图、旁白，OpenRouter 还可派发 Lyria 配乐和 Seed Audio 音效。任务页可打开或保存生成文件，文件位于当轮运行目录的 `media/` 下。
 - **运行用量**按项目、模型和任务轮次展示，记录供应商返回的 token、图片张数、音频文件数、视频数及视频秒数。恢复时复用的文件或视频请求仅计一次。独立验收、工具和外部操作继续交给宿主。
 
+**把定稿交给媒体模型**
+
+视频任务承诺“约 10 秒、9:16 竖屏”时，在任务写入 `"video_settings": {"duration": 10, "ratio": "9:16"}`。可选的 `resolution` 也会随任务覆盖模型配置。若用户要求本批生成前确认，给这条视频任务设置 `"impact": "costly_change"`。审批页会展示本批参数和最终创作提示；用户修改方案后由 LD 更新任务并再次请求确认。
+
+海报已有定稿时，直接写进 `media.prompt`。若文案来自前一步，例如名为 `requirements` 的需求任务，把它列入 `depends_on` 并设置 `"media_copy_from": "requirements"`。在该任务的交付物里只标记一段可对外使用的文字，内部讨论留在代码块外。
+
+````markdown
+```media-copy
+周五出逃计划
+活动时间待定 · 地点待定
+报名链接待公布
+```
+````
+
+Pioneers 在派工时核对上游产物的放行版本，将创作说明和这段文字送给图像模型。缺少终稿、版本不符或提示仍要求“更新后再生成”时，会退回 LD。QA 验收实际图片上的文字，以及视频文件的时长、画幅和内容。
+
 ### 将发布纳入交付
 
 向阿里云 ECS 发布容器时，方案和验收任务可加载 `aliyun-ecs-container-deployment`。把实际部署安排成验收后的独立交付工程师任务，设置 `"skills": ["aliyun-ecs-container-deployment"]` 和 `"effect": "publish"`，并安排部署后的独立 QA 复验。审批通过后，由宿主提供所需工具和目标环境的授权。
