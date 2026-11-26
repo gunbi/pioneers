@@ -336,7 +336,7 @@ OpenRouter 目录无需凭证即可浏览。看板合并 `GET /models?output_mod
 #### 各类任务的执行要求
 
 - **文本产物**适合规格、验收样例和其他只读文本任务。请求包含任务说明、验收条件、所选 Skill 和前置产物；选择平台时应考虑这些材料能否发送给它。
-- **媒体任务退回**。交付海报或成片时，可分别声明 `deliverable_type: image` 或 `video`，并填写相应的生成字段。领取前若发现生成任务被写成普通开发任务、类型不符，或需求中明确的产物没有对应任务，队列会显示 LD 重新规划。LD 使用 `--replan RUN_DIR` 获取原因，按返回的 revision 提交修订，保留已有产物与轮次。生成、后期处理和 QA 可拆成有依赖的任务。
+- **媒体任务退回**。交付海报或成片时，可分别声明 `deliverable_type: image` 或 `video`，并填写相应的生成字段。领取前若发现生成任务被写成普通开发任务、类型不符，或需求中明确的产物没有对应任务，队列会显示 LD 重新规划。LD 使用 `--replan RUN_DIR` 获取原因，按返回的 revision 提交修订，保留已有产物与轮次。生成、后期处理和 QA 可拆成有依赖的任务。CLI 实时运行同样调用对应媒体插件。没有可用模型时任务保持未领取，修正项目模型配置后可用 `--continue RUN_DIR` 接续。
 - **文生视频**在工作流任务中填写 `video_prompt`，并把 `tools`、`write_paths` 留空。模型仅接收这段创作描述。SiliconFlow 走 `POST /video/submit` 和 `POST /video/status`，先保存提交标记，再保存供应商请求 ID。失联重派时按原 ID 查询；提交结果不明时需人工核对。SiliconFlow 视频链接有效期约一小时。OpenRouter 会返回限时签名链接或需用本机密钥请求的官方视频内容地址，需保留的成片请及时另存。[视频 API 文档](https://api-docs.siliconflow.cn/docs/api/video-status-post)
 - **补丁任务**把 `write_paths` 中逐一指定的 UTF-8 普通文件交给模型。需要干净的独立 Git 工作区，最多 24 个文件、合计 192 KiB。模型可更新文件或创建新文件。本地执行器在临时副本中运行项目配置的测试，通过后才将改动提交到本轮分支。macOS 使用 `sandbox-exec`，Linux 需要可用的 `bwrap`。测试依赖应能在隔离环境使用；需要联网、桌面工具或其他宿主能力时选择 `host`。
 - **图像与音频**在工作流任务中填写 `media` 对象。例如 `"media": {"type": "image", "prompt": "画一张溪流中纸船的水彩图"}`。旁白用 `speech` 并在 `prompt` 填写朗读稿，可用 `voice` 指定该模型支持的音色。配乐用 `music` 描述曲风、乐器或场景，音效用 `sound_effect` 描述要听见的声音。项目可按这四种类型指定模型或选择命名配置。SiliconFlow 和 OpenRouter 提供文生图、旁白，OpenRouter 还可派发 Lyria 配乐和 Seed Audio 音效。任务页可打开或保存生成文件，文件位于当轮运行目录的 `media/` 下。

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from model_plugins import InsufficientCreditError
 from model_policy import read_policy, update_policy
-from pioneers import create_run, execute_host, host_ready, main, project_registry, update_host, validate_workflow
+from pioneers import create_run, execute_host, load_workflow, run_workflow, host_ready, main, project_registry, update_host, validate_workflow
 from progress import Progress
 
 
@@ -50,6 +50,56 @@ class AutomaticDispatchTest(unittest.TestCase):
 
     def claim(self, task="low", **kwargs):
         return update_host(self.run, task, None, None, None, None, **kwargs)
+
+    def test_live_media_replan_never_delegates_to_text_runner(self):
+        self.setup_run()
+        plan_path = self.run / "workflow.json"
+        draft = json.loads(plan_path.read_text())
+        clip = draft["tasks"][0]
+        clip.update(prompt="制作宣传短片", acceptance=["交付实际可播放视频"], write_paths=["media/video"])
+        plan_path.write_text(json.dumps(draft))
+        with Progress.locked(self.run) as progress:
+            progress.data["mode"] = "live"
+            progress.data["tasks"]["high"]["state"] = "completed"
+        # No provider currently offers video. The LD can fix the plan, but a
+        # successful text runner response must not be accepted as a video.
+        calls = []
+        class Runner:
+            def run(self, role, prompt, report, *, phase, **kwargs):
+                calls.append((role, phase))
+                if phase == "plan":
+                    return json.dumps({"tasks": [{**clip, "write_paths": [], "video_prompt": "Frisbee on grass"}]})
+                if phase == "approval":
+                    return json.dumps({"needs_confirmation": False, "reason": "已核对模拟视频回执"})
+                raise AssertionError("普通 runner 收到了媒体生成任务")
+        runner = Runner()
+        goal, tasks, order = load_workflow(plan_path)
+        with redirect_stdout(io.StringIO()):
+            code = run_workflow(goal, tasks, order, runner, Progress.open(self.run))
+        self.assertEqual(code, 1)
+        snapshot = Progress.open(self.run).data
+        self.assertEqual(snapshot["tasks"]["low"]["state"], "pending")
+        self.assertNotIn("executors", snapshot["tasks"]["low"])
+        self.assertFalse((self.run / "low.md").exists())
+        self.assertEqual(calls, [("ld", "plan")])
+
+        self.policy("select", provider="openrouter", model="org/video", mode="video")
+        def worker(command, workspace, renew, **kwargs):
+            renew()
+            request = json.loads(Path(command[-2]).read_text())
+            self.assertEqual(request["route"]["mode"], "video")
+            self.assertEqual(request["video_prompt"], "Frisbee on grass")
+            Path(command[-1]).write_text(json.dumps({"content": "视频回执", "usage": {"videos": 1},
+                                                     "video": {"request_id": "v1", "state": "Succeed"}}))
+            return 0
+        goal, tasks, order = load_workflow(self.run / "workflow.1.json")
+        with patch("pioneers.supervise_host_executor", side_effect=worker) as plugin, redirect_stdout(io.StringIO()):
+            code = run_workflow(goal, tasks, order, runner, Progress.open(self.run))
+        self.assertEqual(code, 0)
+        plugin.assert_called_once()
+        node = Progress.open(self.run).data["tasks"]["low"]
+        self.assertEqual((node["state"], node["executors"]["1"]["provider"]), ("completed", "openrouter"))
+        self.assertEqual(calls, [("ld", "plan"), ("ld", "approval")])
 
     def test_declared_generation_claim_selects_video_plugin(self):
         self.setup_run(deliverable_type="video", prompt="生成活动视频", video_prompt="A frisbee in flight")

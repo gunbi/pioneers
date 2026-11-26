@@ -359,6 +359,8 @@ def validate_workflow(workflow, generated=False, *, check_media=True):
         ):
             raise ValueError(f"{task_id}: acceptance must be an array of non-empty strings")
         if review and (not acceptance or len(set(acceptance)) != len(acceptance)):
+            if task.get("media") or video_prompt is not None:
+                raise MediaPlanError(media_plan_issue(task))
             raise ValueError(f"{task_id}: review needs distinct acceptance criteria")
         dependencies = task.get("depends_on", [])
         if not isinstance(dependencies, list) or not all(isinstance(dep, str) for dep in dependencies):
@@ -1330,8 +1332,9 @@ def host_ready(run_dir, wait=0, *, observed_active=(), launch_models=False):
     return host_routing_summary(run_dir, data, tasks, summary, project_registry(Path(data["workspace"])))
 
 
-def requires_media_executor(task, job):
-    return task_mode(task) in ("video", "image") and (job.get("remote_media_required") or bool(required_media_types(task)))
+def requires_media_executor(task, job, run_mode):
+    return (task_mode(task) in ("video", "image")
+            and (run_mode == "live" or job.get("remote_media_required") or bool(required_media_types(task))))
 
 
 def host_routing_summary(run_dir, data, tasks, summary, registry, load=None):
@@ -1353,7 +1356,7 @@ def host_routing_summary(run_dir, data, tasks, summary, registry, load=None):
                 item["model_candidates"] = [candidate for candidate, _ in options[:8]]
                 if not options:
                     item["model_routing_reason"] = ("此任务须由对应的媒体模型执行，请检查提供商、模型策略或凭据"
-                                                   if requires_media_executor(task, data["tasks"][item["task"]]) else reason)
+                                                   if requires_media_executor(task, data["tasks"][item["task"]], data["mode"]) else reason)
             except (ValueError, OSError, RuntimeError) as error:
                 item["model_routing_reason"] = str(error)
     return summary
@@ -1807,7 +1810,7 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
         previous = job["recoveries"][-1].get("member")
         if previous:
             member_id = previous["id"]
-    if progress.data["mode"] == "host" and not route and requires_media_executor(task, job):
+    if not route and requires_media_executor(task, job, progress.data["mode"]):
         raise ValueError(f"{task_id}: 此任务须由对应的媒体模型执行，请检查提供商、模型策略或凭据后重新领取")
     assign_member(progress, job, member_id, member_name)
     review = task.get("review", False)
@@ -1849,7 +1852,7 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
             raise ValueError("媒体已有生成回执，请用原模型接续或人工核对交付物")
         if task.get("video_prompt") and video_receipt_path(run_dir, task_id, job).exists() and not route:
             raise ValueError("视频已有供应商回执，请用原模型查询或人工核对交付物")
-    if progress.data["mode"] == "host":
+    if route or progress.data["mode"] == "host":
         execution = {"provider": "host"}
         if not route:
             assignment["prompt"] += ("\n实际使用 Skill 后，在本轮 --host-report 中带上 --attempt 和 --used-skill ID。"
@@ -2148,6 +2151,7 @@ def execute_live(tasks, order, executor, progress):
     while True:
         assignment = None
         planning = None
+        media_task = None
         with Progress.locked(run_dir) as current:
             reconcile(current, tasks)
             data = current.data
@@ -2165,7 +2169,23 @@ def execute_live(tasks, order, executor, progress):
             elif data["state"] == "running" and not data.get("paused") and not pending_replan(data):
                 ready = next((key for key in order if not claim_blockers(data, tasks, key)), None)
                 if ready:
-                    assignment = claim_task(current, tasks, ready)
+                    if requires_media_executor(tasks[ready], data["tasks"][ready], "live"):
+                        media_task = ready
+                    else:
+                        assignment = claim_task(current, tasks, ready)
+        if media_task:
+            try:
+                claimed = claim_with_model_routing(run_dir, media_task, run_mode="live")
+            except (ValueError, RuntimeError, OSError) as error:
+                with Progress.locked(run_dir) as current:
+                    if (current.data.get("paused") or pending_replan(current.data)
+                            or current.data["tasks"][media_task]["state"] != "pending"):
+                        continue
+                    message = f"媒体任务尚未领取：{error}。处理后用 --continue 接续本轮。"
+                    current.task(media_task, "pending", message, announce=True)
+                return 1
+            execute_host(run_dir, media_task, claimed["attempt"], None, run_mode="live")
+            continue
         if planning:
             revision = planning["revision"]
             try:
@@ -2232,66 +2252,75 @@ def execute_live(tasks, order, executor, progress):
                 raise
 
 
+def claim_with_model_routing(run_dir, task_id, *, run_mode, member_id=None, member_name=None, profile=None, model_choice=None):
+    data = Progress.open(run_dir).data
+    if data["mode"] != run_mode:
+        raise ValueError("Host commands require a run created with --host-start")
+    data = reap_host_assignments(run_dir, data)
+    _, before, _ = load_workflow(workflow_path(run_dir, data))
+    if task_id not in before:
+        raise ValueError(f"Unknown workflow task: {task_id}")
+    revision = data.get("workflow_revision")
+    data = sync_media_replan(run_dir, data, before)
+    if data.get("workflow_revision") != revision:
+        raise ValueError("LD 已更新计划，请按新计划领取任务")
+    before_attempt = data["tasks"][task_id].get("attempt", 1)
+    workspace = project_workspace(data.get("workspace"))
+    registry = project_registry(workspace)
+    job = data["tasks"][task_id]
+    task = before[task_id]
+    ensure_claimable(data, before, task_id)
+    receipt = generation_receipt(run_dir, task, job)
+    reuse_only = bool(receipt and os.path.lexists(receipt))
+    config = ({}, {}) if profile == "host" else models_config(workspace)
+    # Catalog reads and provider preflight happen outside the heartbeat lock.
+    load = cached_catalogs(registry)
+    with project_credentials(registry), shared_preflight():
+        while True:
+            policy = read_policy(registry)
+            if model_choice and model_choice.partition("/")[0] in policy["banned_providers"]:
+                raise ValueError("--model-choice 指定的模型提供商已被项目禁用")
+            options, fixed, fallback = routing_options(run_dir, data, task, workspace, config, policy, profile, load)
+            # An authenticated catalog refresh can suspend a provider while ranking.
+            if policy["banned_providers"] != read_policy(registry)["banned_providers"]:
+                continue
+            try:
+                route, reason = select_claim(options, fixed, fallback, model_choice, reuse_only, active_preset(policy))
+                break
+            except InsufficientCreditError as error:
+                disabled = ban_insufficient_credit(registry, error.provider, policy["revision"])
+                if not disabled or profile or (model_choice and model_choice.partition("/")[0] == error.provider):
+                    raise ValueError(f"{error.provider} 预检时账户余额不足，请按最新策略重新派工") from error
+    if run_mode == "host" and not (dashboard_is_running(run_dir, data.get("dashboard_port")) or active_project_port(registry, run_dir)):
+        raise ValueError("Start the run dashboard with --project-dashboard --workspace PROJECT or --dashboard RUN_DIR before claiming tasks")
+    with Progress.locked(run_dir) as progress:
+        if progress.data["mode"] != run_mode:
+            raise ValueError("Host commands require a run created with --host-start")
+        _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
+        if task_id not in tasks:
+            raise ValueError(f"Unknown workflow task: {task_id}")
+        workspace = project_workspace(progress.data.get("workspace"))
+        progress.data["workspace"] = str(workspace)
+        if (tasks[task_id] != before[task_id] or progress.data["tasks"][task_id].get("attempt", 1) != before_attempt
+                or (receipt and reuse_only != os.path.lexists(receipt))
+                or data.get("git_base") != progress.data.get("git_base") or policy != read_policy(registry)
+                or (profile != "host" and models_config(workspace) != config)):
+            raise ValueError("Task or model profile changed during preflight; claim again")
+        return claim_task(progress, tasks, task_id, member_id, member_name, route=route, fallback_reason=reason)
+
+
 def update_host(run_dir, task_id, state, activity, artifact, attempt, member_id=None, member_name=None, profile=None, model_choice=None,
                 *, used_skills=()):
     run_dir = run_dir.resolve(strict=True)
     if state is None:
-        data = Progress.open(run_dir).data
-        if data["mode"] != "host":
-            raise ValueError("Host commands require a run created with --host-start")
-        data = reap_host_assignments(run_dir, data)
-        _, before, _ = load_workflow(workflow_path(run_dir, data))
-        if task_id not in before:
-            raise ValueError(f"Unknown workflow task: {task_id}")
-        revision = data.get("workflow_revision")
-        data = sync_media_replan(run_dir, data, before)
-        if data.get("workflow_revision") != revision:
-            raise ValueError("LD 已更新计划，请按新计划领取任务")
-        before_attempt = data["tasks"][task_id].get("attempt", 1)
-        workspace = project_workspace(data.get("workspace"))
-        registry = project_registry(workspace)
-        job = data["tasks"][task_id]
-        task = before[task_id]
-        ensure_claimable(data, before, task_id)
-        receipt = generation_receipt(run_dir, task, job)
-        reuse_only = bool(receipt and os.path.lexists(receipt))
-        config = ({}, {}) if profile == "host" else models_config(workspace)
-        # Catalog reads and provider preflight happen outside the heartbeat lock.
-        load = cached_catalogs(registry)
-        with project_credentials(registry), shared_preflight():
-            while True:
-                policy = read_policy(registry)
-                if model_choice and model_choice.partition("/")[0] in policy["banned_providers"]:
-                    raise ValueError("--model-choice 指定的模型提供商已被项目禁用")
-                options, fixed, fallback = routing_options(run_dir, data, task, workspace, config, policy, profile, load)
-                # An authenticated catalog refresh can suspend a provider while ranking.
-                if policy["banned_providers"] != read_policy(registry)["banned_providers"]:
-                    continue
-                try:
-                    route, reason = select_claim(options, fixed, fallback, model_choice, reuse_only, active_preset(policy))
-                    break
-                except InsufficientCreditError as error:
-                    disabled = ban_insufficient_credit(registry, error.provider, policy["revision"])
-                    if not disabled or profile or (model_choice and model_choice.partition("/")[0] == error.provider):
-                        raise ValueError(f"{error.provider} 预检时账户余额不足，请按最新策略重新派工") from error
-        if not (dashboard_is_running(run_dir, data.get("dashboard_port")) or active_project_port(registry, run_dir)):
-            raise ValueError("Start the run dashboard with --project-dashboard --workspace PROJECT or --dashboard RUN_DIR before claiming tasks")
-    # Serialize status read/modify/write across independent CLI invocations.
+        return claim_with_model_routing(run_dir, task_id, run_mode="host", member_id=member_id, member_name=member_name,
+                                        profile=profile, model_choice=model_choice)
     with Progress.locked(run_dir) as progress:
         if progress.data["mode"] != "host":
             raise ValueError("Host commands require a run created with --host-start")
         _, tasks, _ = load_workflow(workflow_path(run_dir, progress.data))
         if task_id not in tasks:
             raise ValueError(f"Unknown workflow task: {task_id}")
-        if state is None:
-            workspace = project_workspace(progress.data.get("workspace"))
-            progress.data["workspace"] = str(workspace)
-            if (tasks[task_id] != before[task_id] or progress.data["tasks"][task_id].get("attempt", 1) != before_attempt
-                    or (receipt and reuse_only != os.path.lexists(receipt))
-                    or data.get("git_base") != progress.data.get("git_base") or policy != read_policy(registry)
-                    or (profile != "host" and models_config(workspace) != config)):
-                raise ValueError("Task or model profile changed during preflight; claim again")
-            return claim_task(progress, tasks, task_id, member_id, member_name, route=route, fallback_reason=reason)
         job = progress.data["tasks"][task_id]
         active_assignment(job, task_id, attempt)
         if state == "lost" and executor_is_active(run_dir, task_id, job.get("attempt", 1)):
@@ -2481,10 +2510,10 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
     return int("error" in result)
 
 
-def execute_host(run_dir, task_id, attempt, command):
+def execute_host(run_dir, task_id, attempt, command, *, run_mode="host"):
     run_dir = run_dir.resolve(strict=True)
     progress = Progress.open(run_dir)
-    if progress.data["mode"] != "host":
+    if progress.data["mode"] != run_mode:
         raise ValueError("Host execution requires a run created with --host-start")
     job = progress.data["tasks"].get(task_id)
     if job is None:
