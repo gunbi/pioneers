@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from functools import partial
 import json
 import re
 import socket
@@ -15,7 +16,7 @@ from dispatch import writes_workspace
 from media_brief import poster_ratio
 from media_planning import video_plan_issue
 from model_policy import MEDIA_MODES, MODEL_ID, MODES, banned, read_policy
-from model_stream import read_completion, response_lines
+from model_stream import byte_limit, read_completion, response_lines, token_counts
 from model_timeouts import seconds
 from provider_credentials import provider_key
 from provider_errors import (
@@ -58,7 +59,7 @@ class ChatProvider:
 
     @classmethod
     def request(cls, path, *, payload=None, timeout, public=False, raw=False, max_bytes=8 * 1024 * 1024,
-                with_content_type=False, stream_reader=None, stream_total=None, stream_idle=None):
+                with_content_type=False, stream_reader=None, stream_total=None, stream_idle=None, stream_event_bytes=None):
         cache = _preflight_reads.get() if payload is None and not raw else None
         key = (cls, path, public, timeout, max_bytes)
         if cache is not None and key in cache:
@@ -68,7 +69,7 @@ class ChatProvider:
             return result
         try:
             result = cls._request(path, payload, timeout, public, raw, max_bytes, with_content_type,
-                                  stream_reader, stream_total, stream_idle)
+                                  stream_reader, stream_total, stream_idle, stream_event_bytes)
         except ProviderError as error:
             if cache is not None:
                 cache[key] = error
@@ -79,7 +80,7 @@ class ChatProvider:
 
     @classmethod
     def _request(cls, path, payload, timeout, public, raw, max_bytes, with_content_type,
-                 stream_reader, stream_total, stream_idle):
+                 stream_reader, stream_total, stream_idle, stream_event_bytes):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"}
         credential = None if public else cls.api_key()
@@ -93,7 +94,7 @@ class ChatProvider:
             with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
                 if stream_reader:
                     lines = response_lines(response, max_bytes, started=started, first=timeout,
-                                           idle=stream_idle, total=stream_total)
+                                           idle=stream_idle, total=stream_total, event_bytes=stream_event_bytes)
                     return stream_reader(lines)
                 body = response.read(max_bytes + 1)
                 if raw and with_content_type:
@@ -133,8 +134,12 @@ class ChatProvider:
     def complete(cls, model, prompt):
         payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": True}
         payload.update(cls.stream_options)
+        reader = partial(read_completion, content_bytes=byte_limit("PIONEERS_MODEL_STREAM_CONTENT_BYTES"))
         body = cls.request("/chat/completions", payload=payload, timeout=seconds("PIONEERS_MODEL_FIRST_RESPONSE_SECONDS"),
-                           stream_reader=read_completion, stream_total=seconds("PIONEERS_MODEL_TOTAL_SECONDS"),
+                           max_bytes=byte_limit("PIONEERS_MODEL_STREAM_TRANSPORT_BYTES"),
+                           stream_event_bytes=byte_limit("PIONEERS_MODEL_STREAM_EVENT_BYTES"),
+                           stream_reader=reader,
+                           stream_total=seconds("PIONEERS_MODEL_TOTAL_SECONDS"),
                            stream_idle=seconds("PIONEERS_MODEL_STREAM_IDLE_SECONDS"))
         choices = body.get("choices") if isinstance(body, dict) else None
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -148,10 +153,7 @@ class ChatProvider:
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str) or not content.strip():
             raise ProviderError(f"{cls.name} returned an empty completion")
-        usage = body.get("usage")
-        usage = usage if isinstance(usage, dict) else {}
-        counts = {key: usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
-                  if type(usage.get(key)) is int and usage[key] >= 0}
+        counts = token_counts(body)
         if cls.report_actual_model and isinstance(body.get("model"), str) and MODEL_ID.fullmatch(body["model"]):
             counts["actual_model"] = body["model"]
         return content, counts
