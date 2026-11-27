@@ -309,6 +309,18 @@ Set these environment variables before starting Pioneers to override the default
 | `PIONEERS_MEDIA_RESPONSE_SECONDS` | 600 | Image, speech and sound effect calls, image download, music stream reads |
 | `PIONEERS_MEDIA_TOTAL_SECONDS` | 1800 | Entire media worker |
 
+#### Response sizes for text and code patches
+
+Set these positive integer byte limits before starting Pioneers. New executors inherit them.
+
+| Environment variable | Default limit | Counts |
+| --- | ---: | --- |
+| `PIONEERS_MODEL_STREAM_TRANSPORT_BYTES` | 128 MiB | The entire response, including reasoning, keepalives, protocol fields and usage |
+| `PIONEERS_MODEL_STREAM_EVENT_BYTES` | 1 MiB | One SSE event, including field lines and their terminators |
+| `PIONEERS_MODEL_STREAM_CONTENT_BYTES` | 8 MiB | UTF-8 bytes in the final deliverable text |
+
+For example, 10 MiB of reasoning and a 20 KiB answer fit the defaults as long as each event also fits. For a plain JSON response, the transport and final content limits apply. If a limit is exceeded, the execution record shows which limit was hit, the observed byte count and the limit. Check the original request before retrying. Music streams use the media worker's size limits.
+
 #### Named profiles and catalogs
 
 To set a default for a task type, specify video parameters, or provide a trusted patch test command, define named profiles in the project's `.pioneers/models.json`. Use the provider ID `siliconflow` or `openrouter` and copy the model ID from the project dashboard.
@@ -362,7 +374,7 @@ OpenRouter's catalog is browsable without credentials. The dashboard combines th
 
 For a ten-second, 9:16 video, set `"video_settings": {"duration": 10, "ratio": "9:16"}` on the task. An optional `resolution` also overrides the model profile. When the user requires approval for this generation, set `"impact": "costly_change"` on the video task. The approval includes its settings and final creative prompt. Changing the proposal sends it back to the LD for an updated task and fresh approval.
 
-For a SiliconFlow poster, set `"media": {"type": "image", "aspect_ratio": "3:4", "prompt": "Create an event poster"}`. Dispatch converts the ratio into an `image_size` for the selected model. For example, a 3:4 MOSS-Image request uses `960x1280`. Older poster tasks can specify the output ratio in their creative brief. Times and scores in upstream public copy do not set the canvas size.
+For a SiliconFlow poster, set `"media": {"type": "image", "aspect_ratio": "3:4", "prompt": "Create an event poster"}`. Dispatch uses the canvas preset offered for that model by the hosted API. The MOSS-Image 3:4 preset sends `896x1152`, an actual pixel ratio of 7:9. Older tasks can also specify the ratio in the creative brief. If an unsubmitted assignment has an unsupported size, Pioneers returns it to the delivery lead before generation. An existing receipt retains the original request for reconciliation or artifact retrieval.
 
 For provider HTTP failures, the task attempt and usage history show the HTTP status, a sanitized reason and any validated provider error code and trace ID. Use the trace ID when contacting the provider about a specific call. Older runs show the details recorded at the time. [SiliconFlow image generation API](https://api-docs.siliconflow.cn/docs/api/images-generations-post)
 

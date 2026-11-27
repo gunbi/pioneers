@@ -159,11 +159,14 @@ class StreamingCompletionTest(unittest.TestCase):
 
     def test_worker_passes_only_allowed_overrides_and_reserves_patch_test_time(self):
         settings = {"PIONEERS_MODEL_TOTAL_SECONDS": "400", "PIONEERS_MEDIA_TOTAL_SECONDS": "1400",
-                    "PIONEERS_MODEL_STREAM_IDLE_SECONDS": "20", "PIONEERS_OTHER_SECRET": "private"}
+                    "PIONEERS_MODEL_STREAM_IDLE_SECONDS": "20", "PIONEERS_OTHER_SECRET": "private",
+                    **{name: str(default + 1) for name, default in SIZE_DEFAULTS.items()}}
         with patch.dict(os.environ, settings, clear=True):
             env = model_supervisor_environment("siliconflow")
             self.assertNotIn("PIONEERS_OTHER_SECRET", env)
             self.assertEqual(env["PIONEERS_MODEL_STREAM_IDLE_SECONDS"], "20")
+            for name in SIZE_DEFAULTS:
+                self.assertEqual(env[name], settings[name])
             self.assertEqual([worker_limit(mode) for mode in ("text", "patch", "video", "image", "speech", "music")],
                              [400, 520, 1400, 1400, 1400, 1400])
         with patch.dict(os.environ, {"PIONEERS_MODEL_STREAM_IDLE_SECONDS": "0"}):

@@ -141,11 +141,48 @@ class MediaScopeTest(unittest.TestCase):
                 self.assertIn("poster", self.state()["replan"]["media_tasks"])
                 self.assertFalse(list(self.run.glob(".model-*")))
 
+    def test_unsubmitted_old_moss_size_returns_to_ld_before_worker_starts(self):
+        self.create(self.copy, self.poster)
+        self.release_copy(self.document)
+        self.claim("poster")
+        path = self.run / ".model-poster-1.json"
+        req = json.loads(path.read_text())
+        req["route"]["image_size"] = "960x1280"
+        path.write_text(json.dumps(req))
+        with Progress.locked(self.run) as progress:
+            pioneers.current_executor(progress.data["tasks"]["poster"])["image_size"] = "960x1280"
+        with patch("pioneers.supervise_host_executor") as worker, redirect_stdout(StringIO()):
+            pioneers.execute_host(self.run, "poster", 1, None)
+            worker.assert_not_called()
+        self.assertIn("poster", self.state()["replan"]["media_tasks"])
+        self.assertFalse(list(self.run.glob(".media-poster-*")))
+
+    def test_legacy_unsubmitted_brief_with_unsupported_ratio_returns_to_ld(self):
+        media = {"type": "image", "prompt": "制作4:5竖版海报。"}
+        self.create(dict(id="poster", role="engineer", prompt="制作预热海报", tools=[], media=media))
+        with patch("siliconflow_media.image_size", return_value="1024x1280"):
+            self.claim("poster")
+        path = self.run / ".model-poster-1.json"
+        req = json.loads(path.read_text())
+        del req["route"]["image_size"]
+        path.write_text(json.dumps(req))
+        with Progress.locked(self.run) as progress:
+            del pioneers.current_executor(progress.data["tasks"]["poster"])["image_size"]
+            self.assertEqual(pioneers.model_launch_gate(progress, "poster"), "pending")
+        self.assertIn("poster", self.state()["replan"]["media_tasks"])
+        self.assertFalse(list(self.run.glob(".media-poster-*")))
+
     def test_prepared_poster_receipt_reuses_original_copy(self):
         self.create(self.copy, self.poster)
         self.release_copy(self.document)
         self.claim("poster")
-        req = json.loads((self.run / ".model-poster-1.json").read_text())
+        # Simulate an existing paid result with the size saved by the previous release.
+        path = self.run / ".model-poster-1.json"
+        req = json.loads(path.read_text())
+        req["route"]["image_size"] = "960x1280"
+        path.write_text(json.dumps(req))
+        with Progress.locked(self.run) as progress:
+            pioneers.current_executor(progress.data["tasks"]["poster"])["image_size"] = "960x1280"
         with patch("generated_media.generate", return_value=(b"\x89PNG\r\n\x1a\n" + bytes(30), "image/png", {})) as submit:
             self.assertEqual(model_worker.run(req, self.root, self.root / "result.json"), 0)
             # Simulate a coordinator disconnect after publication and a later change to the source.
@@ -155,6 +192,9 @@ class MediaScopeTest(unittest.TestCase):
             self.claim("poster")
             retry = json.loads((self.run / ".model-poster-2.json").read_text())
             self.assertTrue(retry["reuse_only"])
+            self.assertEqual(retry["route"]["image_size"], "960x1280")
+            with Progress.locked(self.run) as progress:
+                self.assertIsNone(pioneers.model_launch_gate(progress, "poster"))
             self.assertEqual(retry["media_prompt"], req["media_prompt"])
             self.assertEqual(model_worker.run(retry, self.root, self.root / "rerun.json"), 0)
             submit.assert_called_once()

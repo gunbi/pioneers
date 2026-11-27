@@ -5,6 +5,7 @@ from contextvars import copy_context
 import re
 import time
 
+from media_brief import poster_ratio
 from model_policy import MODEL_ID
 from model_timeouts import seconds
 
@@ -28,9 +29,13 @@ _MOSS_SIZES = {"1:1": "1024x1024", "2:3": "832x1216", "3:2": "1216x832", "3:4": 
                "4:3": "1152x896", "9:16": "768x1344", "16:9": "1344x768", "21:9": "1568x672"}
 
 
-def valid_image_size(model, size):
-    """Check a frozen size against the hosted model's enforced canvas restrictions."""
-    return model.removeprefix("Pro/") != _MOSS_MODEL or size in _MOSS_SIZES.values()
+def request_image_size(route, prompt):
+    """Validate a frozen canvas, or resolve the creative brief of a legacy request."""
+    model = route["model"]
+    size = route.get("image_size")
+    if "image_size" in route and model.removeprefix("Pro/") == _MOSS_MODEL and size not in _MOSS_SIZES.values():
+        raise ValueError(f"SiliconFlow {model} 不支持已登记的 image_size，请 LD 重新派工。")
+    return size or image_size(model, poster_ratio({"prompt": prompt}))
 
 
 def image_size(model, ratio):

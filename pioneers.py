@@ -37,7 +37,9 @@ from model_plugins import (
     project_pin, public_profiles, resolve_route, shared_preflight, task_mode,
 )
 import generated_media
+import model_stream
 import model_timeouts
+import siliconflow_media
 from media_brief import MediaBriefError, poster_prompt
 from media_planning import media_plan_issue, required_media_types, video_confirmation_requested, video_plan_issue
 from model_policy import (MEDIA_MODES, MODEL_PRESETS, active_preset, ban_insufficient_credit,
@@ -1243,20 +1245,27 @@ def model_launch_gate(progress, task_id):
     run_dir = progress.path.parent
     issue = media_input_issue(run_dir, data, task, job)
     receipt = generation_receipt(run_dir, task, job)
-    image_size = current_executor(job).get("image_size")
+    executor = current_executor(job)
+    siliconflow_image = executor.get("provider") == "siliconflow" and executor.get("mode") == "image"
     if not issue and receipt and not os.path.lexists(receipt) and (
-            video_scope(task) or task.get("video_settings") or task.get("media_copy_from") or image_size):
+            video_scope(task) or task.get("video_settings") or task.get("media_copy_from") or siliconflow_image):
         path = run_dir / f".model-{task_id}-{job['attempt']}.json"
         request = read_json(path) if not path.is_symlink() else {}
+        route = request.get("route") or {}
         if task.get("video_prompt"):
-            route = request.get("route") or {}
             if request.get("video_prompt") != task["video_prompt"] or any(
                     route.get(k) != v for k, v in task.get("video_settings", {}).items()):
                 issue = f"{task_id}: 待提交的视频请求与本批生成规格不一致，请 LD 核对并重新派工"
         elif request.get("media_prompt") != poster_prompt(task, data, run_dir):
             issue = f"{task_id}: 待提交的海报请求与已放行文案不一致，请 LD 核对并重新派工"
-        elif image_size and (request.get("route") or {}).get("image_size") != image_size:
-            issue = f"{task_id}: 待提交的海报尺寸与本次派工不一致，请 LD 核对并重新派工"
+        elif siliconflow_image:
+            if any(route.get(key) != executor.get(key) for key in ("provider", "model", "mode", "image_size")):
+                issue = f"{task_id}: 待提交的海报模型或尺寸与本次派工不一致，请 LD 核对并重新派工"
+            else:
+                try:
+                    siliconflow_media.request_image_size(route, request["media_prompt"])
+                except ValueError as error:
+                    issue = f"{task_id}: 待提交的海报尺寸不可用 · {error}"
     if issue:
         record_assignment_loss(progress, tasks, task_id, issue, executor_stopped=True)
         if missing_recorded_receipt(run_dir, task, job):
@@ -1322,7 +1331,7 @@ def model_supervisor_environment(provider_id):
     allowed = {"PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SYSTEMROOT", "WINDIR", "COMSPEC",
                "PATHEXT", "TMP", "TEMP", "TMPDIR", "LANG", "LANGUAGE", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "APPDATA", "LOCALAPPDATA",
-               PROVIDERS[provider_id].key_env, *model_timeouts.DEFAULTS}
+               PROVIDERS[provider_id].key_env, *model_timeouts.DEFAULTS, *model_stream.SIZE_DEFAULTS}
     return {key: value for key, value in os.environ.items() if key.upper() in allowed or key.startswith("LC_")}
 
 

@@ -309,6 +309,18 @@ SiliconFlow 和 OpenRouter 的文本及代码补丁请求支持流式接收。�
 | `PIONEERS_MEDIA_RESPONSE_SECONDS` | 600 | 图片、旁白、音效请求、图片下载及配乐流读取 |
 | `PIONEERS_MEDIA_TOTAL_SECONDS` | 1800 | 单个媒体执行器的总时限 |
 
+#### 文本和代码补丁的响应大小
+
+在启动 Pioneers 前可按字节设置以下三个上限，值为正整数，新执行器会继承设置。
+
+| 环境变量 | 默认上限 | 计量内容 |
+| --- | ---: | --- |
+| `PIONEERS_MODEL_STREAM_TRANSPORT_BYTES` | 128 MiB | 整个响应，包括推理片段、保活、协议字段和用量 |
+| `PIONEERS_MODEL_STREAM_EVENT_BYTES` | 1 MiB | 单个 SSE 事件，含该事件各字段及行尾 |
+| `PIONEERS_MODEL_STREAM_CONTENT_BYTES` | 8 MiB | 最终交付正文的 UTF-8 字节 |
+
+例如，推理片段累计 10 MiB、最终正文只有 20 KiB，只要每个事件在限额内，就可以正常交付。供应商直接返回普通 JSON 时，检查传输总量和最终正文。超过上限时，执行记录会显示触发项、已计量字节数和对应上限；核对原请求后再决定是否重试。音乐流沿用媒体执行器的大小限制。
+
 #### 命名配置和目录
 
 需要固定某类任务的默认模型、指定视频参数，或提供可信补丁测试命令时，可在项目的 `.pioneers/models.json` 编写命名配置。供应商用 `siliconflow` 或 `openrouter`，模型 ID 可从项目看板复制。
@@ -362,7 +374,7 @@ OpenRouter 目录无需凭证即可浏览。看板合并 `GET /models?output_mod
 
 视频任务承诺“约 10 秒、9:16 竖屏”时，在任务写入 `"video_settings": {"duration": 10, "ratio": "9:16"}`。可选的 `resolution` 也会随任务覆盖模型配置。若用户要求本批生成前确认，给这条视频任务设置 `"impact": "costly_change"`。审批页会展示本批参数和最终创作提示；用户修改方案后由 LD 更新任务并再次请求确认。
 
-为 SiliconFlow 海报设置 `"media": {"type": "image", "aspect_ratio": "3:4", "prompt": "制作团建海报"}`。派工时按所选模型把画幅转换为 `image_size`，例如 MOSS-Image 的 3:4 请求携带 `960x1280`。旧任务在海报创作说明里明确写出的输出画幅也会参与换算。归入公开文案的时间和比分不用于推断画幅。
+为 SiliconFlow 海报设置 `"media": {"type": "image", "aspect_ratio": "3:4", "prompt": "制作团建海报"}`。派工时按模型选择托管接口提供的尺寸档位。MOSS-Image 的 3:4 档发送 `896x1152`，实际像素比为 7:9。旧任务也可在创作简报里写明画幅。已派发但尚未提交的旧尺寸如果不受支持，框架会在生成前退回 LD。已有回执的任务沿用原请求核对或取回产物。
 
 供应商返回 HTTP 错误时，在任务对应轮次和「模型管理 → 运行用量」可查看 HTTP 状态、脱敏原因，以及供应商返回且通过校验的错误码和追踪 ID。追踪 ID 可用于联系供应商核对该次调用。旧运行只显示当时保存的信息。[SiliconFlow 图片生成 API](https://api-docs.siliconflow.cn/docs/api/images-generations-post)
 
