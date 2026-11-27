@@ -15,13 +15,22 @@ CATALOG_FILTERS = {
 }
 
 # SiliconFlow documents separate recommended canvases for Kolors and Qwen.
-# MOSS and Z-Image accept multiples of 16 near one megapixel.
 # https://api-docs.siliconflow.cn/docs/api/images-generations-post
 _KOLORS_SIZES = {"1:1": "1024x1024", "3:4": "960x1280", "1:2": "720x1440", "9:16": "720x1280"}
 _QWEN_SIZES = {"1:1": "1328x1328", "16:9": "1664x928", "9:16": "928x1664", "4:3": "1472x1140",
                "3:4": "1140x1472", "3:2": "1584x1056", "2:3": "1056x1584"}
-_FLEXIBLE_SIZES = {**_KOLORS_SIZES, "4:3": "1280x960", "16:9": "1280x720", "2:1": "1440x720",
-                   "2:3": "896x1344", "3:2": "1344x896"}
+_Z_IMAGE_SIZES = {**_KOLORS_SIZES, "4:3": "1280x960", "16:9": "1280x720", "2:1": "1440x720",
+                  "2:3": "896x1344", "3:2": "1344x896"}
+# Exact canvas presets from the hosted MOSS endpoint's validation response:
+# https://github.com/CherryHQ/cherry-studio/issues/24046
+_MOSS_MODEL = "OpenMOSS-Team/MOSS-Image"
+_MOSS_SIZES = {"1:1": "1024x1024", "2:3": "832x1216", "3:2": "1216x832", "3:4": "896x1152",
+               "4:3": "1152x896", "9:16": "768x1344", "16:9": "1344x768", "21:9": "1568x672"}
+
+
+def valid_image_size(model, size):
+    """Check a frozen size against the hosted model's enforced canvas restrictions."""
+    return model.removeprefix("Pro/") != _MOSS_MODEL or size in _MOSS_SIZES.values()
 
 
 def image_size(model, ratio):
@@ -30,10 +39,10 @@ def image_size(model, ratio):
         sizes = _KOLORS_SIZES
     elif model.startswith("Qwen/Qwen-Image") and supports_text_prompt(model, "text-to-image"):
         sizes = _QWEN_SIZES
-    elif model == "OpenMOSS-Team/MOSS-Image":
-        sizes = {**_FLEXIBLE_SIZES, "4:5": "1024x1280", "5:4": "1280x1024"}
+    elif model == _MOSS_MODEL:
+        sizes = _MOSS_SIZES
     elif model in ("Tongyi-MAI/Z-Image", "Tongyi-MAI/Z-Image-Turbo"):
-        sizes = _FLEXIBLE_SIZES
+        sizes = _Z_IMAGE_SIZES
     else:
         # The catalog identifies modalities but publishes no per-model image sizes.
         sizes = {"1:1": "1024x1024"}

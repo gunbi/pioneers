@@ -121,7 +121,7 @@ class MediaScopeTest(unittest.TestCase):
         self.release_copy(self.document)
         self.claim("poster")
         req = json.loads((self.run / ".model-poster-1.json").read_text())
-        self.assertEqual(req["route"]["image_size"], "960x1280")
+        self.assertEqual(req["route"]["image_size"], "896x1152")
         self.assertIn(self.public, req["media_prompt"])
         self.assertIn("草地绿", req["media_prompt"])
         for private in ["internal attendee roster", "预算未公开"]:
@@ -189,7 +189,7 @@ class MediaScopeTest(unittest.TestCase):
         with patch("model_plugins.build_opener") as opener, patch("pioneers.supervise_host_executor", worker), redirect_stdout(StringIO()):
             opener.return_value.open.side_effect = respond
             self.assertEqual(pioneers.execute_host(self.run, "poster", 1, None), 1)
-        self.assertEqual([p["image_size"] for p in posts], ["960x1280"])
+        self.assertEqual([p["image_size"] for p in posts], ["896x1152"])
         attempt = self.state()["tasks"]["poster"]["executors"]["1"]
         details = attempt["provider_error"]
         self.assertEqual(attempt["error_code"], "request_rejected")

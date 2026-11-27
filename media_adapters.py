@@ -227,14 +227,16 @@ def generate(provider, route, prompt):
     if provider.name == "OpenRouter":
         options = openrouter_media.generation_options(provider, model, mode, route)
     else:
-        check_available(provider, model, mode, route)
         options = {key: route[key] for key in ("voice",) if key in route}
         if mode == "image":
             size = route.get("image_size")
+            if "image_size" in route and not siliconflow_media.valid_image_size(model, size):
+                raise ValueError(f"SiliconFlow {model} 不支持已登记的 image_size，请 LD 重新派工。")
             if not size:
                 # Unstarted requests recorded before image_size was part of dispatch.
                 size = siliconflow_media.image_size(model, poster_ratio({"prompt": prompt}))
             options["image_size"] = size
+        check_available(provider, model, mode, route)
     if mode == "image":
         content, usage = image_result(provider, model, prompt, options)
     elif mode == "music":
