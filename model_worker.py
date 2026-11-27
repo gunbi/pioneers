@@ -8,7 +8,7 @@ from generated_media import media_job
 from model_policy import MEDIA_MODES
 from model_patch import apply_patch_result, check_checkout
 from model_plugins import PROVIDERS, complete
-from provider_errors import InsufficientCreditError, RequestRejectedError
+from provider_errors import InsufficientCreditError, ProviderError, RequestRejectedError
 from model_video import video_job
 from skill_sources import write_json
 
@@ -37,12 +37,15 @@ def run(request, workspace, output):
                 content = apply_patch_result(workspace, request["write_paths"], content, route["test_command"],
                                              supervised=True, checkout=request["checkout"])
             result["content"] = content
-    except InsufficientCreditError as error:
-        result["error_code"] = "insufficient_credit"
-        result["error"] = str(error)
-    except RequestRejectedError as error:
-        result["error_code"] = "request_rejected"
-        result["error"] = str(error)
+    except ProviderError as error:
+        if isinstance(error, InsufficientCreditError):
+            error_code = "insufficient_credit"
+        elif isinstance(error, RequestRejectedError):
+            error_code = "request_rejected"
+        result["error_code"] = error_code
+        result["error"] = str(error)[:500]
+        if error.diagnostic:
+            result["provider_error"] = error.diagnostic
     except (ValueError, RuntimeError, OSError) as error:
         result["error_code"] = error_code
         result["error"] = str(error)[:500]
