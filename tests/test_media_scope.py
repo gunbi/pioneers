@@ -43,8 +43,9 @@ class MediaScopeTest(unittest.TestCase):
         pioneers.reconcile(progress, tasks)
         progress.save()
         mode = "video" if "clip" in tasks else "image"
+        model = "example/video" if mode == "video" else "OpenMOSS-Team/MOSS-Image"
         update_policy(pioneers.project_registry(self.root), dict(action="select", revision=0, mode=mode,
-                                                                 provider="siliconflow", model="example/" + mode))
+                                                                 provider="siliconflow", model=model))
 
     def claim(self, task):
         return pioneers.update_host(self.run, task, None, None, None, None)
@@ -110,10 +111,12 @@ class MediaScopeTest(unittest.TestCase):
         self.assertEqual(self.state()["decisions"][decision]["state"], "superseded")
 
     def test_poster_worker_receives_only_released_copy(self):
+        self.poster["media"]["aspect_ratio"] = "3:4"
         self.create(self.copy, self.poster)
         self.release_copy(self.document)
         self.claim("poster")
         req = json.loads((self.run / ".model-poster-1.json").read_text())
+        self.assertEqual(req["route"]["image_size"], "960x1280")
         self.assertIn(self.public, req["media_prompt"])
         self.assertIn("草地绿", req["media_prompt"])
         for private in ["internal attendee roster", "预算未公开"]:

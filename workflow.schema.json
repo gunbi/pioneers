@@ -29,6 +29,7 @@
             "type": ["object", "null"],
             "properties": {
               "type": {"enum": ["image", "speech", "music", "sound_effect"]},
+              "aspect_ratio": {"type": "string", "pattern": "^[1-9][0-9]?:[1-9][0-9]?$", "description": "Image canvas width:height; SiliconFlow dispatch resolves it to a model-specific image_size."},
               "prompt": {"type": "string", "minLength": 1, "maxLength": 10000},
               "voice": {"type": "string", "minLength": 1, "maxLength": 256}
             },

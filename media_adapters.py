@@ -10,6 +10,7 @@ from urllib.request import Request, build_opener
 import wave
 
 from model_stream import sse_events
+from media_brief import poster_ratio
 from model_timeouts import seconds
 
 import openrouter_media
@@ -228,6 +229,12 @@ def generate(provider, route, prompt):
     else:
         check_available(provider, model, mode, route)
         options = {key: route[key] for key in ("voice",) if key in route}
+        if mode == "image":
+            size = route.get("image_size")
+            if not size:
+                # Unstarted requests recorded before image_size was part of dispatch.
+                size = siliconflow_media.image_size(model, poster_ratio({"prompt": prompt}))
+            options["image_size"] = size
     if mode == "image":
         content, usage = image_result(provider, model, prompt, options)
     elif mode == "music":

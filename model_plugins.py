@@ -12,6 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from dispatch import writes_workspace
+from media_brief import poster_ratio
 from media_planning import video_plan_issue
 from model_policy import MEDIA_MODES, MODEL_ID, MODES, banned, read_policy
 from model_stream import read_completion, response_lines
@@ -359,6 +360,9 @@ def resolve_route(workspace, task, profile=None, *, isolated, policy=None, requi
     if mode != task_type:
         raise ValueError(f"This task requires mode {task_type}; choose a compatible profile or host")
     route = {"profile": profile, "provider": provider, "model": model, "mode": mode, "reason": reason}
+    if mode == "image" and provider == "siliconflow":
+        ratio = poster_ratio(task["media"], task.get("prompt", ""))
+        route["image_size"] = siliconflow_media.image_size(model, ratio)
     if mode == "speech" and "voice" in task["media"]:
         route["voice"] = task["media"]["voice"]
     if mode == "patch":

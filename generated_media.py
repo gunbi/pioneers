@@ -90,6 +90,8 @@ def _check_file(path, expected, mime):
 
 def fingerprint(route, prompt):
     parameters = [route["provider"], route["model"], route["mode"], route.get("voice"), prompt]
+    if "image_size" in route:
+        parameters.append(route["image_size"])
     return hashlib.sha256(json.dumps(parameters, ensure_ascii=False).encode()).hexdigest()
 
 

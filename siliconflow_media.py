@@ -14,6 +14,31 @@ CATALOG_FILTERS = {
     "audio": "type=audio", "text-to-image": "sub_type=text-to-image", "text-to-speech": "sub_type=text-to-speech", "embedding": "sub_type=embedding", "rerank": "sub_type=reranker",
 }
 
+# SiliconFlow documents separate recommended canvases for Kolors and Qwen.
+# MOSS and Z-Image accept multiples of 16 near one megapixel.
+# https://api-docs.siliconflow.cn/docs/api/images-generations-post
+_KOLORS_SIZES = {"1:1": "1024x1024", "3:4": "960x1280", "1:2": "720x1440", "9:16": "720x1280"}
+_QWEN_SIZES = {"1:1": "1328x1328", "16:9": "1664x928", "9:16": "928x1664", "4:3": "1472x1140",
+               "3:4": "1140x1472", "3:2": "1584x1056", "2:3": "1056x1584"}
+_FLEXIBLE_SIZES = {**_KOLORS_SIZES, "4:3": "1280x960", "16:9": "1280x720", "2:1": "1440x720",
+                   "2:3": "896x1344", "3:2": "1344x896"}
+
+
+def image_size(model, ratio):
+    model = model.removeprefix("Pro/")
+    if model == "Kwai-Kolors/Kolors":
+        sizes = _KOLORS_SIZES
+    elif model.startswith("Qwen/Qwen-Image") and supports_text_prompt(model, "text-to-image"):
+        sizes = _QWEN_SIZES
+    elif model in ("OpenMOSS-Team/MOSS-Image", "Tongyi-MAI/Z-Image", "Tongyi-MAI/Z-Image-Turbo"):
+        sizes = _FLEXIBLE_SIZES
+    else:
+        # The catalog identifies modalities but publishes no per-model image sizes.
+        sizes = {"1:1": "1024x1024"}
+    if ratio and ratio not in sizes:
+        raise ValueError(f"SiliconFlow {model} 未配置画幅 {ratio}，可用画幅：{', '.join(sizes)}")
+    return sizes[ratio or "1:1"]
+
 
 def supports_text_prompt(model, kind):
     # The image subtype also includes edit-only Qwen checkpoints that require an image.

@@ -13,6 +13,14 @@ class MediaBriefError(ValueError):
 
 _MAX_PROMPT = 10_000
 _MAX_ARTIFACT_BYTES = 1_048_576
+_PUBLIC_COPY_MARKER = "\n\n请将以下已确认的公开文案原样呈现在海报上：\n"
+_RATIO = re.compile(r"(?<![\d:：])([1-9][0-9]?)\s*[:：]\s*([1-9][0-9]?)(?![\d:：])")
+_CANVAS_BEFORE = re.compile(r"(?:海报|画幅|宽高比|纵横比|画布|比例|poster|canvas|aspect ratio)"
+                            r"(?:\s*(?:为|为约|比例|的|[:：=]|of|in))*\s*$", re.I)
+_CANVAS_AFTER = re.compile(r"^\s*[- ]?\s*(?:的\s*)?(?:竖版|竖屏|横版|横屏|海报|画幅|画布|纵向|横向|"
+                           r"portrait|landscape|poster|canvas|aspect ratio|format)", re.I)
+_ORIENTATION = re.compile(r"竖版|竖屏|横版|横屏|方版|方形海报|正方形海报|"
+                          r"\b(?:portrait|landscape|square)[ -](?:orientation|format|poster|canvas)\b", re.I)
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 # Draft handoff instructions are different from approved public wording like
 # “时间待定” or “Registration details to follow”, which is valid poster copy.
@@ -24,9 +32,41 @@ _UNFINISHED = re.compile(
     r"\bwait for (?:confirmation|confirmed (?:details|copy)|approved copy) before (?:generat\w*|render\w*)\b", re.I)
 
 
+def poster_ratio(media, task_prompt=""):
+    """Resolve the canvas before upstream public text is added to the brief."""
+    ratios = set()
+    if "aspect_ratio" in media:
+        value = media["aspect_ratio"]
+        if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]?:[1-9][0-9]?", value):
+            raise MediaBriefError("media.aspect_ratio 需要宽:高，例如 3:4")
+        ratios.add(value)
+    directions = set()
+    for text in (task_prompt, media["prompt"].partition(_PUBLIC_COPY_MARKER)[0]):
+        for match in _RATIO.finditer(text):
+            if (_CANVAS_BEFORE.search(text[:match.start()]) or _CANVAS_AFTER.match(text[match.end():])
+                    or text.strip() == match[0]):
+                ratios.add(":".join(match.groups()))
+        for match in _ORIENTATION.finditer(text):
+            word = match[0].lower()
+            directions.add("portrait" if word.startswith(("竖", "portrait")) else
+                           "landscape" if word.startswith(("横", "landscape")) else "square")
+    if len(ratios) > 1 or len(directions) > 1:
+        raise MediaBriefError("海报画幅存在冲突，请统一 media.aspect_ratio 与创作说明")
+    direction = next(iter(directions), None)
+    if not ratios:
+        return {"portrait": "3:4", "landscape": "4:3", "square": "1:1"}.get(direction)
+    ratio = ratios.pop()
+    width, height = map(int, ratio.split(":"))
+    if direction and direction != ("portrait" if width < height else "landscape" if width > height else "square"):
+        raise MediaBriefError("海报方向与画幅冲突，请核对 media.aspect_ratio")
+    return ratio
+
+
 def poster_plan_issue(task):
     media = task.get("media")
     image = isinstance(media, dict) and media.get("type") == "image"
+    if isinstance(media, dict) and "aspect_ratio" in media and not image:
+        return f"{task.get('id', '?')}: 请 LD 仅在图像任务声明 media.aspect_ratio。"
     if "media_copy_from" in task:
         source = task["media_copy_from"]
         dependencies = task.get("depends_on", task.get("deps", []))
@@ -37,6 +77,10 @@ def poster_plan_issue(task):
         brief = media.get("prompt")
         if not isinstance(brief, str) or not brief.strip() or len(brief) > _MAX_PROMPT:
             return f"{task.get('id', '?')}: 请 LD 在 media.prompt 填写 1–10000 字的海报创作简报。"
+        try:
+            poster_ratio(media, task.get("prompt", ""))
+        except MediaBriefError as error:
+            return f"{task.get('id', '?')}: 请 LD 修正海报画幅：{error}"
         if _UNFINISHED.search(brief):
             return (f"{task.get('id', '?')}: 请 LD 替换仍待更新的海报提示词，写明可执行的创意与已确认公开文案，"
                     "或用 media_copy_from 指定公开文案来源。")
@@ -95,6 +139,11 @@ def poster_prompt(task, data, run_dir):
     if issue:
         raise MediaBriefError(issue)
     brief = task["media"]["prompt"]
+    ratio = task["media"].get("aspect_ratio")
+    if ratio and ratio not in brief:
+        brief += f"\n海报画幅：{ratio}。"
+    if len(brief) > _MAX_PROMPT:
+        raise MediaBriefError("创作简报和画幅超过 10000 字，请 LD 精简。")
     source = task.get("media_copy_from")
     if source is None:
         return brief
@@ -122,7 +171,7 @@ def poster_prompt(task, data, run_dir):
         raise MediaBriefError("海报文案与可核验的放行版本不一致，请 LD 重新交付公开文案。")
 
     copy = _public_copy(document)
-    prompt = f"{brief}\n\n请将以下已确认的公开文案原样呈现在海报上：\n{copy}"
+    prompt = brief + _PUBLIC_COPY_MARKER + copy
     if len(prompt) > _MAX_PROMPT:
         raise MediaBriefError("创意与公开文案合计超过 10000 字，请 LD 精简。")
     return prompt

@@ -331,7 +331,7 @@ def validate_workflow(workflow, generated=False, *, check_media=True):
         video_prompt = task.get("video_prompt")
         if task.get("media") is not None:
             media = task["media"]
-            if (not isinstance(media, dict) or set(media) - {"type", "prompt", "voice"}
+            if (not isinstance(media, dict) or set(media) - {"type", "prompt", "voice", "aspect_ratio"}
                     or media.get("type") not in (*MEDIA_MODES, "video") or not isinstance(media.get("prompt"), str)
                     or not media["prompt"].strip() or len(media["prompt"]) > 10000):
                 raise MediaPlanError(f"{task_id}: LD 重新规划：media needs a supported type and a creative prompt of 1–10000 characters")
@@ -1243,8 +1243,9 @@ def model_launch_gate(progress, task_id):
     run_dir = progress.path.parent
     issue = media_input_issue(run_dir, data, task, job)
     receipt = generation_receipt(run_dir, task, job)
+    image_size = current_executor(job).get("image_size")
     if not issue and receipt and not os.path.lexists(receipt) and (
-            video_scope(task) or task.get("video_settings") or task.get("media_copy_from")):
+            video_scope(task) or task.get("video_settings") or task.get("media_copy_from") or image_size):
         path = run_dir / f".model-{task_id}-{job['attempt']}.json"
         request = read_json(path) if not path.is_symlink() else {}
         if task.get("video_prompt"):
@@ -1254,6 +1255,8 @@ def model_launch_gate(progress, task_id):
                 issue = f"{task_id}: 待提交的视频请求与本批生成规格不一致，请 LD 核对并重新派工"
         elif request.get("media_prompt") != poster_prompt(task, data, run_dir):
             issue = f"{task_id}: 待提交的海报请求与已放行文案不一致，请 LD 核对并重新派工"
+        elif image_size and (request.get("route") or {}).get("image_size") != image_size:
+            issue = f"{task_id}: 待提交的海报尺寸与本次派工不一致，请 LD 核对并重新派工"
     if issue:
         record_assignment_loss(progress, tasks, task_id, issue, executor_stopped=True)
         if missing_recorded_receipt(run_dir, task, job):
@@ -1390,6 +1393,7 @@ def host_ready(run_dir, wait=0, *, observed_active=(), launch_models=False):
 def requires_media_executor(task, job, run_mode):
     return task_mode(task) in ("video", "image") and any((
         run_mode == "live", job.get("remote_media_required"), task.get("video_settings"),
+        (task.get("media") or {}).get("aspect_ratio"),
         task.get("media_copy_from"), required_media_types(task),
     ))
 
@@ -1966,6 +1970,8 @@ def claim_task(progress, workflow_tasks, task_id, member_id=None, member_name=No
             request = {"route": route, "prompt": assignment["prompt"], "write_paths": task.get("write_paths", [])}
             if route["mode"] in MEDIA_MODES:
                 number = generated_media.generation(job)
+                if route.get("image_size"):
+                    execution["image_size"] = route["image_size"]
                 execution["media_generation"] = number
                 request = {"route": route, "run_dir": str(run_dir), "task": task_id,
                            "media_generation": number, "media_prompt": media["prompt"]}
