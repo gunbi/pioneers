@@ -362,6 +362,10 @@ OpenRouter 目录无需凭证即可浏览。看板合并 `GET /models?output_mod
 
 视频任务承诺“约 10 秒、9:16 竖屏”时，在任务写入 `"video_settings": {"duration": 10, "ratio": "9:16"}`。可选的 `resolution` 也会随任务覆盖模型配置。若用户要求本批生成前确认，给这条视频任务设置 `"impact": "costly_change"`。审批页会展示本批参数和最终创作提示；用户修改方案后由 LD 更新任务并再次请求确认。
 
+为 SiliconFlow 海报设置 `"media": {"type": "image", "aspect_ratio": "3:4", "prompt": "制作团建海报"}`。派工时按所选模型把画幅转换为 `image_size`，例如 MOSS-Image 的 3:4 请求携带 `960x1280`。旧任务在海报创作说明里明确写出的输出画幅也会参与换算。归入公开文案的时间和比分不用于推断画幅。
+
+供应商返回 HTTP 错误时，在任务对应轮次和「模型管理 → 运行用量」可查看 HTTP 状态、脱敏原因，以及供应商返回且通过校验的错误码和追踪 ID。追踪 ID 可用于联系供应商核对该次调用。旧运行只显示当时保存的信息。[SiliconFlow 图片生成 API](https://api-docs.siliconflow.cn/docs/api/images-generations-post)
+
 海报已有定稿时，直接写进 `media.prompt`。若文案来自前一步，例如名为 `requirements` 的需求任务，把它列入 `depends_on` 并设置 `"media_copy_from": "requirements"`。在该任务的交付物里只标记一段可对外使用的文字，内部讨论留在代码块外。
 
 ````markdown

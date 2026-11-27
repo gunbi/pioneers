@@ -362,6 +362,10 @@ OpenRouter's catalog is browsable without credentials. The dashboard combines th
 
 For a ten-second, 9:16 video, set `"video_settings": {"duration": 10, "ratio": "9:16"}` on the task. An optional `resolution` also overrides the model profile. When the user requires approval for this generation, set `"impact": "costly_change"` on the video task. The approval includes its settings and final creative prompt. Changing the proposal sends it back to the LD for an updated task and fresh approval.
 
+For a SiliconFlow poster, set `"media": {"type": "image", "aspect_ratio": "3:4", "prompt": "Create an event poster"}`. Dispatch converts the ratio into an `image_size` for the selected model. For example, a 3:4 MOSS-Image request uses `960x1280`. Older poster tasks can specify the output ratio in their creative brief. Times and scores in upstream public copy do not set the canvas size.
+
+For provider HTTP failures, the task attempt and usage history show the HTTP status, a sanitized reason and any validated provider error code and trace ID. Use the trace ID when contacting the provider about a specific call. Older runs show the details recorded at the time. [SiliconFlow image generation API](https://api-docs.siliconflow.cn/docs/api/images-generations-post)
+
 Place finished poster copy directly in `media.prompt`. When a direct dependency such as `requirements` delivers the copy, list it in `depends_on` and set `"media_copy_from": "requirements"`. Mark one block in its deliverable as approved public text. Keep internal discussion outside the block.
 
 ````markdown

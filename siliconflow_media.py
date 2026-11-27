@@ -30,7 +30,9 @@ def image_size(model, ratio):
         sizes = _KOLORS_SIZES
     elif model.startswith("Qwen/Qwen-Image") and supports_text_prompt(model, "text-to-image"):
         sizes = _QWEN_SIZES
-    elif model in ("OpenMOSS-Team/MOSS-Image", "Tongyi-MAI/Z-Image", "Tongyi-MAI/Z-Image-Turbo"):
+    elif model == "OpenMOSS-Team/MOSS-Image":
+        sizes = {**_FLEXIBLE_SIZES, "4:5": "1024x1280", "5:4": "1280x1024"}
+    elif model in ("Tongyi-MAI/Z-Image", "Tongyi-MAI/Z-Image-Turbo"):
         sizes = _FLEXIBLE_SIZES
     else:
         # The catalog identifies modalities but publishes no per-model image sizes.

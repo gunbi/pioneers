@@ -647,7 +647,7 @@ def plan_workflow(goal, executor, run_dir, progress):
         "或 video_prompt，tools 和 write_paths 留空；创作和代码实现、后期归档或独立验收分开派工。"
         "视频承诺的总秒数、画幅及分辨率分别写入 video_settings.duration、ratio、resolution；"
         "需要用户确认本批生成时把生成任务的 impact 设为 costly_change，video_prompt 仅填写最终创作说明。"
-        "海报可直接填已确认终稿；依赖后续定稿时，以 media_copy_from 指向直接依赖，要求其产物用独立的"
+        "海报的成图宽高比填写 media.aspect_ratio，如 3:4。可直接填已确认终稿；依赖后续定稿时，以 media_copy_from 指向直接依赖，要求其产物用独立的"
         " Markdown media-copy 围栏仅列对外文案。把已确认的待定文案当作终稿，勿转发内部说明或等候更新的草稿。"
         "先理出关键路径，优先安排会阻塞多个后续任务的决定、共享契约或环境准备。"
         "depends_on 只列开工前确实需要的产物。多个独立任务需要同一产物时分别依赖它，完全独立的任务可立即启动。"
@@ -2151,7 +2151,7 @@ def replan_assignment(progress, tasks):
         "或 video_prompt，tools 和 write_paths 留空；创作和代码实现、后期归档或独立验收分开派工。"
         "视频承诺的总秒数、画幅及分辨率分别写入 video_settings.duration、ratio、resolution；"
         "需要用户确认本批生成时把生成任务的 impact 设为 costly_change，video_prompt 仅填写最终创作说明。"
-        "海报可直接填已确认终稿；依赖后续定稿时，以 media_copy_from 指向直接依赖，要求其产物用独立的"
+        "海报的成图宽高比填写 media.aspect_ratio，如 3:4。可直接填已确认终稿；依赖后续定稿时，以 media_copy_from 指向直接依赖，要求其产物用独立的"
         " Markdown media-copy 围栏仅列对外文案。把已确认的待定文案当作终稿，勿转发内部说明或等候更新的草稿。"
         "只在 tasks 中返回新增任务与需要改动且标为 editable 的任务，以 ID 为准，未列出的任务会保留。"
         "设置准确的依赖，让写入范围独立的任务并行，各实现任务安排下游独立 QA。"
@@ -2628,6 +2628,8 @@ def execute_model(run_dir, task_id, attempt, workspace, renew):
         if "error" in result:
             executor["error_code"] = result.get("error_code") or ("outcome_unknown" if worker_invoked else "not_submitted")
             executor["error"] = result["error"]
+            if result.get("provider_error"):
+                executor["provider_error"] = result["provider_error"]
             report = report_task(progress, tasks, task_id, "lost", result["error"], None, attempt)
         else:
             report = report_task(progress, tasks, task_id, "completed", "模型执行器已交付", result["content"], attempt)

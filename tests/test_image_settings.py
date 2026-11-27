@@ -45,7 +45,8 @@ class ImageSettingsTest(unittest.TestCase):
         self.assertEqual(provider.request.call_args.kwargs["payload"]["image_size"], "1024x1024")
 
     def test_model_specific_sizes_and_validation(self):
-        for model, ratio, size in [(MOSS, "16:9", "1280x720"), ("Qwen/Qwen-Image", "3:4", "1140x1472"),
+        for model, ratio, size in [(MOSS, "16:9", "1280x720"), (MOSS, "4:5", "1024x1280"),
+                                   (MOSS, "5:4", "1280x1024"), ("Qwen/Qwen-Image", "3:4", "1140x1472"),
                                    ("Kwai-Kolors/Kolors", "9:16", "720x1280")]:
             with self.subTest(model=model):
                 task = self.task("Green artwork", aspect_ratio=ratio)

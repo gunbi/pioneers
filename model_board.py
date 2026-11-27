@@ -71,6 +71,7 @@ def run_usage(registry):
                     "media": media_reference(task_id, executor),
                     "request_id": video.get("request_id"), "video_state": video.get("state"),
                     "reason": executor.get("reason"), "error": executor.get("error"),
+                    "provider_error": executor.get("provider_error"),
                 })
     return sorted(rows, key=lambda row: (row["started_at"] or "", row["run"], row["task"], row["attempt"]), reverse=True)
 

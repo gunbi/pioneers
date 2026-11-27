@@ -561,6 +561,12 @@
         node.append(element("p", detail.join(" · "), "stage-meta"));
         if (executor.reason) node.append(element("p", "选型依据 · " + executor.reason, "stage-meta"));
         else if (executor.provider === "host") node.append(element("p", "该轮未记录宿主选型依据", "stage-meta"));
+        if (executor.provider_error) {
+          const error = executor.provider_error;
+          const detail = ["HTTP " + error.http_status, error.code != null && "错误码 " + error.code,
+            error.reason, error.trace_id && "追踪 ID " + error.trace_id];
+          node.append(element("p", detail.filter(Boolean).join(" · "), "stage-meta"));
+        }
         if (executor.video?.state || executor.video?.request_id) {
           node.append(element("p", ["视频请求", executor.video.state, executor.video.request_id].filter(Boolean).join(" · "), "stage-meta"));
         }

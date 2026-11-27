@@ -1,12 +1,17 @@
 import json
 import os
+from contextlib import redirect_stdout
+from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import model_worker
 import pioneers
+from iterations import register_run
+from model_board import run_usage
 from model_plugins import SiliconFlow
 from model_policy import update_policy
 from progress import Progress
@@ -154,3 +159,46 @@ class MediaScopeTest(unittest.TestCase):
             self.assertEqual(model_worker.run(retry, self.root, self.root / "rerun.json"), 0)
             submit.assert_called_once()
 
+    def test_failed_siliconflow_poster_exposes_only_safe_diagnostics(self):
+        self.poster["media"]["prompt"] = "制作3:4竖版活动海报。"
+        self.create(self.copy, self.poster)
+        self.release_copy(self.document)
+        registry = pioneers.project_registry(self.root)
+        model = "OpenMOSS-Team/MOSS-Image"
+        update_policy(registry, dict(action="select", revision=1, mode="image", provider="siliconflow", model=model))
+        register_run(registry, self.run)
+        self.claim("poster")
+        posts = []
+
+        def respond(request, **options):
+            if request.get_method() == "GET":
+                return BytesIO(json.dumps({"data": [{"id": model}]}).encode())
+            self.assertEqual(request.full_url, "https://api.siliconflow.cn/v1/images/generations")
+            payload = json.loads(request.data)
+            posts.append(payload)
+            body = {"code": 20012, "message": "Invalid image_size. " + payload["prompt"],
+                    "data": {"authorization": "Bearer secret-canary"}}
+            raise HTTPError(request.full_url, 400, "bad request", {"x-siliconcloud-trace-id": "trace-poster-42"},
+                            BytesIO(json.dumps(body).encode()))
+
+        def worker(command, workspace, renew, **options):
+            renew()
+            request, out = map(Path, command[-2:])
+            return model_worker.run(json.loads(request.read_text()), Path(workspace), out)
+
+        with patch("model_plugins.build_opener") as opener, patch("pioneers.supervise_host_executor", worker), redirect_stdout(StringIO()):
+            opener.return_value.open.side_effect = respond
+            self.assertEqual(pioneers.execute_host(self.run, "poster", 1, None), 1)
+        self.assertEqual([p["image_size"] for p in posts], ["960x1280"])
+        attempt = self.state()["tasks"]["poster"]["executors"]["1"]
+        details = attempt["provider_error"]
+        self.assertEqual(attempt["error_code"], "request_rejected")
+        self.assertEqual(details["http_status"], 400)
+        self.assertEqual(str(details["code"]), "20012")
+        self.assertIn("image_size", details["reason"])
+        self.assertEqual(details["trace_id"], "trace-poster-42")
+        usage = next(row for row in run_usage(registry) if row["task"] == "poster")
+        self.assertEqual(usage["provider_error"], details)
+        for stored in [str(attempt), str(usage)]:
+            self.assertNotIn("报名链接待公布", stored)
+            self.assertNotIn("secret-canary", stored)

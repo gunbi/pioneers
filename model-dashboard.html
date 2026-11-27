@@ -508,6 +508,12 @@ function drawUsage() {
     const status=textCell(row,states[item.state] || (item.state==="previous" ? "历史轮次" : item.state));
     if (item.video_state) status.append(node("div",states[item.video_state] || item.video_state,"muted"));
     if (item.error) status.append(node("div",item.error,"reason"));
+    if (item.provider_error) {
+      const error = item.provider_error;
+      const details = ["HTTP " + error.http_status, error.code != null && "错误码 " + error.code,
+        error.reason, error.trace_id && "追踪 ID " + error.trace_id];
+      status.append(node("div",details.filter(Boolean).join(" · "),"reason"));
+    }
     textCell(row,item.mode==="video" || item.provider==="host" ? "—" : [item.input,item.output,item.total].map(valueOrUnknown).join(" / "),"num");
     const output=textCell(row,null);
     if (item.mode==="video") {
