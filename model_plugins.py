@@ -19,7 +19,8 @@ from model_stream import read_completion, response_lines
 from model_timeouts import seconds
 from provider_credentials import provider_key
 from provider_errors import (
-    InsufficientCreditError, ProviderError, RateLimitedError, RequestRejectedError, TransientProviderError, account_credit_rejected,
+    InsufficientCreditError, ProviderError, RateLimitedError, RequestRejectedError, TransientProviderError,
+    account_credit_rejected, public_http_error, read_error_body,
 )
 import openrouter_media
 import siliconflow_media
@@ -81,8 +82,9 @@ class ChatProvider:
                  stream_reader, stream_total, stream_idle):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"}
-        if not public:
-            headers["Authorization"] = f"Bearer {cls.api_key()}"
+        credential = None if public else cls.api_key()
+        if credential:
+            headers["Authorization"] = f"Bearer {credential}"
         request = Request(cls.base_url + path, data=data, headers=headers)
         started = time.monotonic()
         if stream_reader:
@@ -104,8 +106,11 @@ class ChatProvider:
         except HTTPError as error:
             code = error.code
             with error:
-                if not public and account_credit_rejected(cls.name, error):
-                    raise InsufficientCreditError(f"{cls.name} HTTP {code}: insufficient credits") from None
+                body = read_error_body(error)
+                credit = not public and account_credit_rejected(cls.name, code, body)
+                diagnostic = public_http_error(cls.name, code, body, error.headers, credential=credential, credit=credit)
+            if credit:
+                raise InsufficientCreditError(f"{cls.name} HTTP {code}: insufficient credits", diagnostic=diagnostic) from None
             hint = {401: "invalid credential", 402: "payment required", 403: "access denied",
                     404: "model or endpoint unavailable", 408: "request timed out", 429: "rate limited",
                     500: "server error", 502: "bad gateway", 503: "service unavailable",
@@ -115,7 +120,7 @@ class ChatProvider:
                 error_type = RateLimitedError
             elif code == 408 or 500 <= code < 600:
                 error_type = TransientProviderError
-            raise error_type(f"{cls.name} HTTP {code}: {hint}") from None
+            raise error_type(f"{cls.name} HTTP {code}: {hint}", diagnostic=diagnostic) from None
         except (OSError, HTTPException) as error:
             timed_out = isinstance(error, (TimeoutError, socket.timeout)) or (
                 isinstance(error, URLError) and isinstance(error.reason, (TimeoutError, socket.timeout)))
